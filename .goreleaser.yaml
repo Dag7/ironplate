@@ -33,6 +33,7 @@ homebrew_casks:
   - repository:
       owner: dag7
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://github.com/dag7/ironplate"
     description: "Scaffold production-grade Kubernetes development environments"
     binaries:
