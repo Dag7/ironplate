@@ -1,0 +1,283 @@
+# =============================================================================
+# Service Registry + Profile Resolution
+# =============================================================================
+# Reads tilt/registry.yaml and tilt/profiles.yaml to determine which
+# services and infrastructure to run. Provides builder dispatch so the
+# main Tiltfile never needs editing when services are added.
+# =============================================================================
+
+_BUILDER_MAP = {}
+
+def register_builders(builders):
+    """
+    Register service type → builder function mapping.
+
+    Args:
+        builders: dict of { 'node-api': node_service_fn, 'go-api': go_service_fn, ... }
+    """
+    _BUILDER_MAP.update(builders)
+
+
+def _read_yaml(path):
+    return decode_yaml(read_file(path))
+
+
+def _load_registry():
+    return _read_yaml('tilt/registry.yaml')
+
+
+def _load_profiles():
+    return _read_yaml('tilt/profiles.yaml')
+
+
+def get_profile_name(cli_profile=''):
+    """Resolve active profile: CLI arg > env var > config file."""
+    if cli_profile:
+        return cli_profile
+    env = os.getenv('TILT_PROFILE', '')
+    if env:
+        return env
+    return _load_profiles().get('active', 'full')
+
+
+# ---------------------------------------------------------------------------
+# Profile Resolution
+# ---------------------------------------------------------------------------
+
+def _resolve_services(registry, profile):
+    """Resolve which services to enable from profile config."""
+    svc_config = profile.get('services', [])
+    all_services = registry.get('services', {})
+
+    # "all" → every registered service
+    if svc_config == 'all':
+        return list(all_services.keys())
+
+    # Explicit empty list or missing → no services
+    if type(svc_config) == 'list':
+        if len(svc_config) == 0:
+            return []
+        # Explicit list of service names
+        return [s for s in svc_config if s in all_services]
+
+    # Dict with filter rules: { groups: [...], labels: [...] }
+    if type(svc_config) == 'dict':
+        result = {}
+        filter_groups = svc_config.get('groups', [])
+        filter_labels = svc_config.get('labels', [])
+
+        for name, spec in all_services.items():
+            if filter_groups and spec.get('group', '') in filter_groups:
+                result[name] = True
+            if filter_labels:
+                for label in spec.get('labels', []):
+                    if label in filter_labels:
+                        result[name] = True
+                        break
+        return list(result.keys())
+
+    return []
+
+
+def _resolve_infra(registry, profile, services):
+    """Resolve which infra components to enable."""
+    infra_config = profile.get('infra', 'all')
+    all_infra = registry.get('infrastructure', {})
+
+    # "all" → every enabled component
+    if infra_config == 'all':
+        return [n for n, s in all_infra.items() if s.get('enabled', True)]
+
+    # Explicit list
+    if type(infra_config) == 'list':
+        return [n for n in infra_config if n in all_infra]
+
+    # "auto" → resolve from service deps + required components
+    if infra_config == 'auto':
+        needed = {}
+
+        # Always include required infra
+        for name, spec in all_infra.items():
+            if spec.get('required', False) and spec.get('enabled', True):
+                needed[name] = True
+
+        # Collect infra deps from active services
+        all_services = registry.get('services', {})
+        for svc_name in services:
+            svc = all_services.get(svc_name, {})
+            for dep in svc.get('deps', {}).get('infra', []):
+                if all_infra.get(dep, {}).get('enabled', True):
+                    needed[dep] = True
+
+        # Resolve transitive infra deps (bounded iteration)
+        for _ in range(10):
+            added = False
+            for name in list(needed.keys()):
+                for dep in all_infra.get(name, {}).get('deps', []):
+                    if dep not in needed and all_infra.get(dep, {}).get('enabled', True):
+                        needed[dep] = True
+                        added = True
+            if not added:
+                break
+
+        return list(needed.keys())
+
+    return []
+
+
+def resolve_profile(cli_profile=''):
+    """
+    Resolve the active profile into concrete service and infra lists.
+
+    Returns a struct with:
+        name:     profile name
+        services: list of service names
+        infra:    list of infra component names
+        registry: full registry dict
+    """
+    registry = _load_registry()
+    profiles = _load_profiles()
+    name = get_profile_name(cli_profile)
+
+    all_profiles = profiles.get('profiles', {})
+    profile = all_profiles.get(name)
+    if not profile:
+        fail('Unknown Tilt profile: %s (available: %s)' % (
+            name, ', '.join(all_profiles.keys())))
+
+    services = _resolve_services(registry, profile)
+    infra = _resolve_infra(registry, profile, services)
+
+    return struct(
+        name = name,
+        services = services,
+        infra = infra,
+        registry = registry,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Service Setup
+# ---------------------------------------------------------------------------
+
+def setup_services(target, profile):
+    """
+    Setup all services for the active profile using registered builders.
+
+    Each service's 'type' field maps to a builder registered via register_builders().
+    Services in the same group share a single umbrella Helm chart.
+    """
+    all_services = profile.registry.get('services', {})
+    groups_setup = {}
+
+    for svc_name in profile.services:
+        svc = all_services.get(svc_name)
+        if not svc:
+            print('⚠ Service %s in profile but not in registry — skipping' % svc_name)
+            continue
+
+        svc_type = svc.get('type', '')
+        builder = _BUILDER_MAP.get(svc_type)
+        if not builder:
+            print('⚠ No builder for service type %s (%s) — skipping' % (svc_type, svc_name))
+            continue
+
+        # Call builder: node_service(name, target, ...) / go_service(name, target, ...)
+        group = svc.get('group', 'default')
+        src = svc.get('src', 'apps')
+        src_folder = src.rsplit('/', 1)[0] if '/' in src else 'apps'
+
+        if svc_type in ['node-api', 'nextjs']:
+            builder(svc_name, target, src_folder=src_folder)
+        else:
+            builder(svc_name, target)
+
+        # Track group for Helm chart loading
+        if group not in groups_setup:
+            groups_setup[group] = True
+
+    return list(groups_setup.keys())
+
+
+# ---------------------------------------------------------------------------
+# Infrastructure Setup
+# ---------------------------------------------------------------------------
+
+def setup_infra(target, profile):
+    """
+    Setup infrastructure components for the active profile.
+
+    Components with helmPath/setupFn are loaded and called.
+    Components with local=true are handled by the local deployment Tiltfile.
+    """
+    all_infra = profile.registry.get('infrastructure', {})
+    loaded = {}
+
+    for name in profile.infra:
+        spec = all_infra.get(name, {})
+        helm_path = spec.get('helmPath', '')
+        setup_fn = spec.get('setupFn', '')
+
+        if helm_path and setup_fn and name not in loaded:
+            tiltfile_path = './%s/Tiltfile' % helm_path
+            # Use include to execute the infra component Tiltfile
+            # which should define and call setup_<component>(target)
+            include(tiltfile_path)
+            loaded[name] = True
+
+
+# ---------------------------------------------------------------------------
+# Resource Filtering
+# ---------------------------------------------------------------------------
+
+def get_enabled_resources(profile):
+    """
+    Build the list of Tilt resource names that should be enabled.
+    Returns None for 'full' profile (no filtering needed).
+    """
+    if profile.name == 'full':
+        return None
+
+    resources = []
+
+    # Service resources (using service names as resource names)
+    resources.extend(profile.services)
+
+    # Infra resource names
+    all_infra = profile.registry.get('infrastructure', {})
+    for name in profile.infra:
+        spec = all_infra.get(name, {})
+        resource = spec.get('resource', name)
+        resources.append(resource)
+
+    # Always include dev tool resources
+    resources.extend([
+        'packages-install',
+        'packages-build',
+        'packages-watch',
+    ])
+
+    return resources
+
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
+def print_profile_summary(profile):
+    """Print active profile info at startup."""
+    svc_count = len(profile.services)
+    infra_count = len(profile.infra)
+
+    print('')
+    print('  ┌─────────────────────────────────────────┐')
+    print('  │ Profile: %-31s │' % profile.name)
+    print('  ├─────────────────────────────────────────┤')
+    print('  │ Services: %-30s │' % ('%d active' % svc_count if svc_count else 'none'))
+    print('  │ Infra:    %-30s │' % ('%d components' % infra_count if infra_count else 'none'))
+    if svc_count > 0:
+        print('  ├─────────────────────────────────────────┤')
+        for svc in profile.services:
+            print('  │   • %-35s │' % svc)
+    print('  └─────────────────────────────────────────┘')
+    print('')

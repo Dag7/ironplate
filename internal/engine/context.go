@@ -90,6 +90,23 @@ type ComputedValues struct {
 	Year int
 }
 
+// UpdateComputedComponents refreshes component flags from a resolved list
+// (which may include auto-resolved dependencies not in the original config).
+func (ctx *TemplateContext) UpdateComputedComponents(resolved []string) {
+	has := make(map[string]bool, len(resolved))
+	for _, c := range resolved {
+		has[c] = true
+	}
+	ctx.Computed.HasKafka = has["kafka"]
+	ctx.Computed.HasHasura = has["hasura"]
+	ctx.Computed.HasDapr = has["dapr"]
+	ctx.Computed.HasRedis = has["redis"]
+	ctx.Computed.HasObservability = has["observability"]
+	ctx.Computed.HasExternalSecrets = has["external-secrets"]
+	ctx.Computed.HasArgoCD = has["argocd"]
+	ctx.Computed.HasLangfuse = has["langfuse"]
+}
+
 // NewTemplateContext creates a TemplateContext from a ProjectConfig.
 func NewTemplateContext(cfg *config.ProjectConfig) *TemplateContext {
 	infra := cfg.Spec.Infrastructure

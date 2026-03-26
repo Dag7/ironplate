@@ -1,0 +1,47 @@
+# =============================================================================
+# {{ .Project.Metadata.Name }} — Tilt Profiles
+# =============================================================================
+# Profiles control which services and infrastructure run in your local cluster.
+#
+# Usage:
+#   tilt up                          # uses 'active' profile below
+#   TILT_PROFILE=minimal tilt up     # override via env var
+#   tilt up -- --profile=core        # override via CLI arg
+#
+# Service filters:
+#   services: all                    # every registered service
+#   services: []                     # no services (infra-only)
+#   services: [svc-a, svc-b]        # explicit list
+#   services:                        # filter by metadata
+#     groups: [auth, billing]
+#     labels: [backend]
+#
+# Infra modes:
+#   infra: all                       # every enabled component
+#   infra: auto                      # resolve from service deps + required
+#   infra: [postgres, redis]         # explicit list
+# =============================================================================
+
+active: full
+
+profiles:
+  minimal:
+    description: "Database and cache only — no application services"
+    services: []
+    infra: [postgres{{ if .Computed.HasRedis }}, redis{{ end }}]
+
+  core:
+    description: "Core service group with auto-resolved infrastructure"
+    services:
+      groups: [core]
+    infra: auto
+
+  full:
+    description: "All services and infrastructure"
+    services: all
+    infra: all
+
+  infra-only:
+    description: "All infrastructure, no application services"
+    services: []
+    infra: all

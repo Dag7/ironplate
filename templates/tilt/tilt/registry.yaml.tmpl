@@ -1,0 +1,69 @@
+# =============================================================================
+# {{ .Project.Metadata.Name }} — Service & Infrastructure Registry
+# =============================================================================
+# Single source of truth for all Tilt-managed resources.
+# Managed by ironplate CLI — use 'iron generate service' to add services.
+# Manual edits to service configs are preserved on regeneration.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
+# Each service declares its type, group, port, and dependencies.
+# The registry module uses this to call the correct builder function
+# and resolve infrastructure dependencies per profile.
+#
+# Supported types: node-api, go-api, nextjs
+# ---------------------------------------------------------------------------
+services: {}
+# Example (added by 'iron generate service auth-service --type node-api --group auth'):
+#   auth-service:
+#     type: node-api
+#     group: auth
+#     port: 3001
+#     debugPort: 9229
+#     src: apps/auth-service
+#     labels: [backend, auth]
+#     deps:
+#       infra: [kafka, redis]
+#       services: []
+
+# ---------------------------------------------------------------------------
+# Infrastructure
+# ---------------------------------------------------------------------------
+# Components that services depend on. Each declares whether it has a
+# Helm-based Tiltfile (helmPath/setupFn) or is a local-only resource.
+# The 'enabled' flag reflects ironplate.yaml component selection.
+# 'required: true' means the component is always included in 'auto' resolution.
+# ---------------------------------------------------------------------------
+infrastructure:
+  postgres:
+    enabled: true
+    required: true
+    local: true
+{{ if .Computed.HasRedis }}  redis:
+    enabled: true
+    local: true
+{{ end }}{{ if .Computed.HasKafka }}  kafka:
+    enabled: true
+    helmPath: k8s/helm/infra/kafka
+    setupFn: setup_kafka
+{{ end }}{{ if .Computed.HasHasura }}  hasura:
+    enabled: true
+    helmPath: k8s/helm/infra/hasura
+    setupFn: setup_hasura
+    deps: [postgres]
+{{ end }}{{ if .Computed.HasDapr }}  dapr:
+    enabled: true
+    helmPath: k8s/helm/infra/dapr
+    setupFn: setup_dapr
+{{ end }}{{ if .Computed.HasObservability }}  observability:
+    enabled: true
+    helmPath: k8s/helm/infra/observability-stack
+    setupFn: setup_observability_stack
+{{ end }}{{ if .Computed.HasLangfuse }}  langfuse:
+    enabled: true
+    helmPath: k8s/helm/infra/langfuse
+    setupFn: setup_langfuse
+    deps: [redis, postgres]
+{{ end }}

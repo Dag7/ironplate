@@ -21,7 +21,7 @@ export function defaultLabels(): Record<string, string> {
 
   return {
     project: "{{ .Project.Metadata.Name }}",
-    organization: "{{ .Organization }}",
+    organization: "{{ .Project.Metadata.Organization }}",
     "managed-by": "pulumi",
     environment: env,
   };

@@ -27,7 +27,7 @@ export function setupArgoCD(
 ): ArgoCDOutputs {
   const config = new pulumi.Config();
   const env = pulumi.getStack();
-  const baseDomain = "{{ .Domain }}";
+  const baseDomain = "{{ .Project.Metadata.Domain }}";
   const domain = envDomain(env, baseDomain);
   const repoUrl = config.require("gitRepoUrl");
   const argocdNamespace = "argocd";

@@ -29,25 +29,35 @@ func templateFS() fstest.MapFS {
 		"dockerfiles/Dockerfile": &fstest.MapFile{Data: []byte("FROM node")},
 		// tilt
 		"tilt/Tiltfile": &fstest.MapFile{Data: []byte("")},
-		// helm
-		"helm/Chart.yaml": &fstest.MapFile{Data: []byte("name: lib")},
+		// k8s (Helm library, ingress, local deployment)
+		"k8s/helm/_lib/Chart.yaml":           &fstest.MapFile{Data: []byte("name: lib")},
+		"k8s/helm/ingress/Chart.yaml":        &fstest.MapFile{Data: []byte("name: ingress")},
+		"k8s/deployment/local/postgres.yaml":  &fstest.MapFile{Data: []byte("")},
 		// cicd
-		"cicd/github-actions/ci.yml": &fstest.MapFile{Data: []byte("")},
+		"cicd/github-actions/workflows/ci.yml": &fstest.MapFile{Data: []byte("")},
 		// scripts
 		"scripts/setup.sh": &fstest.MapFile{Data: []byte("#!/bin/sh")},
 		// claude-md
 		"claude-md/CLAUDE.md": &fstest.MapFile{Data: []byte("# Claude")},
 		// skills
 		"skills/default.md": &fstest.MapFile{Data: []byte("skill")},
-		// components
-		"components/kafka/values.yaml":            &fstest.MapFile{Data: []byte("")},
-		"components/redis/values.yaml":            &fstest.MapFile{Data: []byte("")},
-		"components/hasura/values.yaml":           &fstest.MapFile{Data: []byte("")},
-		"components/dapr/values.yaml":             &fstest.MapFile{Data: []byte("")},
-		"components/observability/values.yaml":    &fstest.MapFile{Data: []byte("")},
-		"components/external-secrets/values.yaml": &fstest.MapFile{Data: []byte("")},
-		"components/argocd/values.yaml":           &fstest.MapFile{Data: []byte("")},
-		"components/langfuse/values.yaml":         &fstest.MapFile{Data: []byte("")},
+		// components (with /helm suffix matching registry)
+		"components/kafka/helm/values.yaml":              &fstest.MapFile{Data: []byte("")},
+		"components/redis/helm/values.yaml":              &fstest.MapFile{Data: []byte("")},
+		"components/hasura/helm/values.yaml":             &fstest.MapFile{Data: []byte("")},
+		"components/dapr/helm/values.yaml":               &fstest.MapFile{Data: []byte("")},
+		"components/observability/helm/values.yaml":      &fstest.MapFile{Data: []byte("")},
+		"components/external-secrets/helm/values.yaml":   &fstest.MapFile{Data: []byte("")},
+		"components/langfuse/helm/values.yaml":           &fstest.MapFile{Data: []byte("")},
+		"components/k8s-dashboard/helm/values.yaml":      &fstest.MapFile{Data: []byte("")},
+		"components/verdaccio/helm/values.yaml":          &fstest.MapFile{Data: []byte("")},
+		"components/hasura-event-relay/helm/values.yaml": &fstest.MapFile{Data: []byte("")},
+		// ArgoCD (uses ExtraTemplates, not standard Templates path)
+		"components/argocd/charts/Chart.yaml":              &fstest.MapFile{Data: []byte("")},
+		"components/argocd/apps/staging/apps.yaml":         &fstest.MapFile{Data: []byte("")},
+		"components/argocd/scripts/troubleshoot.sh":        &fstest.MapFile{Data: []byte("")},
+		// iac
+		"iac/pulumi/gcp/index.ts": &fstest.MapFile{Data: []byte("")},
 	}
 }
 

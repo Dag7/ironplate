@@ -62,7 +62,7 @@ export function toLabel(s: string): string {
  * subdomain prefix.
  *
  * @param env - Environment name (e.g. "staging", "production")
- * @param baseDomain - Base domain (e.g. "{{ .Domain }}")
+ * @param baseDomain - Base domain (e.g. "{{ .Project.Metadata.Domain }}")
  * @returns The environment-specific domain
  *
  * @example

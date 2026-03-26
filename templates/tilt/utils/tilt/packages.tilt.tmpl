@@ -36,7 +36,7 @@ def _get_package_deps(pkg_folder):
     """Get workspace dependencies of a package."""
     pkg_path = 'packages/node/{}/package.json'.format(pkg_folder)
     result = local(
-        'cat {} 2>/dev/null || echo "{{}}"'.format(pkg_path),
+        'cat {} 2>/dev/null || echo "{}"'.format(pkg_path),
         quiet=True
     )
     return _get_workspace_deps_from_json(str(result))

@@ -10,7 +10,7 @@ export interface EnvironmentConfig {
   name: string;
   /** Short environment name (e.g. "stg", "prod") */
   shortName: string;
-  /** Domain for this environment (e.g. "staging.{{ .Domain }}") */
+  /** Domain for this environment (e.g. "staging.{{ .Project.Metadata.Domain }}") */
   domain: string;
   /** Default node count for GKE node pools */
   nodeCount: number;

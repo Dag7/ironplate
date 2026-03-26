@@ -98,7 +98,7 @@ func (s *Scaffolder) buildSteps(ctx *engine.TemplateContext) []scaffoldStep {
 	// Dockerfiles
 	steps = append(steps, scaffoldStep{
 		"Generating Dockerfiles",
-		s.stepRenderDir("dockerfiles", ctx),
+		s.stepRenderDirTo("dockerfiles", "dockerfiles", ctx),
 	})
 
 	// Tilt
@@ -125,11 +125,14 @@ func (s *Scaffolder) buildSteps(ctx *engine.TemplateContext) []scaffoldStep {
 		s.stepRenderDirTo("k8s/deployment/local", "k8s/deployment/local", ctx),
 	})
 
-	// Infrastructure components
+	// Infrastructure components (resolve transitive dependencies)
 	resolved, err := components.ResolveDependencies(s.cfg.Spec.Infrastructure.Components)
 	if err != nil {
 		return steps // Return what we have; validation should catch this earlier
 	}
+	// Update computed flags to include auto-resolved dependencies
+	ctx.UpdateComputedComponents(resolved)
+
 	for _, compName := range resolved {
 		comp := components.Get(compName)
 		if comp == nil {
@@ -173,7 +176,7 @@ func (s *Scaffolder) buildSteps(ctx *engine.TemplateContext) []scaffoldStep {
 	if ctx.Computed.HasNode {
 		steps = append(steps, scaffoldStep{
 			"Generating utility scripts",
-			s.stepRenderDir("scripts", ctx),
+			s.stepRenderDirTo("scripts", "scripts", ctx),
 		})
 	}
 

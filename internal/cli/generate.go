@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -24,18 +25,8 @@ var serviceTemplateDirs = map[string]string{
 	"nextjs":   "service/nextjs",
 }
 
-// serviceTiltBuilders maps service types to their Tilt builder function + module.
-var serviceTiltBuilders = map[string][2]string{
-	"node-api": {"node_service", "./utils/tilt/node.tilt"},
-	"go-api":   {"go_service", "./utils/tilt/go.utils.tilt"},
-	"nextjs":   {"client_node_service", "./utils/tilt/node.tilt"},
-}
-
-// Tiltfile marker constants.
-const (
-	tiltfileServiceStart = "# IRONPLATE:SERVICES:START"
-	tiltfileServiceEnd   = "# IRONPLATE:SERVICES:END"
-)
+// registryFile is the path to the Tilt service registry relative to project root.
+const registryFile = "tilt/registry.yaml"
 
 func newGenerateCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -169,12 +160,11 @@ Examples:
 				}
 			}
 
-			// 3. Inject entry into main Tiltfile (per-group, not per-service)
+			// 3. Register service in Tilt registry
 			step++
-			printer.Step(step, totalSteps, "Updating main Tiltfile")
-			mainTiltfile := filepath.Join(projectRoot, "Tiltfile")
-			if err := injectTiltfileEntry(mainTiltfile, ctx); err != nil {
-				printer.Warning(fmt.Sprintf("Could not update Tiltfile: %s", err))
+			printer.Step(step, totalSteps, "Updating Tilt registry")
+			if err := registerServiceInRegistry(projectRoot, ctx); err != nil {
+				printer.Warning(fmt.Sprintf("Could not update registry: %s", err))
 			}
 
 			// 4. Register with ArgoCD
@@ -257,44 +247,108 @@ func appendServiceToUmbrellaValues(groupChartDir string, svc *engine.ServiceTemp
 	return os.WriteFile(valuesPath, []byte(content), 0o644)
 }
 
-// injectTiltfileEntry adds a group load/setup entry into the main Tiltfile between markers.
-// Injection is per-group: each group gets one load + setup call. Subsequent services in
-// the same group do not add additional Tiltfile entries.
-func injectTiltfileEntry(tiltfilePath string, ctx *engine.TemplateContext) error {
-	if !fsutil.FileExists(tiltfilePath) {
-		return fmt.Errorf("Tiltfile not found at %s", tiltfilePath)
-	}
+// tiltRegistry represents the structure of tilt/registry.yaml.
+type tiltRegistry struct {
+	Services       map[string]tiltServiceEntry `yaml:"services"`
+	Infrastructure map[string]interface{}      `yaml:"infrastructure"`
+}
 
-	data, err := os.ReadFile(tiltfilePath)
-	if err != nil {
-		return fmt.Errorf("read Tiltfile: %w", err)
-	}
+// tiltServiceEntry represents a single service in the Tilt registry.
+type tiltServiceEntry struct {
+	Type      string            `yaml:"type"`
+	Group     string            `yaml:"group"`
+	Port      int               `yaml:"port"`
+	DebugPort int               `yaml:"debugPort,omitempty"`
+	Src       string            `yaml:"src"`
+	Labels    []string          `yaml:"labels,omitempty"`
+	Deps      *tiltServiceDeps  `yaml:"deps,omitempty"`
+}
 
-	content := string(data)
+// tiltServiceDeps represents service dependency declarations.
+type tiltServiceDeps struct {
+	Infra    []string `yaml:"infra,omitempty"`
+	Services []string `yaml:"services,omitempty"`
+}
+
+// registerServiceInRegistry adds or updates a service entry in tilt/registry.yaml.
+func registerServiceInRegistry(projectRoot string, ctx *engine.TemplateContext) error {
+	regPath := filepath.Join(projectRoot, registryFile)
 	svc := ctx.Service
-	groupSnake := toSnakeCase(svc.Group)
-	helmPath := fmt.Sprintf("./k8s/helm/%s/%s/Tiltfile",
-		ctx.Project.Metadata.Name, svc.Group)
 
-	// Check if the group is already registered
-	if strings.Contains(content, fmt.Sprintf("setup_%s(target)", groupSnake)) {
-		return nil // Group already injected
+	// Read existing registry or create a new one
+	var reg tiltRegistry
+	if fsutil.FileExists(regPath) {
+		data, err := os.ReadFile(regPath)
+		if err != nil {
+			return fmt.Errorf("read registry: %w", err)
+		}
+		if err := yaml.Unmarshal(data, &reg); err != nil {
+			return fmt.Errorf("parse registry: %w", err)
+		}
 	}
 
-	entry := fmt.Sprintf("# %s group\nload('%s', 'setup_%s')\nsetup_%s(target)\n",
-		svc.Group, helmPath, groupSnake, groupSnake)
-
-	endIdx := strings.Index(content, tiltfileServiceEnd)
-	if endIdx == -1 {
-		return fmt.Errorf("marker %q not found in Tiltfile", tiltfileServiceEnd)
+	if reg.Services == nil {
+		reg.Services = make(map[string]tiltServiceEntry)
 	}
 
-	content = content[:endIdx] + entry + "\n" + content[endIdx:]
-	return os.WriteFile(tiltfilePath, []byte(content), 0o644)
+	// Check if service is already registered
+	if _, exists := reg.Services[svc.Name]; exists {
+		return nil
+	}
+
+	// Build labels from group and type
+	labels := []string{"backend", svc.Group}
+	if svc.Type == "nextjs" {
+		labels = []string{"frontend", svc.Group}
+	}
+
+	// Build infra deps from features (deduplicated)
+	infraDepsMap := make(map[string]bool)
+	for _, f := range svc.Features {
+		switch f {
+		case "hasura":
+			infraDepsMap["hasura"] = true
+		case "cache":
+			infraDepsMap["redis"] = true
+		case "dapr", "eventbus":
+			infraDepsMap["kafka"] = true
+		}
+	}
+	infraDeps := make([]string, 0, len(infraDepsMap))
+	for dep := range infraDepsMap {
+		infraDeps = append(infraDeps, dep)
+	}
+	sort.Strings(infraDeps)
+
+	entry := tiltServiceEntry{
+		Type:      svc.Type,
+		Group:     svc.Group,
+		Port:      svc.Port,
+		DebugPort: svc.DebugPort,
+		Src:       fmt.Sprintf("%s/%s", svc.SrcFolder, svc.Name),
+		Labels:    labels,
+	}
+	if len(infraDeps) > 0 {
+		entry.Deps = &tiltServiceDeps{Infra: infraDeps}
+	}
+
+	reg.Services[svc.Name] = entry
+
+	out, err := yaml.Marshal(&reg)
+	if err != nil {
+		return fmt.Errorf("marshal registry: %w", err)
+	}
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(regPath), 0o755); err != nil {
+		return fmt.Errorf("create registry dir: %w", err)
+	}
+
+	return os.WriteFile(regPath, out, 0o644)
 }
 
 // argoCDValuesFile is the path to the ArgoCD app-of-apps values file relative to project root.
-const argoCDValuesFile = "k8s/helm/infra/argocd/values.yaml"
+const argoCDValuesFile = "k8s/argocd/charts/apps/values.yaml"
 
 // argoCDServiceGroups represents the serviceGroups section of the ArgoCD values file.
 type argoCDServiceGroups struct {
@@ -373,11 +427,6 @@ func registerArgoCDService(projectRoot string, cfg *config.ProjectConfig, ctx *e
 	}
 
 	return os.WriteFile(valuesPath, out, 0o644)
-}
-
-// toSnakeCase converts kebab-case to snake_case for Tilt function names.
-func toSnakeCase(s string) string {
-	return strings.ReplaceAll(strings.ToLower(s), "-", "_")
 }
 
 func newGeneratePackageCmd() *cobra.Command {

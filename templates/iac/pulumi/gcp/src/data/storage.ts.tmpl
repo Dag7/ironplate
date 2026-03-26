@@ -62,8 +62,8 @@ export function createStorage(): StorageOutputs {
       cors: [
         {
           origins: [
-            "https://{{ .Domain }}",
-            "https://*.{{ .Domain }}",
+            "https://{{ .Project.Metadata.Domain }}",
+            "https://*.{{ .Project.Metadata.Domain }}",
           ],
           methods: ["GET", "HEAD", "PUT", "POST", "DELETE"],
           responseHeaders: [

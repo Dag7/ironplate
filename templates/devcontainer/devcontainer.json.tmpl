@@ -81,6 +81,7 @@
     5432{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }},
     8080{{ end }}
   ],
+  "initializeCommand": "mkdir -p ${HOME}/.kube ${HOME}/.pulumi && [ -f ${HOME}/.gitconfig ] || touch ${HOME}/.gitconfig",
   "postCreateCommand": "chmod +x .devcontainer/scripts/post_cmd.sh && .devcontainer/scripts/post_cmd.sh",
   "remoteUser": "vscode"
 }

@@ -36,50 +36,18 @@ func TestServiceTemplateDirs(t *testing.T) {
 	}
 }
 
-func TestServiceTiltBuilders(t *testing.T) {
-	// Every service type in serviceTemplateDirs should have a Tilt builder
-	for svcType := range serviceTemplateDirs {
-		t.Run(svcType, func(t *testing.T) {
-			builder, ok := serviceTiltBuilders[svcType]
-			assert.True(t, ok, "expected Tilt builder for service type %q", svcType)
-			assert.NotEmpty(t, builder[0], "builder function should not be empty")
-			assert.NotEmpty(t, builder[1], "builder module should not be empty")
-		})
-	}
-}
-
-func TestToSnakeCase(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"auth-service", "auth_service"},
-		{"my-api", "my_api"},
-		{"simple", "simple"},
-		{"already_snake", "already_snake"},
-		{"UPPER-CASE", "upper_case"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			assert.Equal(t, tt.expected, toSnakeCase(tt.input))
-		})
-	}
-}
-
-func TestInjectTiltfileEntry(t *testing.T) {
+func TestRegisterServiceInRegistry(t *testing.T) {
 	tmpDir := t.TempDir()
-	tiltfilePath := filepath.Join(tmpDir, "Tiltfile")
 
-	// Create a Tiltfile with markers
-	content := `target = "development"
+	// Create a minimal registry file
+	regDir := filepath.Join(tmpDir, "tilt")
+	err := os.MkdirAll(regDir, 0o755)
+	require.NoError(t, err)
 
-# ==============================================================================
-# IRONPLATE:SERVICES:START
-# ==============================================================================
-# IRONPLATE:SERVICES:END
+	regContent := `services: {}
+infrastructure: {}
 `
-	err := os.WriteFile(tiltfilePath, []byte(content), 0o644)
+	err = os.WriteFile(filepath.Join(regDir, "registry.yaml"), []byte(regContent), 0o644)
 	require.NoError(t, err)
 
 	cfg := config.NewDefaultConfig("my-platform", "acme")
@@ -89,33 +57,45 @@ func TestInjectTiltfileEntry(t *testing.T) {
 		Type:      "node-api",
 		Group:     "auth",
 		Port:      3001,
+		DebugPort: 9229,
 		SrcFolder: "apps",
+		Features:  []string{"hasura", "cache"},
 	}
 
-	err = injectTiltfileEntry(tiltfilePath, ctx)
+	err = registerServiceInRegistry(tmpDir, ctx)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(tiltfilePath)
+	data, err := os.ReadFile(filepath.Join(regDir, "registry.yaml"))
 	require.NoError(t, err)
 
 	result := string(data)
-	assert.Contains(t, result, "setup_auth(target)")
-	assert.Contains(t, result, "load('./k8s/helm/my-platform/auth/Tiltfile'")
-	assert.Contains(t, result, "# auth group")
+	assert.Contains(t, result, "auth-service:")
+	assert.Contains(t, result, "type: node-api")
+	assert.Contains(t, result, "group: auth")
+	assert.Contains(t, result, "port: 3001")
+	assert.Contains(t, result, "src: apps/auth-service")
+	// Features should map to infra deps
+	assert.Contains(t, result, "hasura")
+	assert.Contains(t, result, "redis") // from "cache" feature
 }
 
-func TestInjectTiltfileEntry_NoDuplicate(t *testing.T) {
+func TestRegisterServiceInRegistry_NoDuplicate(t *testing.T) {
 	tmpDir := t.TempDir()
-	tiltfilePath := filepath.Join(tmpDir, "Tiltfile")
 
-	content := `# IRONPLATE:SERVICES:START
-# auth group
-load('./k8s/helm/my-platform/auth/Tiltfile', 'setup_auth')
-setup_auth(target)
+	regDir := filepath.Join(tmpDir, "tilt")
+	err := os.MkdirAll(regDir, 0o755)
+	require.NoError(t, err)
 
-# IRONPLATE:SERVICES:END
+	// Registry already has the service
+	regContent := `services:
+    auth-service:
+        type: node-api
+        group: auth
+        port: 3001
+        src: apps/auth-service
+infrastructure: {}
 `
-	err := os.WriteFile(tiltfilePath, []byte(content), 0o644)
+	err = os.WriteFile(filepath.Join(regDir, "registry.yaml"), []byte(regContent), 0o644)
 	require.NoError(t, err)
 
 	cfg := config.NewDefaultConfig("my-platform", "acme")
@@ -128,40 +108,43 @@ setup_auth(target)
 		SrcFolder: "apps",
 	}
 
-	// Should be idempotent
-	err = injectTiltfileEntry(tiltfilePath, ctx)
+	// Should be idempotent — no error, no duplicate
+	err = registerServiceInRegistry(tmpDir, ctx)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(tiltfilePath)
+	data, err := os.ReadFile(filepath.Join(regDir, "registry.yaml"))
 	require.NoError(t, err)
 
-	// Count occurrences — should still be exactly 1
 	result := string(data)
 	count := 0
 	for i := 0; i < len(result); {
-		idx := findSubstring(result[i:], "setup_auth(target)")
+		idx := findSubstring(result[i:], "auth-service:")
 		if idx == -1 {
 			break
 		}
 		count++
 		i += idx + 1
 	}
-	assert.Equal(t, 1, count, "should not duplicate Tiltfile entry")
+	assert.Equal(t, 1, count, "should not duplicate service in registry")
 }
 
-func TestInjectTiltfileEntry_SecondServiceSameGroup(t *testing.T) {
+func TestRegisterServiceInRegistry_SecondService(t *testing.T) {
 	tmpDir := t.TempDir()
-	tiltfilePath := filepath.Join(tmpDir, "Tiltfile")
 
-	// Group already injected by first service
-	content := `# IRONPLATE:SERVICES:START
-# auth group
-load('./k8s/helm/my-platform/auth/Tiltfile', 'setup_auth')
-setup_auth(target)
+	regDir := filepath.Join(tmpDir, "tilt")
+	err := os.MkdirAll(regDir, 0o755)
+	require.NoError(t, err)
 
-# IRONPLATE:SERVICES:END
+	// Registry already has the first service
+	regContent := `services:
+    auth-service:
+        type: node-api
+        group: auth
+        port: 3001
+        src: apps/auth-service
+infrastructure: {}
 `
-	err := os.WriteFile(tiltfilePath, []byte(content), 0o644)
+	err = os.WriteFile(filepath.Join(regDir, "registry.yaml"), []byte(regContent), 0o644)
 	require.NoError(t, err)
 
 	cfg := config.NewDefaultConfig("my-platform", "acme")
@@ -171,27 +154,49 @@ setup_auth(target)
 		Type:      "go-api",
 		Group:     "auth",
 		Port:      3002,
+		DebugPort: 9230,
 		SrcFolder: "apps",
 	}
 
-	// Second service in same group — should NOT add another entry
-	err = injectTiltfileEntry(tiltfilePath, ctx)
+	err = registerServiceInRegistry(tmpDir, ctx)
 	require.NoError(t, err)
 
-	data, err := os.ReadFile(tiltfilePath)
+	data, err := os.ReadFile(filepath.Join(regDir, "registry.yaml"))
 	require.NoError(t, err)
 
 	result := string(data)
-	count := 0
-	for i := 0; i < len(result); {
-		idx := findSubstring(result[i:], "setup_auth(target)")
-		if idx == -1 {
-			break
-		}
-		count++
-		i += idx + 1
+	// Both services should be present
+	assert.Contains(t, result, "auth-service:")
+	assert.Contains(t, result, "auth-worker:")
+	assert.Contains(t, result, "type: go-api")
+}
+
+func TestRegisterServiceInRegistry_CreatesNew(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// No tilt/ directory or registry file exists
+	cfg := config.NewDefaultConfig("my-platform", "acme")
+	ctx := engine.NewTemplateContext(cfg)
+	ctx.Service = &engine.ServiceTemplateData{
+		Name:      "web-app",
+		Type:      "nextjs",
+		Group:     "frontend",
+		Port:      3100,
+		SrcFolder: "apps",
 	}
-	assert.Equal(t, 1, count, "should not add duplicate group entry for second service")
+
+	err := registerServiceInRegistry(tmpDir, ctx)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, "tilt", "registry.yaml"))
+	require.NoError(t, err)
+
+	result := string(data)
+	assert.Contains(t, result, "web-app:")
+	assert.Contains(t, result, "type: nextjs")
+	assert.Contains(t, result, "group: frontend")
+	// nextjs should get "frontend" label instead of "backend"
+	assert.Contains(t, result, "frontend")
 }
 
 func TestAppendServiceToUmbrellaValues(t *testing.T) {
@@ -258,7 +263,7 @@ func TestRegisterArgoCDService_NewGroup(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create the ArgoCD values directory and file
-	argoDir := filepath.Join(tmpDir, "k8s", "helm", "infra", "argocd")
+	argoDir := filepath.Join(tmpDir, "k8s", "argocd", "charts", "apps")
 	err := os.MkdirAll(argoDir, 0o755)
 	require.NoError(t, err)
 
@@ -296,7 +301,7 @@ serviceGroups: {}
 func TestRegisterArgoCDService_ExistingGroup(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	argoDir := filepath.Join(tmpDir, "k8s", "helm", "infra", "argocd")
+	argoDir := filepath.Join(tmpDir, "k8s", "argocd", "charts", "apps")
 	err := os.MkdirAll(argoDir, 0o755)
 	require.NoError(t, err)
 
@@ -333,7 +338,7 @@ serviceGroups:
 func TestRegisterArgoCDService_NoDuplicate(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	argoDir := filepath.Join(tmpDir, "k8s", "helm", "infra", "argocd")
+	argoDir := filepath.Join(tmpDir, "k8s", "argocd", "charts", "apps")
 	err := os.MkdirAll(argoDir, 0o755)
 	require.NoError(t, err)
 

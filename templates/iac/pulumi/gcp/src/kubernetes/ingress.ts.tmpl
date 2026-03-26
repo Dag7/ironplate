@@ -26,7 +26,7 @@ export function setupIngress(
 ): IngressOutputs {
   const config = new pulumi.Config();
   const env = pulumi.getStack();
-  const baseDomain = "{{ .Domain }}";
+  const baseDomain = "{{ .Project.Metadata.Domain }}";
   const domain = envDomain(env, baseDomain);
   const isDev = env === "dev" || env === "development";
 
@@ -83,7 +83,7 @@ export function setupIngress(
         },
         additionalArguments: [
           "--entrypoints.websecure.http.tls.certresolver=letsencrypt",
-          "--certificatesresolvers.letsencrypt.acme.email=admin@{{ .Domain }}",
+          "--certificatesresolvers.letsencrypt.acme.email=admin@{{ .Project.Metadata.Domain }}",
           "--certificatesresolvers.letsencrypt.acme.storage=/data/acme.json",
           "--certificatesresolvers.letsencrypt.acme.tlschallenge=true",
         ],
