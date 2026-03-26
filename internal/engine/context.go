@@ -86,6 +86,12 @@ type ComputedValues struct {
 	HasArgoCD          bool
 	HasLangfuse        bool
 
+	// Dev tool flags for conditional installation.
+	HasOperatorSDK bool
+	HasGitSecret   bool
+	HasMC          bool
+	HasKompose     bool
+
 	// Year for copyright and license templates.
 	Year int
 }
@@ -145,6 +151,11 @@ func NewTemplateContext(cfg *config.ProjectConfig) *TemplateContext {
 			HasExternalSecrets: infra.HasComponent("external-secrets"),
 			HasArgoCD:          infra.HasComponent("argocd"),
 			HasLangfuse:        infra.HasComponent("langfuse"),
+
+			HasOperatorSDK: cfg.Spec.DevEnvironment.HasTool("operator-sdk"),
+			HasGitSecret:   cfg.Spec.DevEnvironment.HasTool("git-secret"),
+			HasMC:          cfg.Spec.DevEnvironment.HasTool("mc"),
+			HasKompose:     cfg.Spec.DevEnvironment.HasTool("kompose"),
 
 			Year: time.Now().Year(),
 		},

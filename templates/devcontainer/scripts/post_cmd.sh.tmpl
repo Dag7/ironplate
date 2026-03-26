@@ -70,6 +70,7 @@ kubectl config set-context --current --namespace={{ .Project.Metadata.Name }}
 # ---------------------------------------------------------------------------
 echo "📦 Installing Node.js dependencies..."
 {{ if eq .Project.Spec.Monorepo.PackageManager "yarn" -}}
+yarn config set --home enableTelemetry 0 2>/dev/null || true
 yarn install
 {{ else -}}
 pnpm install

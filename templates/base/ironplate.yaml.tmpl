@@ -54,7 +54,9 @@ spec:
   devEnvironment:
     type: {{ .Project.Spec.DevEnvironment.Type }}
     k8sLocal: {{ .Project.Spec.DevEnvironment.K8sLocal }}
-    devTool: {{ .Project.Spec.DevEnvironment.DevTool }}
+    devTool: {{ .Project.Spec.DevEnvironment.DevTool }}{{ if .Project.Spec.DevEnvironment.Tools }}
+    tools:{{ range .Project.Spec.DevEnvironment.Tools }}
+      - {{ . }}{{ end }}{{ end }}
 
   cicd:
     platform: {{ .Project.Spec.CICD.Platform }}

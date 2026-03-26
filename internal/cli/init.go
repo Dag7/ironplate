@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
@@ -21,6 +22,7 @@ func newInitCmd() *cobra.Command {
 		language       string
 		provider       string
 		preset         string
+		tools          string
 		nonInteractive bool
 	)
 
@@ -50,7 +52,7 @@ Use --non-interactive with flags for scripted usage.`,
 				}
 
 				cfg = config.NewDefaultConfig(name, organization)
-				applyFlags(cfg, language, provider, preset)
+				applyFlags(cfg, language, provider, preset, tools)
 			} else {
 				// Interactive TUI prompts
 				var err error
@@ -121,6 +123,7 @@ Use --non-interactive with flags for scripted usage.`,
 	cmd.Flags().StringVar(&language, "language", "", "Primary language: node, go, mixed")
 	cmd.Flags().StringVar(&provider, "provider", "", "Cloud provider: gcp, aws, azure, none")
 	cmd.Flags().StringVar(&preset, "preset", "", "Component preset: minimal, standard, full")
+	cmd.Flags().StringVar(&tools, "tools", "", "Dev tools to install (comma-separated): operator-sdk,git-secret,mc,kompose or 'all'")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive prompts")
 
 	return cmd
@@ -217,13 +220,30 @@ func runInteractivePrompts(name, org, language, provider, preset string) (*confi
 		}
 	}
 
+	// Dev tools (optional)
+	var selectedTools []string
+	toolOptions := make([]huh.Option[string], 0, len(config.AvailableDevTools))
+	for _, t := range config.AvailableDevTools {
+		toolOptions = append(toolOptions, huh.NewOption(t.Description+" ("+t.Name+")", t.Name))
+	}
+
+	if err := huh.NewMultiSelect[string]().
+		Title("Additional Dev Tools").
+		Description("Select optional tools for the dev container (space to toggle)").
+		Options(toolOptions...).
+		Value(&selectedTools).
+		Run(); err != nil {
+		return nil, err
+	}
+
 	cfg := config.NewDefaultConfig(name, org)
-	applyFlags(cfg, language, provider, preset)
+	applyFlags(cfg, language, provider, preset, "")
+	cfg.Spec.DevEnvironment.Tools = selectedTools
 
 	return cfg, nil
 }
 
-func applyFlags(cfg *config.ProjectConfig, language, provider, preset string) {
+func applyFlags(cfg *config.ProjectConfig, language, provider, preset, tools string) {
 	// Apply language
 	switch language {
 	case "node":
@@ -261,5 +281,16 @@ func applyFlags(cfg *config.ProjectConfig, language, provider, preset string) {
 	}
 	if !hasArgoCD {
 		cfg.Spec.GitOps.Enabled = false
+	}
+
+	// Apply tools
+	if tools == "all" {
+		allTools := make([]string, 0, len(config.AvailableDevTools))
+		for _, t := range config.AvailableDevTools {
+			allTools = append(allTools, t.Name)
+		}
+		cfg.Spec.DevEnvironment.Tools = allTools
+	} else if tools != "" {
+		cfg.Spec.DevEnvironment.Tools = strings.Split(tools, ",")
 	}
 }

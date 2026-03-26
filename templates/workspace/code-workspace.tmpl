@@ -1,0 +1,134 @@
+{
+  "folders": [
+    {
+      "name": "{{ .Project.Metadata.Name }}",
+      "path": "."
+    },
+    {
+      "name": "k3s",
+      "path": ".devcontainer/k3s"
+    },
+    {
+      "name": "apps",
+      "path": "./apps"
+    },
+    {
+      "name": "packages",
+      "path": "./packages"
+    },
+    {
+      "name": "k8s",
+      "path": "./k8s"
+    },{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}
+    {
+      "name": "hasura",
+      "path": "./hasura"
+    },{{ end }}{{ if ne .Project.Spec.Cloud.Provider "none" }}
+    {
+      "name": "pulumi",
+      "path": "./iac/pulumi"
+    },{{ end }}
+    {
+      "name": "dockerfiles",
+      "path": "./dockerfiles"
+    },
+    {
+      "name": "utils",
+      "path": "./utils"
+    }
+  ],
+  "settings": {
+    "workbench.colorCustomizations": {
+      "editorUnnecessaryCode.border": "#ff0000"
+    },
+    "search.exclude": {
+      "**/node_modules": true,
+      "**/bower_components": true,
+      "**/*.code-search": true,
+      "**/build": true,
+      "**/dist/**": true,
+      "**/.nx/**": true,
+      "**/.next/**": true
+    },
+    "files.watcherExclude": {
+      "**/node_modules/**": true,
+      "**/bower_components/**": true,
+      "**/*.code-search/**": true,
+      "**/build/**": true,
+      "**/dist/**": true,
+      "**/.nx/**": true,
+      "**/.next/**": true,
+      "**/.git/**": true
+    },{{ if .Computed.HasNode }}
+    "typescript.tsserver.watchOptions": {
+      "excludeDirectories": [
+        "**/node_modules",
+        "**/dist",
+        "**/.nx",
+        "**/.next"
+      ],
+      "watchFile": "useFsEvents",
+      "watchDirectory": "useFsEvents"
+    },{{ end }}
+    "editor.minimap.enabled": true,
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.addMissingImports": "explicit",
+      "source.organizeImports": "explicit",
+      "source.fixAll.eslint": "explicit"
+    },{{ if eq .Project.Spec.Infrastructure.Database.Type "postgresql" }}
+    "sqltools.connections": [
+      {
+        "previewLimit": 50,
+        "server": "localhost",
+        "port": 5432,
+        "driver": "PostgreSQL",
+        "name": "{{ .Project.Metadata.Name }}-db",
+        "username": "vscode",
+        "password": "pass",
+        "database": "{{ .Project.Metadata.Name }}-db"
+      }
+    ],{{ end }}
+    "cSpell.words": ["{{ .Project.Metadata.Name }}", "healthz", "readyz"],
+    "cSpell.allowCompoundWords": true,
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "[dockerfile]": {
+      "editor.defaultFormatter": "ms-azuretools.vscode-containers"
+    },{{ if .Computed.HasNode }}
+    "[typescriptreact]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+    "[typescript]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+    "[javascript]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+    "[javascriptreact]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },{{ end }}
+    "[json]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+    "[jsonc]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },{{ if .Computed.HasGo }}
+    "[go]": {
+      "editor.defaultFormatter": "golang.go"
+    },{{ end }}{{ if .Computed.HasNode }}
+    "typescript.enablePromptUseWorkspaceTsdk": true,
+    "typescript.tsdk": "{{ .Project.Metadata.Name }}/node_modules/typescript/lib",
+    "typescript.tsserver.maxTsServerMemory": 4096,
+    "typescript.tsserver.nodePath": "node",
+    "typescript.preferences.importModuleSpecifier": "relative",
+    "typescript.suggest.autoImports": true,
+    "typescript.tsserver.log": "off",
+    "typescript.referencesCodeLens.enabled": false,
+    "typescript.implementationsCodeLens.enabled": false,
+    "typescript.disableAutomaticTypeAcquisition": true,{{ end }}
+    "files.insertFinalNewline": true,
+    "files.trimTrailingWhitespace": true,
+    "files.eol": "\n",
+    "remote.autoForwardPorts": false
+  }
+}

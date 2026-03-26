@@ -148,3 +148,24 @@ func (s *InfraSpec) HasComponent(name string) bool {
 	}
 	return false
 }
+
+// HasTool checks if a specific dev tool is enabled.
+func (s *DevEnvSpec) HasTool(name string) bool {
+	for _, t := range s.Tools {
+		if t == name {
+			return true
+		}
+	}
+	return false
+}
+
+// AvailableDevTools lists all optional dev tools with descriptions.
+var AvailableDevTools = []struct {
+	Name        string
+	Description string
+}{
+	{"operator-sdk", "Kubernetes Operator SDK"},
+	{"git-secret", "Git secret management"},
+	{"mc", "MinIO client (object storage)"},
+	{"kompose", "Docker Compose to K8s converter"},
+}

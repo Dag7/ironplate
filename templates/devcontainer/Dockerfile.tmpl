@@ -58,6 +58,12 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends postgresql-client && \
     rm -rf /var/lib/apt/lists/*
 {{ end }}
+{{ if eq .Project.Spec.Infrastructure.Database.Type "mysql" }}
+# MySQL client
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends mysql-client && \
+    rm -rf /var/lib/apt/lists/*
+{{ end }}
 # =============================================================================
 # Component-Specific Tools
 # =============================================================================
@@ -108,6 +114,52 @@ RUN ARCH="$(dpkg --print-architecture)" && \
       "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_${ARCH}.tar.gz" | \
       tar xz -C /tmp && \
     mv /tmp/eksctl /usr/local/bin
+{{ end }}
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}
+# Pre-install Pulumi plugins (avoids slow first-run download)
+RUN pulumi plugin install resource gcp && \
+    pulumi plugin install resource kubernetes
+{{ end }}
+{{ if eq .Project.Spec.Cloud.Provider "aws" }}
+# Pre-install Pulumi plugins (avoids slow first-run download)
+RUN pulumi plugin install resource aws && \
+    pulumi plugin install resource kubernetes
+{{ end }}
+# =============================================================================
+# Optional Dev Tools
+# =============================================================================
+{{ if .Computed.HasGitSecret }}
+# git-secret
+RUN wget -qO - https://gitsecret.jfrog.io/artifactory/api/gpg/key/public | gpg --dearmor -o /usr/share/keyrings/git-secret-archive-keyring.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/git-secret-archive-keyring.gpg] https://gitsecret.jfrog.io/artifactory/git-secret-deb git-secret main" | tee /etc/apt/sources.list.d/git-secret.list && \
+    apt-get update && \
+    apt-get install -y git-secret && \
+    rm -rf /var/lib/apt/lists/*
+{{ end }}
+{{ if .Computed.HasOperatorSDK }}
+# Operator SDK
+RUN ARCH="$(dpkg --print-architecture)" && \
+    OS="linux" && \
+    VERSION="$(curl -sL https://api.github.com/repos/operator-framework/operator-sdk/releases/latest | grep tag_name | cut -d'"' -f4)" && \
+    curl -LO "https://github.com/operator-framework/operator-sdk/releases/download/${VERSION}/operator-sdk_${OS}_${ARCH}" && \
+    chmod +x "operator-sdk_${OS}_${ARCH}" && \
+    mv "operator-sdk_${OS}_${ARCH}" /usr/local/bin/operator-sdk
+{{ end }}
+{{ if .Computed.HasMC }}
+# MinIO client (mc)
+RUN ARCH="$(dpkg --print-architecture)" && \
+    if [ "$ARCH" = "arm64" ]; then MC_ARCH="arm64"; else MC_ARCH="amd64"; fi && \
+    wget -q "https://dl.minio.io/client/mc/release/linux-${MC_ARCH}/mc" && \
+    chmod +x mc && \
+    mv mc /usr/local/bin
+{{ end }}
+{{ if .Computed.HasKompose }}
+# kompose (Docker Compose to Kubernetes converter)
+RUN ARCH="$(dpkg --print-architecture)" && \
+    if [ "$ARCH" = "arm64" ]; then K_ARCH="arm64"; else K_ARCH="amd64"; fi && \
+    curl -sL "https://github.com/kubernetes/kompose/releases/latest/download/kompose-linux-${K_ARCH}" -o kompose && \
+    chmod +x kompose && \
+    mv kompose /usr/local/bin/kompose
 {{ end }}
 # =============================================================================
 # krew (kubectl plugin manager)
@@ -167,11 +219,29 @@ RUN eksctl completion zsh > ${COMPLETION_FOLDER}/_eksctl
 # Pulumi completion
 RUN pulumi gen-completion zsh > ${COMPLETION_FOLDER}/_pulumi
 {{ end }}
+{{ if .Computed.HasOperatorSDK }}
+# Operator SDK completion
+RUN operator-sdk completion zsh > ${COMPLETION_FOLDER}/_operator-sdk
+{{ end }}
+{{ if .Computed.HasMC }}
+# MinIO client completion
+RUN mc --autocompletion 2>/dev/null || true
+{{ end }}
+{{ if .Computed.HasKompose }}
+# kompose completion
+RUN kompose completion zsh > ${COMPLETION_FOLDER}/_kompose
+{{ end }}
 # Oh-my-zsh plugins
 RUN sed -i "/^plugins=/c\plugins=(docker git kubectl history npm)" /home/vscode/.zshrc
 
 # SSL workaround for Node.js
 ENV OPENSSL_CONF=/dev/null
+
+# K8s context prompt (color-coded: prod=red, staging=yellow, k3d=blue)
+COPY scripts/zsh-prompt.sh /tmp/zsh-prompt.sh
+RUN cat /tmp/zsh-prompt.sh >> /home/vscode/.zshrc && rm /tmp/zsh-prompt.sh
+RUN echo 'ORIG_PROMPT="${PROMPT}"' >> /home/vscode/.zshrc && \
+    echo 'PROMPT='\''%{$fg[blue]%}%D{%f/%m} %t $(k8s_prompt)'\''${ORIG_PROMPT}' >> /home/vscode/.zshrc
 
 # Aliases
 RUN echo "alias k=kubectl" >> /home/vscode/.zshrc && \

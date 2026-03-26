@@ -180,6 +180,12 @@ func (s *Scaffolder) buildSteps(ctx *engine.TemplateContext) []scaffoldStep {
 		})
 	}
 
+	// VS Code workspace file ({name}.code-workspace)
+	steps = append(steps, scaffoldStep{
+		"Generating VS Code workspace",
+		s.stepRenderWorkspace(ctx),
+	})
+
 	// CLAUDE.md (concatenate section templates into a single file)
 	if s.cfg.Spec.AI.ClaudeMD {
 		steps = append(steps, scaffoldStep{
@@ -210,6 +216,19 @@ func (s *Scaffolder) stepRenderDir(templateDir string, ctx *engine.TemplateConte
 			return nil
 		}
 		return s.renderer.RenderFS(s.templates, templateDir, s.outputDir, ctx)
+	}
+}
+
+// stepRenderWorkspace renders the code-workspace template with a dynamic filename.
+func (s *Scaffolder) stepRenderWorkspace(ctx *engine.TemplateContext) func() error {
+	return func() error {
+		tmplPath := "workspace/code-workspace.tmpl"
+		content, err := fs.ReadFile(s.templates, tmplPath)
+		if err != nil {
+			return nil // Template doesn't exist, skip
+		}
+		outputPath := filepath.Join(s.outputDir, s.cfg.Metadata.Name+".code-workspace")
+		return s.renderer.RenderFile(content, outputPath, ctx)
 	}
 }
 
