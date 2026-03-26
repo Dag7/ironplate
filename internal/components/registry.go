@@ -47,6 +47,7 @@ var builtinComponents = map[string]*Component{
 		Templates:   []string{"components/hasura/helm"},
 		ExtraTemplates: []TemplateMapping{
 			{Source: "components/hasura/root", Output: "."},
+			{Source: "components/hasura/project", Output: "hasura"},
 		},
 		Skills:   []string{"setup-graphql", "new-migration"},
 		ClaudeMD: []string{"graphql"},

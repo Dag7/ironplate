@@ -2,7 +2,9 @@
 package engine
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"text/template"
 	"unicode"
@@ -46,6 +48,17 @@ func IronFuncMap() template.FuncMap {
 		"hasItem": hasItem,
 		"dict":    dict,
 		"list":    list,
+
+		// Encoding
+		"b64enc": func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) },
+		"b64dec": func(s string) (string, error) {
+			data, err := base64.StdEncoding.DecodeString(s)
+			if err != nil {
+				return "", err
+			}
+			return string(data), nil
+		},
+		"printf": fmt.Sprintf,
 
 		// Conditional helpers
 		"default": defaultVal,

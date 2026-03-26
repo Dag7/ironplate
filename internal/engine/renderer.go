@@ -189,9 +189,9 @@ func (r *Renderer) RenderFS(templateFS fs.FS, rootDir, outputDir string, ctx int
 			return fmt.Errorf("read template %s: %w", path, err)
 		}
 
-		// Skip .gitkeep files
+		// .gitkeep files are copied verbatim to preserve empty directories in git
 		if filepath.Base(path) == ".gitkeep" {
-			return nil
+			return fsutil.WriteFile(outputPath, content, 0o644)
 		}
 
 		// .tmpl files are rendered as templates; other files are copied verbatim

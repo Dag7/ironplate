@@ -191,9 +191,9 @@ func TestRenderFS(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "I am static content with {{ braces }}", string(data))
 
-	// .gitkeep should be skipped
+	// .gitkeep should be copied to preserve empty directories in git
 	_, err = os.Stat(filepath.Join(tmpDir, ".gitkeep"))
-	assert.True(t, os.IsNotExist(err), ".gitkeep should be skipped")
+	assert.False(t, os.IsNotExist(err), ".gitkeep should be copied")
 
 	// .tpl.tmpl file should use [[ ]] delimiters, preserving {{ }}
 	data, err = os.ReadFile(filepath.Join(tmpDir, "helm.yaml.tpl"))

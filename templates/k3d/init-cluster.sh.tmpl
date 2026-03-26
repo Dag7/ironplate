@@ -3,6 +3,8 @@
 # {{ .Project.Metadata.Name }} - Initialize k3d Cluster
 # =============================================================================
 
+set -euo pipefail
+
 base_path="${GITHUB_WORKSPACE:-/workspaces/{{ .Project.Metadata.Name }}}"
 
 # Import dependencies
@@ -15,7 +17,7 @@ set_docker_permissions
 CLUSTER_NAME={{ .Project.Metadata.Name }}-cluster
 
 # Check if cluster exists
-IS_K3S_INIT=$(k3d cluster ls | grep $CLUSTER_NAME | wc -l)
+IS_K3S_INIT=$(k3d cluster ls 2>/dev/null | grep "$CLUSTER_NAME" | wc -l)
 
 if [[ $IS_K3S_INIT != '0' ]]; then
     logger_info "using existing k8s cluster: $CLUSTER_NAME"
@@ -40,27 +42,36 @@ while getopts ":fh" opt; do
     esac
 done
 
-if [[ $IS_K3S_INIT != '0' && $FORCE_CREATE ]]; then
+if [[ $IS_K3S_INIT != '0' && ${FORCE_CREATE:-false} == true ]]; then
     delete_k3s_cluster
+    IS_K3S_INIT=0
 fi
 
-if [[ $IS_K3S_INIT == '0' || $FORCE_CREATE ]]; then
+if [[ $IS_K3S_INIT == '0' || ${FORCE_CREATE:-false} == true ]]; then
     logger_highlight "creating k8s cluster: $CLUSTER_NAME"
 
-    k3d cluster create \
+    if ! k3d cluster create \
         --config ${CLUSTER_NAME}.config.yaml \
         --registry-config ${CLUSTER_NAME}.registries.yaml \
         --wait \
-        --verbose
+        --verbose; then
+        logger_error "Failed to create cluster. Common causes:"
+        logger_error "  - Port conflict: another k3d cluster may be using the same ports"
+        logger_error "    Run 'k3d cluster list' to check, then 'k3d cluster stop <name>' to free ports"
+        logger_error "  - Docker not running or not accessible"
+        exit 1
+    fi
 fi
 
 logger_info "starting cluster: $CLUSTER_NAME"
-k3d cluster start $CLUSTER_NAME
+k3d cluster start $CLUSTER_NAME 2>/dev/null || true
 k3d kubeconfig merge -sd $CLUSTER_NAME
 
-until kubectl get nodes; do
+logger_info "waiting for nodes to be ready..."
+until kubectl get nodes &>/dev/null; do
     sleep 1
 done
+logger_success "nodes ready"
 
 # Apply manifests
 logger_info "applying manifests"
