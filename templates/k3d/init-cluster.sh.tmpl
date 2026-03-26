@@ -19,11 +19,6 @@ CLUSTER_NAME={{ .Project.Metadata.Name }}-cluster
 # Check if cluster exists
 IS_K3S_INIT=$(k3d cluster ls 2>/dev/null | grep "$CLUSTER_NAME" | wc -l)
 
-if [[ $IS_K3S_INIT != '0' ]]; then
-    logger_info "using existing k8s cluster: $CLUSTER_NAME"
-    kubectl config use-context k3d-${CLUSTER_NAME} --namespace={{ .Project.Metadata.Name }}
-fi
-
 # Parse command-line options
 while getopts ":fh" opt; do
     case $opt in
@@ -42,12 +37,14 @@ while getopts ":fh" opt; do
     esac
 done
 
+# Force recreate if requested
 if [[ $IS_K3S_INIT != '0' && ${FORCE_CREATE:-false} == true ]]; then
     delete_k3s_cluster
     IS_K3S_INIT=0
 fi
 
-if [[ $IS_K3S_INIT == '0' || ${FORCE_CREATE:-false} == true ]]; then
+# Create cluster if it doesn't exist
+if [[ $IS_K3S_INIT == '0' ]]; then
     logger_highlight "creating k8s cluster: $CLUSTER_NAME"
 
     if ! k3d cluster create \
@@ -61,11 +58,13 @@ if [[ $IS_K3S_INIT == '0' || ${FORCE_CREATE:-false} == true ]]; then
         logger_error "  - Docker not running or not accessible"
         exit 1
     fi
+else
+    logger_info "using existing k8s cluster: $CLUSTER_NAME"
 fi
 
-logger_info "starting cluster: $CLUSTER_NAME"
+# Ensure cluster is started and kubeconfig is merged
 k3d cluster start $CLUSTER_NAME 2>/dev/null || true
-k3d kubeconfig merge -sd $CLUSTER_NAME
+k3d kubeconfig merge $CLUSTER_NAME --kubeconfig-switch-context --kubeconfig-merge-default 2>/dev/null
 
 logger_info "waiting for nodes to be ready..."
 until kubectl get nodes &>/dev/null; do
