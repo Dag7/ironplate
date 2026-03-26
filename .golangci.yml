@@ -1,0 +1,7 @@
+linters-settings:
+  errcheck:
+    # Don't check return values of fmt.Sscanf/fmt.Sscan (best-effort parsing)
+    exclude-functions:
+      - fmt.Sscanf
+      - fmt.Sscan
+      - fmt.Sscanln

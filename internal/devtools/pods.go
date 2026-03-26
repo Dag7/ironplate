@@ -42,7 +42,7 @@ func ListPods(namespace string) ([]Pod, error) {
 		}
 
 		restarts := 0
-		fmt.Sscanf(fields[3], "%d", &restarts) //nolint:errcheck // best-effort parse, defaults to 0
+		fmt.Sscanf(fields[3], "%d", &restarts)
 
 		pod := Pod{
 			Name:      fields[0],
