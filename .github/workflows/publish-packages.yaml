@@ -32,6 +32,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write  # Required for npm Trusted Publishing (OIDC)
 
 jobs:
   # ── Publish Node packages to npm ───────────────────────────────────
@@ -65,10 +66,10 @@ jobs:
 
       - name: Bump versions and publish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION_BUMP: ${{ inputs.version_bump }}
           TARGET_PACKAGE: ${{ inputs.package }}
           DRY_RUN: ${{ inputs.dry_run }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           published=0
           bumped_files=""
@@ -104,7 +105,7 @@ jobs:
             if [ "$DRY_RUN" != "true" ]; then
               # Publish from package directory
               cd "$dir"
-              npm publish --access public
+              npm publish --access public --provenance
               cd - > /dev/null
 
               # Create git tag
