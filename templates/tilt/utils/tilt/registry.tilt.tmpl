@@ -264,20 +264,30 @@ def get_enabled_resources(profile):
 # Summary
 # ---------------------------------------------------------------------------
 
+def _pad(s, width):
+    """Left-align string in a field of given width (Starlark has no %-Ns)."""
+    s = str(s)
+    if len(s) >= width:
+        return s[:width]
+    return s + ' ' * (width - len(s))
+
 def print_profile_summary(profile):
     """Print active profile info at startup."""
     svc_count = len(profile.services)
     infra_count = len(profile.infra)
 
+    svc_text = '%d active' % svc_count if svc_count else 'none'
+    infra_text = '%d components' % infra_count if infra_count else 'none'
+
     print('')
     print('  ┌─────────────────────────────────────────┐')
-    print('  │ Profile: %-31s │' % profile.name)
+    print('  │ Profile: %s │' % _pad(profile.name, 31))
     print('  ├─────────────────────────────────────────┤')
-    print('  │ Services: %-30s │' % ('%d active' % svc_count if svc_count else 'none'))
-    print('  │ Infra:    %-30s │' % ('%d components' % infra_count if infra_count else 'none'))
+    print('  │ Services: %s │' % _pad(svc_text, 30))
+    print('  │ Infra:    %s │' % _pad(infra_text, 30))
     if svc_count > 0:
         print('  ├─────────────────────────────────────────┤')
         for svc in profile.services:
-            print('  │   • %-35s │' % svc)
+            print('  │   • %s │' % _pad(svc, 35))
     print('  └─────────────────────────────────────────┘')
     print('')
