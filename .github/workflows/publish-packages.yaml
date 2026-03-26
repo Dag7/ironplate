@@ -37,7 +37,7 @@ jobs:
   # ── Publish Node packages to npm ───────────────────────────────────
   publish-node:
     name: Publish Node Packages
-    if: inputs.scope == 'all' || inputs.scope == 'node'
+    if: github.event.inputs.scope == 'all' || github.event.inputs.scope == 'node'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -149,7 +149,7 @@ jobs:
   # ── Publish Go packages (via git tags) ───────────────────────────────
   publish-go:
     name: Publish Go Packages
-    if: inputs.scope == 'all' || inputs.scope == 'go'
+    if: github.event.inputs.scope == 'all' || github.event.inputs.scope == 'go'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
