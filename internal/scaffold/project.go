@@ -180,11 +180,11 @@ func (s *Scaffolder) buildSteps(ctx *engine.TemplateContext) []scaffoldStep {
 		})
 	}
 
-	// CLAUDE.md
+	// CLAUDE.md (concatenate section templates into a single file)
 	if s.cfg.Spec.AI.ClaudeMD {
 		steps = append(steps, scaffoldStep{
 			"Generating CLAUDE.md",
-			s.stepRenderDir("claude-md", ctx),
+			s.stepRenderClaudeMD(ctx),
 		})
 	}
 
@@ -210,6 +210,17 @@ func (s *Scaffolder) stepRenderDir(templateDir string, ctx *engine.TemplateConte
 			return nil
 		}
 		return s.renderer.RenderFS(s.templates, templateDir, s.outputDir, ctx)
+	}
+}
+
+// stepRenderClaudeMD assembles all claude-md section templates into a single CLAUDE.md file.
+func (s *Scaffolder) stepRenderClaudeMD(ctx *engine.TemplateContext) func() error {
+	return func() error {
+		if _, err := fs.Stat(s.templates, "claude-md"); err != nil {
+			return nil
+		}
+		outputPath := filepath.Join(s.outputDir, "CLAUDE.md")
+		return s.renderer.RenderConcatFS(s.templates, "claude-md", outputPath, ctx)
 	}
 }
 

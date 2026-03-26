@@ -13,7 +13,7 @@ func NewDefaultConfig(name, org string) *ProjectConfig {
 			Languages: []string{"node"},
 			Monorepo: MonorepoSpec{
 				PackageManager: "yarn",
-				NodeVersion:    "22",
+				NodeVersion:    "24",
 				GoVersion:      "1.24",
 				BuildSystem:    "nx",
 				Scopes:         []string{"@" + org},

@@ -84,6 +84,61 @@ func (r *Renderer) RenderFile(tmplContent []byte, outputPath string, ctx interfa
 	return fsutil.WriteFile(outputPath, []byte(content), 0o644)
 }
 
+// RenderConcatFS renders all templates in a directory and concatenates them into a single output file.
+// Templates are sorted by filename to ensure deterministic ordering.
+// Templates that render to empty content (all-conditional) are skipped.
+func (r *Renderer) RenderConcatFS(templateFS fs.FS, rootDir, outputPath string, ctx interface{}) error {
+	entries, err := fs.ReadDir(templateFS, rootDir)
+	if err != nil {
+		return fmt.Errorf("read template dir %s: %w", rootDir, err)
+	}
+
+	var sections []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(rootDir, entry.Name())
+		content, err := fs.ReadFile(templateFS, path)
+		if err != nil {
+			return fmt.Errorf("read template %s: %w", path, err)
+		}
+
+		if !strings.HasSuffix(entry.Name(), ".tmpl") {
+			// Non-template files are included verbatim
+			if s := strings.TrimSpace(string(content)); s != "" {
+				sections = append(sections, string(content))
+			}
+			continue
+		}
+
+		tmpl, err := template.New(entry.Name()).
+			Delims(r.leftDelim, r.rightDelim).
+			Funcs(r.funcMap).
+			Parse(string(content))
+		if err != nil {
+			return fmt.Errorf("parse template %s: %w", path, err)
+		}
+
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, ctx); err != nil {
+			return fmt.Errorf("execute template %s: %w", path, err)
+		}
+
+		// Skip sections that render to empty (conditional sections not applicable)
+		if s := strings.TrimSpace(buf.String()); s != "" {
+			sections = append(sections, buf.String())
+		}
+	}
+
+	if len(sections) == 0 {
+		return nil
+	}
+
+	combined := strings.Join(sections, "\n")
+	return fsutil.WriteFile(outputPath, []byte(combined), 0o644)
+}
+
 // RenderFS renders all templates from an embedded filesystem into the output directory.
 // Optional excludeDirs skips subdirectories matching those names (e.g., "helm").
 func (r *Renderer) RenderFS(templateFS fs.FS, rootDir, outputDir string, ctx interface{}, excludeDirs ...string) error {

@@ -601,7 +601,7 @@ func TestNewDefaultConfig_Fields(t *testing.T) {
 	// Monorepo
 	mono := cfg.Spec.Monorepo
 	assert.Equal(t, "yarn", mono.PackageManager)
-	assert.Equal(t, "22", mono.NodeVersion)
+	assert.Equal(t, "24", mono.NodeVersion)
 	assert.Equal(t, "1.24", mono.GoVersion)
 	assert.Equal(t, "nx", mono.BuildSystem)
 	assert.Equal(t, []string{"@acme"}, mono.Scopes)
