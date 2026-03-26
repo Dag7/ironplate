@@ -91,7 +91,7 @@ func (s *Scaffolder) buildSteps(ctx *engine.TemplateContext) []scaffoldStep {
 	if s.cfg.Spec.DevEnvironment.K8sLocal == "k3d" {
 		steps = append(steps, scaffoldStep{
 			"Generating k3d cluster config",
-			s.stepRenderDirTo("k3d", ".devcontainer/k3s", ctx),
+			s.stepRenderK3d(ctx),
 		})
 	}
 
@@ -240,6 +240,44 @@ func (s *Scaffolder) stepRenderClaudeMD(ctx *engine.TemplateContext) func() erro
 		}
 		outputPath := filepath.Join(s.outputDir, "CLAUDE.md")
 		return s.renderer.RenderConcatFS(s.templates, "claude-md", outputPath, ctx)
+	}
+}
+
+// stepRenderK3d renders the k3d templates into .devcontainer/k3s/, handling
+// cluster config files with dynamic names ({name}-cluster.config.yaml).
+func (s *Scaffolder) stepRenderK3d(ctx *engine.TemplateContext) func() error {
+	return func() error {
+		if _, err := fs.Stat(s.templates, "k3d"); err != nil {
+			return nil
+		}
+		k3sDir := filepath.Join(s.outputDir, ".devcontainer/k3s")
+
+		// Render all k3d templates except the config/ subdirectory
+		if err := s.renderer.RenderFS(s.templates, "k3d", k3sDir, ctx, "config"); err != nil {
+			return err
+		}
+
+		// Render cluster config files with dynamic names matching doorz convention:
+		//   {name}-cluster.config.yaml
+		//   {name}-cluster.registries.yaml
+		clusterName := s.cfg.Metadata.Name + "-cluster"
+		dynamicFiles := []struct {
+			tmpl   string
+			output string
+		}{
+			{"k3d/config/cluster-config.yaml.tmpl", clusterName + ".config.yaml"},
+			{"k3d/config/registries.yaml.tmpl", clusterName + ".registries.yaml"},
+		}
+		for _, f := range dynamicFiles {
+			content, err := fs.ReadFile(s.templates, f.tmpl)
+			if err != nil {
+				continue
+			}
+			if err := s.renderer.RenderFile(content, filepath.Join(k3sDir, f.output), ctx); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 }
 
