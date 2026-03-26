@@ -6,7 +6,7 @@
 # main Tiltfile never needs editing when services are added.
 # =============================================================================
 
-_BUILDER_MAP = {}
+_BUILDERS = [None]
 
 def register_builders(builders):
     """
@@ -15,7 +15,12 @@ def register_builders(builders):
     Args:
         builders: dict of { 'node-api': node_service_fn, 'go-api': go_service_fn, ... }
     """
-    _BUILDER_MAP.update(builders)
+    # Starlark freezes top-level dicts after load(), but list elements
+    # can be replaced. Store builders as a list element to work around this.
+    _BUILDERS[0] = builders
+
+def _get_builders():
+    return _BUILDERS[0] or {}
 
 
 def _read_yaml(path):
@@ -177,7 +182,7 @@ def setup_services(target, profile):
             continue
 
         svc_type = svc.get('type', '')
-        builder = _BUILDER_MAP.get(svc_type)
+        builder = _get_builders().get(svc_type)
         if not builder:
             print('⚠ No builder for service type %s (%s) — skipping' % (svc_type, svc_name))
             continue
