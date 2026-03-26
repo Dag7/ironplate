@@ -6,21 +6,6 @@
 # main Tiltfile never needs editing when services are added.
 # =============================================================================
 
-_BUILDERS = [None]
-
-def register_builders(builders):
-    """
-    Register service type → builder function mapping.
-
-    Args:
-        builders: dict of { 'node-api': node_service_fn, 'go-api': go_service_fn, ... }
-    """
-    # Starlark freezes top-level dicts after load(), but list elements
-    # can be replaced. Store builders as a list element to work around this.
-    _BUILDERS[0] = builders
-
-def _get_builders():
-    return _BUILDERS[0] or {}
 
 
 def _read_yaml(path):
@@ -165,12 +150,14 @@ def resolve_profile(cli_profile=''):
 # Service Setup
 # ---------------------------------------------------------------------------
 
-def setup_services(target, profile):
+def setup_services(target, profile, builders):
     """
-    Setup all services for the active profile using registered builders.
+    Setup all services for the active profile using the given builders.
 
-    Each service's 'type' field maps to a builder registered via register_builders().
-    Services in the same group share a single umbrella Helm chart.
+    Args:
+        target:   build target ('development' / 'production')
+        profile:  resolved profile struct
+        builders: dict of { 'node-api': builder_fn, 'go-api': builder_fn, ... }
     """
     all_services = profile.registry.get('services', {})
     groups_setup = {}
@@ -182,7 +169,7 @@ def setup_services(target, profile):
             continue
 
         svc_type = svc.get('type', '')
-        builder = _get_builders().get(svc_type)
+        builder = builders.get(svc_type)
         if not builder:
             print('⚠ No builder for service type %s (%s) — skipping' % (svc_type, svc_name))
             continue

@@ -14,7 +14,6 @@
 {{ end }}{{ if .Computed.HasGo }}load('./utils/tilt/go.utils.tilt', 'go_service')
 {{ end }}load('./utils/tilt/dev.utils.tilt', 'get_dev_tool_deps'{{ if .Computed.HasGo }}, 'get_go_dev_tool_deps'{{ end }})
 load('./utils/tilt/registry.tilt',
-     'register_builders',
      'resolve_profile',
      'setup_services',
      'setup_infra',
@@ -34,12 +33,12 @@ print_profile_summary(profile)
 
 target = 'development'
 
-# --- Register service builders ---
-register_builders({
+# --- Service builders ---
+builders = {
 {{ if .Computed.HasNode }}    'node-api': node_service,
     'nextjs': client_node_service,
 {{ end }}{{ if .Computed.HasGo }}    'go-api': go_service,
-{{ end }}})
+{{ end }}}
 
 # --- Infrastructure (from registry) ---
 setup_infra(target, profile)
@@ -52,7 +51,7 @@ load('./utils/tilt/dev.utils.tilt', 'dev_resources')
 dev_resources()
 
 # --- Services (from registry) ---
-setup_services(target, profile)
+setup_services(target, profile, builders)
 
 # --- Apply profile resource filter ---
 enabled = get_enabled_resources(profile)
