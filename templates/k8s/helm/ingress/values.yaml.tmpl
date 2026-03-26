@@ -1,0 +1,110 @@
+global:
+  environment: development
+  namespace: {{ .Project.Metadata.Name }}
+  domain: localhost
+  tlsSecretName: ""
+
+defaults:
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+
+middlewares:
+  enabled: true
+  rateLimit:
+    average: 100
+    burst: 200
+    period: "1s"
+  securityHeaders:
+    csp: "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' ws: wss: http: https:;"
+  cors:
+    allowedOrigins:
+      - "*"
+  ipAllowlist:
+    enabled: false
+    sourceRanges: []
+
+middlewarePresets:
+  default: []
+  api: []
+  auth: []
+  websocket: []
+
+backendConfig:
+  enabled: false
+
+ingresses: {}
+
+infraIngresses:{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}
+  hasura:
+    enabled: true
+    host: hasura.localhost
+    namespace: {{ .Project.Metadata.Name }}
+    iapProtected: false
+    routes:
+      - path: /
+        service: hasura
+        port: 8080{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "observability" }}
+  grafana:
+    enabled: true
+    host: grafana.localhost
+    namespace: monitoring
+    iapProtected: false
+    routes:
+      - path: /
+        service: observability-stack-grafana
+        port: 80
+  prometheus:
+    enabled: true
+    host: prometheus.localhost
+    namespace: monitoring
+    iapProtected: false
+    routes:
+      - path: /
+        service: observability-stack-kube-p-prometheus
+        port: 9090{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "redis" }}
+  redis:
+    enabled: true
+    host: redis.localhost
+    namespace: {{ .Project.Metadata.Name }}
+    iapProtected: false
+    routes:
+      - path: /
+        service: redisinsight-service
+        port: 80{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "kafka" }}
+  kafka:
+    enabled: true
+    host: kafka.localhost
+    namespace: kafka
+    iapProtected: false
+    routes:
+      - path: /
+        service: kafka-ui
+        port: 8080{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "langfuse" }}
+  langfuse:
+    enabled: true
+    host: langfuse.localhost
+    namespace: {{ .Project.Metadata.Name }}
+    iapProtected: false
+    routes:
+      - path: /
+        service: langfuse
+        port: 80{{ end }}
+  traefik:
+    enabled: true
+    host: traefik.localhost
+    namespace: kube-system
+    iapProtected: false
+    routes:
+      - path: /
+        service: traefik-dashboard
+        port: 80
+  pgadmin:
+    enabled: true
+    host: pgadmin.localhost
+    namespace: {{ .Project.Metadata.Name }}
+    iapProtected: false
+    routes:
+      - path: /
+        service: pgadmin
+        port: 80

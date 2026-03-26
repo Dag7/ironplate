@@ -1,0 +1,52 @@
+# =============================================================================
+# {{ .Project.Metadata.Name }} - External Secrets Values
+# =============================================================================
+# Configuration for ExternalSecret and ClusterSecretStore resources.
+#
+# Usage:
+#   Override per-environment by providing environment-specific values files:
+#     helm upgrade --install external-secrets . -f values.yaml -f values.staging.yaml
+# =============================================================================
+
+# -- Project identity (injected by ironplate at scaffold time)
+projectName: {{ .Project.Metadata.Name }}
+
+# -- Cloud provider (injected by ironplate at scaffold time)
+provider: {{ .Project.Spec.Cloud.Provider }}
+
+eso:
+  version: v1beta1
+
+clusterSecretStore:
+  name: {{ .Project.Metadata.Name }}-secret-store
+  enabled: true
+
+providerConfig:
+{{- if eq .Project.Spec.Cloud.Provider "gcp" }}
+  gcpsm:
+    projectID: {{ .Project.Metadata.Name }}
+{{- else if eq .Project.Spec.Cloud.Provider "aws" }}
+  aws:
+    service: SecretsManager
+    region: {{ .Project.Spec.Cloud.Region }}
+{{- else if eq .Project.Spec.Cloud.Provider "azure" }}
+  azurekv:
+    vaultUrl: https://{{ .Project.Metadata.Name }}.vault.azure.net
+{{- end }}
+
+namespace: {{ .Project.Metadata.Name }}
+
+secrets: {}
+# secrets:
+#   db-credentials:
+#     remoteRef:
+#       key: database-credentials
+#     data:
+#       - secretKey: DB_HOST
+#         remoteRef:
+#           key: database-credentials
+#           property: host
+#       - secretKey: DB_PASSWORD
+#         remoteRef:
+#           key: database-credentials
+#           property: password

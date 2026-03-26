@@ -1,0 +1,105 @@
+# Set Up Distributed Tracing
+
+## Arguments
+- `service`: Service name to trace
+
+## Architecture
+
+```
+Request → OpenTelemetry auto-instrumentation → spans
+  ├── HTTP client spans (outbound calls)
+  ├── Express route spans
+  └── Custom spans (withSpan)
+           ↓
+      OTLP exporter → Tempo/Jaeger collector
+```
+
+## Steps
+
+### 1. Add Dependencies
+- Add `@ironplate/tracing` to `apps/{service}/package.json`
+- Run `{{ .Project.Spec.Monorepo.PackageManager }} install`
+
+### 2. Initialize Tracing (MUST be first import)
+
+**IMPORTANT**: Tracing must be initialized BEFORE importing Express or any HTTP libraries.
+
+Create `apps/{service}/src/instrumentation.ts`:
+
+```typescript
+import { initTracing } from '@ironplate/tracing';
+
+initTracing({
+  serviceName: '{service}',
+  serviceVersion: process.env.SERVICE_VERSION ?? '0.0.0',
+  endpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
+  sampleRate: process.env.NODE_ENV === 'production' ? 0.1 : 1.0,
+});
+```
+
+Update `apps/{service}/src/index.ts`:
+
+```typescript
+// MUST be the very first import
+import './instrumentation';
+
+// Then everything else
+import { createService } from '@ironplate/service';
+// ...
+```
+
+### 3. Add Custom Spans
+
+```typescript
+import { withSpan, setSpanAttribute } from '@ironplate/tracing';
+
+async function processOrder(orderId: string) {
+  return withSpan('processOrder', async (span) => {
+    span.setAttribute('order.id', orderId);
+
+    const order = await withSpan('fetchOrder', async () => {
+      return db.order.findById(orderId);
+    });
+
+    await withSpan('validatePayment', async (paymentSpan) => {
+      paymentSpan.setAttribute('payment.method', order.paymentMethod);
+      return paymentService.validate(order);
+    });
+
+    return order;
+  });
+}
+```
+
+### 4. Add to Active Span
+
+```typescript
+import { setSpanAttribute, getActiveSpan } from '@ironplate/tracing';
+
+// Add attributes to the current span from anywhere
+setSpanAttribute('user.id', userId);
+setSpanAttribute('feature.flags', 'beta-ui');
+```
+
+### 5. Add Environment Variables
+```yaml
+env:
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://tempo.observability.svc.cluster.local:4318"
+  OTEL_SERVICE_NAME: "{service}"
+```
+
+## CRITICAL Rules
+- `initTracing()` MUST be called before importing Express, HTTP, or any instrumented library
+- Create a separate `instrumentation.ts` file and import it first in `index.ts`
+- Use `sampleRate: 0.1` in production (10% sampling) to control costs
+- NEVER create spans for health checks — they add noise
+- ALWAYS include service-relevant attributes on spans (order.id, user.id, etc.)
+- The library auto-instruments Express routes and HTTP client calls
+
+## Checklist
+- [ ] `@ironplate/tracing` dependency added
+- [ ] `instrumentation.ts` created and imported FIRST
+- [ ] Custom spans added for key operations
+- [ ] OTEL endpoint configured in Helm values
+- [ ] Sample rate configured for production
+- [ ] Traces visible in Tempo/Jaeger

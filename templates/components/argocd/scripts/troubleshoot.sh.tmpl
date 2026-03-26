@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# =============================================================================
+# ArgoCD Troubleshooting Script - {{ .Project.Metadata.Name }}
+# =============================================================================
+# Usage:
+#   ./troubleshoot.sh <command> [app-name]
+#
+# Commands:
+#   status <app>       Show detailed application status
+#   unstick <app>      Clear stuck operations
+#   force-sync <app>   Force sync with prune
+#   logs <app>         Show failing pod logs
+#   diff <app>         Show sync diff
+#   restart-pods <app> Restart workloads for an application
+#   repo-refresh       Clear ArgoCD repo cache
+#   list-stuck         Show all stuck/degraded apps
+#   health-check       System health overview
+# =============================================================================
+
+set -euo pipefail
+
+NAMESPACE="{{ .Project.Metadata.Name }}"
+ARGOCD_NS="argocd"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log_info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
+
+cmd_status() {
+  local app="$1"
+  log_info "Application: $app"
+  echo "---"
+  argocd app get "$app" --grpc-web 2>/dev/null || kubectl get application "$app" -n "$ARGOCD_NS" -o yaml
+  echo ""
+  log_info "Sync status:"
+  kubectl get application "$app" -n "$ARGOCD_NS" -o jsonpath='{.status.sync.status}' 2>/dev/null
+  echo ""
+  log_info "Health status:"
+  kubectl get application "$app" -n "$ARGOCD_NS" -o jsonpath='{.status.health.status}' 2>/dev/null
+  echo ""
+  log_info "Conditions:"
+  kubectl get application "$app" -n "$ARGOCD_NS" -o jsonpath='{range .status.conditions[*]}{.type}: {.message}{"\n"}{end}' 2>/dev/null
+  echo ""
+}
+
+cmd_unstick() {
+  local app="$1"
+  log_warn "Clearing stuck operation for: $app"
+  kubectl patch application "$app" -n "$ARGOCD_NS" \
+    --type merge -p '{"status":{"operationState":null}}' || true
+  kubectl patch application "$app" -n "$ARGOCD_NS" \
+    --type merge -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}' || true
+  log_info "Operation cleared. Check status with: $0 status $app"
+}
+
+cmd_force_sync() {
+  local app="$1"
+  log_warn "Force-syncing: $app"
+  argocd app sync "$app" --force --prune --grpc-web 2>/dev/null || \
+    kubectl patch application "$app" -n "$ARGOCD_NS" \
+      --type merge -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}'
+  log_info "Sync triggered for: $app"
+}
+
+cmd_logs() {
+  local app="$1"
+  log_info "Finding failing pods for: $app"
+  local label
+  label=$(kubectl get application "$app" -n "$ARGOCD_NS" \
+    -o jsonpath='{.spec.destination.namespace}' 2>/dev/null)
+  if [[ -z "$label" ]]; then
+    label="$NAMESPACE"
+  fi
+  echo ""
+  log_info "Pods in namespace $label with issues:"
+  kubectl get pods -n "$label" --field-selector=status.phase!=Running,status.phase!=Succeeded 2>/dev/null || true
+  echo ""
+  log_info "Recent events:"
+  kubectl get events -n "$label" --sort-by='.lastTimestamp' | tail -20
+}
+
+cmd_diff() {
+  local app="$1"
+  log_info "Diff for: $app"
+  argocd app diff "$app" --grpc-web 2>/dev/null || \
+    log_warn "argocd CLI not available; use the ArgoCD UI to view diffs"
+}
+
+cmd_restart_pods() {
+  local app="$1"
+  log_warn "Restarting workloads for: $app"
+  local ns
+  ns=$(kubectl get application "$app" -n "$ARGOCD_NS" \
+    -o jsonpath='{.spec.destination.namespace}' 2>/dev/null)
+  if [[ -z "$ns" ]]; then
+    ns="$NAMESPACE"
+  fi
+  kubectl rollout restart deployment -n "$ns" -l "app.kubernetes.io/part-of={{ .Project.Metadata.Name }}" 2>/dev/null || true
+  log_info "Rollout restart triggered in namespace: $ns"
+}
+
+cmd_repo_refresh() {
+  log_info "Refreshing ArgoCD repo cache"
+  kubectl delete pods -n "$ARGOCD_NS" -l app.kubernetes.io/component=repo-server
+  log_info "Repo server restarted. Cache will rebuild on next sync."
+}
+
+cmd_list_stuck() {
+  log_info "Applications with issues:"
+  echo ""
+  echo "=== OutOfSync ==="
+  kubectl get applications -n "$ARGOCD_NS" \
+    -o jsonpath='{range .items[?(@.status.sync.status!="Synced")]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' 2>/dev/null
+  echo ""
+  echo "=== Degraded/Missing ==="
+  kubectl get applications -n "$ARGOCD_NS" \
+    -o jsonpath='{range .items[?(@.status.health.status!="Healthy")]}{.metadata.name}{"\t"}{.status.sync.status}{"\t"}{.status.health.status}{"\n"}{end}' 2>/dev/null
+  echo ""
+  echo "=== Stuck Operations ==="
+  kubectl get applications -n "$ARGOCD_NS" \
+    -o jsonpath='{range .items[?(@.status.operationState.phase=="Running")]}{.metadata.name}{"\t"}{.status.operationState.phase}{"\n"}{end}' 2>/dev/null
+}
+
+cmd_health_check() {
+  log_info "ArgoCD System Health"
+  echo ""
+  echo "=== ArgoCD Pods ==="
+  kubectl get pods -n "$ARGOCD_NS" -o wide
+  echo ""
+  echo "=== Application Summary ==="
+  local total synced healthy
+  total=$(kubectl get applications -n "$ARGOCD_NS" -o json | jq '.items | length')
+  synced=$(kubectl get applications -n "$ARGOCD_NS" -o json | jq '[.items[] | select(.status.sync.status=="Synced")] | length')
+  healthy=$(kubectl get applications -n "$ARGOCD_NS" -o json | jq '[.items[] | select(.status.health.status=="Healthy")] | length')
+  echo "Total:   $total"
+  echo "Synced:  $synced/$total"
+  echo "Healthy: $healthy/$total"
+  echo ""
+  if [[ "$synced" != "$total" ]] || [[ "$healthy" != "$total" ]]; then
+    log_warn "Some applications have issues. Run: $0 list-stuck"
+  else
+    log_info "All applications are synced and healthy."
+  fi
+}
+
+# --- Main ---
+COMMAND="${1:-help}"
+APP="${2:-}"
+
+case "$COMMAND" in
+  status)       [[ -n "$APP" ]] && cmd_status "$APP"       || log_error "Usage: $0 status <app>" ;;
+  unstick)      [[ -n "$APP" ]] && cmd_unstick "$APP"      || log_error "Usage: $0 unstick <app>" ;;
+  force-sync)   [[ -n "$APP" ]] && cmd_force_sync "$APP"   || log_error "Usage: $0 force-sync <app>" ;;
+  logs)         [[ -n "$APP" ]] && cmd_logs "$APP"          || log_error "Usage: $0 logs <app>" ;;
+  diff)         [[ -n "$APP" ]] && cmd_diff "$APP"          || log_error "Usage: $0 diff <app>" ;;
+  restart-pods) [[ -n "$APP" ]] && cmd_restart_pods "$APP"  || log_error "Usage: $0 restart-pods <app>" ;;
+  repo-refresh) cmd_repo_refresh ;;
+  list-stuck)   cmd_list_stuck ;;
+  health-check) cmd_health_check ;;
+  *)
+    echo "Usage: $0 <command> [app-name]"
+    echo ""
+    echo "Commands:"
+    echo "  status <app>       Show detailed application status"
+    echo "  unstick <app>      Clear stuck operations"
+    echo "  force-sync <app>   Force sync with prune"
+    echo "  logs <app>         Show failing pod logs"
+    echo "  diff <app>         Show sync diff"
+    echo "  restart-pods <app> Restart workloads"
+    echo "  repo-refresh       Clear ArgoCD repo cache"
+    echo "  list-stuck         Show all stuck/degraded apps"
+    echo "  health-check       System health overview"
+    ;;
+esac

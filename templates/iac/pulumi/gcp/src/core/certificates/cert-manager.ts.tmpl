@@ -1,0 +1,35 @@
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import { projectId, stackName } from "../../config/loader";
+import { EnvironmentConfig } from "../../config/types";
+
+export interface CertificateOutputs {
+  /** GCP-managed SSL certificate */
+  certificate: gcp.compute.ManagedSslCertificate;
+}
+
+/**
+ * Creates a GCP-managed SSL certificate for the {{ .Project.Metadata.Name }}
+ * project domain.
+ *
+ * GCP automatically provisions and renews the certificate via
+ * domain validation.
+ */
+export function createCertificates(
+  envConfig: EnvironmentConfig,
+  dependsOn: pulumi.Resource[] = [],
+): CertificateOutputs {
+  const certificate = new gcp.compute.ManagedSslCertificate("ssl-cert", {
+    name: `{{ .Project.Metadata.Name }}-${stackName}-cert`,
+    project: projectId,
+    description: `Managed SSL certificate for {{ .Project.Metadata.Name }} (${stackName})`,
+    managed: {
+      domains: [
+        envConfig.domain,
+        `*.${envConfig.domain}`,
+      ],
+    },
+  }, { dependsOn });
+
+  return { certificate };
+}

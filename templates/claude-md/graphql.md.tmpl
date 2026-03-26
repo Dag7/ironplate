@@ -1,0 +1,49 @@
+## GraphQL / Hasura
+
+### Architecture
+- Hasura provides auto-generated GraphQL API from PostgreSQL schema
+- Services use the Hasura SDK client (not raw HTTP) for type-safe queries
+- Schema changes are managed via Hasura migrations + metadata
+
+### SDK Usage (Node.js)
+```typescript
+import { createHasuraClient } from '{{ .Computed.PrimaryScope }}/hasura-sdk';
+
+const client = createHasuraClient({
+  url: config.HASURA_GRAPHQL_URL,
+  adminSecret: config.HASURA_ADMIN_SECRET,
+});
+
+// Always use the SDK — never construct raw GraphQL strings
+const result = await client.query.getUsers({ where: { active: { _eq: true } } });
+```
+
+### Migrations
+- Location: `hasura/migrations/default/`
+- Create new: `hasura migrate create <name> --database-name default`
+- Apply: `hasura migrate apply --database-name default`
+- **NEVER** modify existing applied migrations — always create new ones
+
+### Metadata
+- Location: `hasura/metadata/`
+- Track tables, relationships, permissions, event triggers
+- Export: `hasura metadata export`
+- Apply: `hasura metadata apply`
+
+### Event Triggers
+{{ if .Computed.HasKafka }}- Hasura event triggers relay database changes to Kafka topics
+- Topic naming: `{{ .Project.Metadata.Name }}.hasura.<table>.<operation>`
+- Operations: INSERT, UPDATE, DELETE{{ else }}- Hasura event triggers deliver via webhooks to service endpoints
+- Endpoint pattern: `http://<service>.<namespace>.svc.cluster.local/webhooks/hasura/<table>`{{ end }}
+
+### Codegen
+- Services using Hasura run GraphQL codegen: `{{ .Project.Spec.Monorepo.PackageManager }} nx codegen <service>`
+- Generated types go to `src/generated/graphql.ts`
+- **NEVER** edit generated files — modify `.graphql` files and re-run codegen
+
+### Critical Rules
+1. Always use the SDK client, never raw `fetch` to Hasura
+2. Partial updates must use `_set` operator — never overwrite entire rows
+3. Always add `where` clauses to mutations — never update/delete without conditions
+4. Permission rules must be set in metadata for every new table
+5. Use Hasura actions for complex business logic that can't be expressed in GraphQL

@@ -1,0 +1,39 @@
+# =============================================================================
+# {{ .Service.Group | title }} Services - Production Values
+# =============================================================================
+
+global:
+  environment: production
+  namespace: {{ .Project.Metadata.Name }}
+  domain: {{ .Project.Metadata.Domain }}
+  tlsSecretName: {{ .Project.Metadata.Name }}-production-tls
+  image:
+    pullPolicy: IfNotPresent
+    registry: {{ .Project.Spec.CICD.Registry.URL }}/{{ .Project.Metadata.Name }}
+    tag: v0.0.0
+  commonEnv:
+    LOG_LEVEL: warn
+
+defaults:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 75
+  pdb:
+    enabled: true
+    minAvailable: 1
+
+services:
+  {{ .Service.Name }}:
+    replicas: 2
+    env:
+      LOG_LEVEL: warn

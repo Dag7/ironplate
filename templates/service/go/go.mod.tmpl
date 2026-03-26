@@ -1,0 +1,9 @@
+module {{ .GoModule }}/{{ .Service.SrcFolder }}/{{ .Service.Name }}
+
+go {{ .Project.Spec.Monorepo.GoVersion }}
+
+require (
+	github.com/ironplate-dev/ironplate/packages/go/envconfig v0.1.0
+	github.com/ironplate-dev/ironplate/packages/go/graceful v0.1.0
+	github.com/ironplate-dev/ironplate/packages/go/health v0.1.0
+)

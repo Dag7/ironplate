@@ -1,0 +1,78 @@
+version: 2
+
+project_name: iron
+
+builds:
+  - id: iron
+    main: ./cmd/iron
+    binary: iron
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/ironplate-dev/ironplate/internal/version.Version={{.Version}}
+      - -X github.com/ironplate-dev/ironplate/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/ironplate-dev/ironplate/internal/version.Date={{.Date}}
+
+archives:
+  - id: default
+    name_template: "iron_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+
+brews:
+  - repository:
+      owner: ironplate-dev
+      name: homebrew-tap
+    homepage: "https://github.com/ironplate-dev/ironplate"
+    description: "Scaffold production-grade Kubernetes development environments"
+    license: "Apache-2.0"
+    install: |
+      bin.install "iron"
+    test: |
+      system "#{bin}/iron", "version"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore\\(deps\\):"
+  groups:
+    - title: Features
+      regexp: "^feat"
+    - title: Bug Fixes
+      regexp: "^fix"
+    - title: Performance
+      regexp: "^perf"
+    - title: Maintenance
+      regexp: "^chore|^refactor"
+
+release:
+  github:
+    owner: ironplate-dev
+    name: ironplate
+  prerelease: auto
+  header: |
+    ## What's Changed
+
+    Install or upgrade:
+    ```bash
+    brew install ironplate-dev/tap/iron
+    # or
+    go install github.com/ironplate-dev/ironplate/cmd/iron@{{ .Tag }}
+    ```

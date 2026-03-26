@@ -1,0 +1,36 @@
+package server
+
+import (
+	"net/http"
+
+	"github.com/ironplate-dev/ironplate/packages/go/health"
+
+	"{{ .GoModule }}/{{ .Service.SrcFolder }}/{{ .Service.Name }}/internal/config"
+)
+
+// Server holds the HTTP server dependencies.
+type Server struct {
+	cfg    *config.Config
+	health *health.Handler
+}
+
+// New creates a new Server.
+func New(cfg *config.Config) *Server {
+	return &Server{
+		cfg:    cfg,
+		health: health.NewHandler("{{ .Service.Name }}"),
+	}
+}
+
+// Router returns the HTTP handler with all routes registered.
+func (s *Server) Router() http.Handler {
+	mux := http.NewServeMux()
+
+	// Health probes
+	s.health.RegisterRoutes(mux)
+
+	// Application routes
+	// mux.HandleFunc("GET /api/...", s.handleExample)
+
+	return mux
+}

@@ -1,0 +1,23 @@
+# =============================================================================
+# {{ .Project.Metadata.Name }} - ArgoCD Apps: Staging Overrides
+# =============================================================================
+# Staging uses SHA-based image tags with newest-build strategy.
+# ArgoCD Image Updater automatically deploys every new build.
+# =============================================================================
+
+global:
+  environment: staging
+  namespace: {{ .Project.Metadata.Name }}
+  repoURL: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+  gitBranch: staging
+  valuesFile: values-staging.yaml
+  project: {{ .Project.Metadata.Name }}-staging
+  defaultImageTag: sha-0000000
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}
+  # GCP Artifact Registry
+  region: {{ .Project.Spec.Cloud.Region }}
+{{ end }}
+  imageUpdater:
+    enabled: {{ .Project.Spec.GitOps.ImageUpdater }}
+    updateStrategy: newest-build
+    allowTags: "regexp:^sha-[a-f0-9]{7}$"

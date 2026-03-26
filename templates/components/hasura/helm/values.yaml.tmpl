@@ -1,0 +1,90 @@
+# =============================================================================
+# Hasura GraphQL Engine - Values
+# =============================================================================
+# Configuration for the Hasura GraphQL Engine component.
+# Connects to PostgreSQL and exposes a GraphQL API.
+# =============================================================================
+
+# -- Project-level metadata (injected by Ironplate at scaffold time)
+projectName: {{ .Project.Metadata.Name }}
+
+image:
+  repository: hasura/graphql-engine
+  tag: "v2.40.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 8080
+
+# -- Hasura admin secret pulled from a Kubernetes secret
+adminSecret:
+  secretName: hasura-admin-secret
+  secretKey: HASURA_GRAPHQL_ADMIN_SECRET
+
+# -- Database connection URL pulled from a Kubernetes secret
+database:
+  secretName: hasura-database-credentials
+  secretKey: DATABASE_URL
+
+# -- Console & development settings (suitable for local dev)
+console:
+  enabled: true
+
+devMode:
+  enabled: true
+
+cors:
+  domain: "*"
+
+# -- Feature flags (injected by Ironplate at scaffold time)
+kafka:
+  enabled: {{ .Computed.HasKafka }}
+
+observability:
+  enabled: {{ .Computed.HasObservability }}
+
+# -- Event triggers configuration
+eventTriggers:
+  enabled: {{ .Computed.HasKafka }}
+  kafka:
+    bootstrapServers: "kafka:9092"
+
+# -- Observability / OpenTelemetry
+otlp:
+  endpoint: "http://otel-collector:4318"
+
+# -- Resource limits suitable for local development
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+# -- Ingress for Hasura console access
+ingress:
+  enabled: false
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+  host: "hasura.{{ .Project.Metadata.Domain }}"
+  tlsSecretName: "{{ .Project.Metadata.Name }}-tls"
+
+# -- Health check configuration
+healthCheck:
+  path: /healthz
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 5
+
+# -- Pod-level settings
+namespace: {{ .Project.Metadata.Name }}
+labels:
+  app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+  app.kubernetes.io/managed-by: helm

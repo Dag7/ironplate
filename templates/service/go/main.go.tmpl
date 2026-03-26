@@ -1,0 +1,31 @@
+package main
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/ironplate-dev/ironplate/packages/go/graceful"
+
+	"{{ .GoModule }}/{{ .Service.SrcFolder }}/{{ .Service.Name }}/internal/config"
+	"{{ .GoModule }}/{{ .Service.SrcFolder }}/{{ .Service.Name }}/internal/server"
+)
+
+func main() {
+	cfg := config.Load()
+
+	srv := server.New(cfg)
+
+	httpServer := &http.Server{
+		Addr:         fmt.Sprintf(":%d", cfg.Port),
+		Handler:      srv.Router(),
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	if err := graceful.ListenAndServe(httpServer, nil); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
+}

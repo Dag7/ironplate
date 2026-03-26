@@ -1,0 +1,37 @@
+load('./dict.tilt', 'dict_union')
+
+# =============================================================================
+# Go Service Builder
+# =============================================================================
+
+def go_service(name, target, build_args={}):
+    """
+    Build a Go service.
+
+    Args:
+        name: Service name (e.g., 'scheduler-service')
+        target: Docker build target ('debug' or 'production')
+        build_args: Additional build arguments
+    """
+    # GOARCH: Local dev on Apple Silicon needs arm64, CI/GKE use amd64 (Dockerfile default)
+    mergedArgs = dict_union({
+        'BUILDKIT_INLINE_CACHE': '1',
+        'TARGET_NAME': name,
+        'TARGET_SRC_FOLDER': 'apps',
+        'GOARCH': 'arm64',
+    }, build_args)
+
+    targetFolder = mergedArgs.get('TARGET_SRC_FOLDER')
+    contextOnly = ['./%s/%s' % (targetFolder, name), './packages/go']
+
+    if mergedArgs.get("PRIVATE_REPO_NETRC_PATH") != None:
+        contextOnly.append(mergedArgs.get("PRIVATE_REPO_NETRC_PATH"))
+
+    return docker_build(
+        '{{ .Project.Metadata.Name }}/%s' % name,
+        context='.',
+        only=contextOnly,
+        target=target,
+        dockerfile='dockerfiles/go.Dockerfile',
+        build_args=mergedArgs,
+    )

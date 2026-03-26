@@ -1,0 +1,187 @@
+load('./dict.tilt', 'dict_union')
+load('./packages.tilt', 'get_service_packages', 'print_service_packages')
+
+# =============================================================================
+# Development Live Update Configuration
+# =============================================================================
+
+def development_configs(name, src_folder):
+    """Configure live update for hot reload during development."""
+    # Get only packages this service uses (direct + transitive dependencies)
+    used_packages = get_service_packages(name, src_folder)
+    print_service_packages(name, used_packages)
+
+    live_update = [
+        # Sync app source files - fast hot reload via nodemon
+        sync('{src_folder}/{name}'.format(src_folder=src_folder, name=name),
+             '/app/{src_folder}/{name}'.format(src_folder=src_folder, name=name)),
+    ]
+
+    # Selective package sync - only sync packages this service actually uses
+    for pkg in used_packages:
+        live_update.append(
+            sync('packages/node/{}'.format(pkg), '/app/packages/node/{}'.format(pkg))
+        )
+
+    # Sync scripts (includes nodemon-runner) and dependency files
+    live_update.extend([
+        sync('scripts', '/app/scripts'),
+        sync('package.json', '/app/package.json'),
+{{ if eq .Project.Spec.Monorepo.PackageManager "yarn" }}        sync('.yarnrc.yml', '/app/.yarnrc.yml'),
+        sync('.yarn', '/app/.yarn'),
+        sync('yarn.lock', '/app/yarn.lock'),
+{{ else }}        sync('pnpm-lock.yaml', '/app/pnpm-lock.yaml'),
+{{ end }}        sync('nx.json', '/app/nx.json'),
+        sync("tsconfig.json", "/app/tsconfig.json"),
+        sync("tsconfig.app.json", "/app/tsconfig.app.json"),
+        sync("tsconfig.base.json", "/app/tsconfig.base.json"),
+        sync("tsconfig.spec.json", "/app/tsconfig.spec.json"),
+    ])
+
+    ignore = [
+        '{src_folder}/{name}/dist'.format(src_folder=src_folder, name=name),
+        '.dockerignore',
+        'README.md',
+        '**/node_modules',
+        '{src_folder}/{name}/**/dist'.format(src_folder=src_folder, name=name),
+        '**/.dockerignore',
+        '**/nodemon.json',
+        '.nx/workspace-data',
+        '.nx/cache',
+        '.nx/installation',
+        '**/*.timestamp-*',
+        '**/vitest.config.ts.timestamp-*',
+    ]
+    return live_update, ignore
+
+
+def only(name, src_folder):
+    """Filter Docker build context to only include files this service needs."""
+    used_packages = get_service_packages(name, src_folder)
+
+    paths = [
+        '{src_folder}/{name}'.format(src_folder=src_folder, name=name),
+        "package.json",
+{{ if eq .Project.Spec.Monorepo.PackageManager "yarn" }}        "yarn.lock",
+        ".yarn",
+        ".yarnrc.yml",
+{{ else }}        "pnpm-lock.yaml",
+{{ end }}        "tsconfig.json",
+        "tsconfig.app.json",
+        "tsconfig.base.json",
+        "tsconfig.spec.json",
+        "scripts",
+        "nx.json",
+    ]
+
+    for pkg in used_packages:
+        paths.append('packages/node/{}'.format(pkg))
+
+    return paths
+
+
+def only_ui(name, src_folder):
+    """Filter Docker build context for UI apps."""
+    used_packages = get_service_packages(name, src_folder)
+
+    paths = [
+        '{src_folder}/{name}'.format(src_folder=src_folder, name=name),
+        "package.json",
+{{ if eq .Project.Spec.Monorepo.PackageManager "yarn" }}        "yarn.lock",
+        ".yarn",
+        ".yarnrc.yml",
+{{ else }}        "pnpm-lock.yaml",
+{{ end }}        "tsconfig.json",
+        "tsconfig.base.json",
+        "nx.json",
+    ]
+
+    for pkg in used_packages:
+        paths.append('packages/node/{}'.format(pkg))
+
+    return paths
+
+
+# =============================================================================
+# Node Service (Backend services with Express/Fastify)
+# =============================================================================
+
+def node_service(
+    name,
+    target,
+    context='.',
+    dockerfile='dockerfiles/node.Dockerfile',
+    node_version='node:{{ .Project.Spec.Monorepo.NodeVersion }}-alpine',
+    src_folder='apps',
+    build_args={},
+):
+    """Build a Node.js backend service."""
+    common_build_args = {
+        'BUILDKIT_INLINE_CACHE': '1',
+        'TARGET_NAME': name,
+        'TARGET_SRC': src_folder,
+        'NODE_VERSION': node_version,
+        'WORKSPACE_NAME': '{{ .Computed.PrimaryScope }}/{name}'.format(name=name),
+    }
+
+    merged_build_args = dict_union(common_build_args, build_args)
+
+    live_update = []
+    ignore = []
+    if target == 'development':
+        live_update, ignore = development_configs(name, src_folder)
+
+    return docker_build(
+        "{{ .Project.Metadata.Name }}/{name}".format(name=name),
+        context=context,
+        dockerfile=dockerfile,
+        target=target,
+        build_args=merged_build_args,
+        live_update=live_update,
+        only=only(name, src_folder),
+        ignore=ignore,
+    )
+
+
+# =============================================================================
+# Client Node Service (UI apps with Next.js)
+# =============================================================================
+
+def client_node_service(
+    name,
+    target,
+    context='.',
+    dockerfile='dockerfiles/nextjs.node.Dockerfile',
+    node_version='node:{{ .Project.Spec.Monorepo.NodeVersion }}-alpine',
+    src_folder='apps',
+    workspace_name=None,
+    build_args={},
+):
+    """Build a Next.js UI application with runtime environment support."""
+    ws_name = workspace_name or '{{ .Computed.PrimaryScope }}/{name}'.format(name=name)
+
+    common_build_args = {
+        'BUILDKIT_INLINE_CACHE': '1',
+        'TARGET_NAME': name,
+        'TARGET_SRC': src_folder,
+        'NODE_VERSION': node_version,
+        'WORKSPACE_NAME': ws_name,
+    }
+
+    merged_build_args = dict_union(common_build_args, build_args)
+
+    live_update = []
+    ignore = []
+    if target == 'development':
+        live_update, ignore = development_configs(name, src_folder)
+
+    return docker_build(
+        "{{ .Project.Metadata.Name }}/{name}".format(name=name),
+        context=context,
+        dockerfile=dockerfile,
+        target=target,
+        build_args=merged_build_args,
+        live_update=live_update,
+        only=only_ui(name, src_folder),
+        ignore=ignore,
+    )

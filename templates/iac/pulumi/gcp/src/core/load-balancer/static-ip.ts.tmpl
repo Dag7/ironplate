@@ -1,0 +1,26 @@
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import { projectId, stackName } from "../../config/loader";
+
+export interface LoadBalancerOutputs {
+  /** Reserved global static IP address */
+  staticIp: gcp.compute.GlobalAddress;
+}
+
+/**
+ * Reserves a global static IP address for the {{ .Project.Metadata.Name }}
+ * project ingress load balancer.
+ */
+export function createLoadBalancer(
+  dependsOn: pulumi.Resource[] = [],
+): LoadBalancerOutputs {
+  const staticIp = new gcp.compute.GlobalAddress("ingress-ip", {
+    name: `{{ .Project.Metadata.Name }}-${stackName}-ingress-ip`,
+    project: projectId,
+    description: `Global static IP for {{ .Project.Metadata.Name }} ingress (${stackName})`,
+    addressType: "EXTERNAL",
+    ipVersion: "IPV4",
+  }, { dependsOn });
+
+  return { staticIp };
+}

@@ -1,0 +1,7 @@
+name: {{ .Project.Metadata.Name }}-infra
+runtime: nodejs
+description: Infrastructure for {{ .Project.Metadata.Name }}
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: gcp-typescript

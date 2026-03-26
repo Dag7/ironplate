@@ -1,0 +1,333 @@
+# =============================================================================
+# Reusable ArgoCD Deployment Workflow (Pure GitOps)
+# =============================================================================
+# Shared workflow for deploying to any environment via ArgoCD GitOps.
+#
+# Called by:
+#   - staging.yaml
+#   - production.yaml
+#
+# Deployment Flow:
+#   1. Apply ArgoCD Application manifests (ensures apps exist)
+#   2. Build images and push to container registry with correct tags
+{{ if .Computed.HasHasura }}#   3. Apply Hasura migrations (metadata, migrations, reload)
+{{ end }}#   4. ArgoCD Image Updater detects new images and syncs services
+# =============================================================================
+
+name: _Deploy via ArgoCD
+
+on:
+  workflow_call:
+    inputs:
+      # =======================================================================
+      # Environment Configuration
+      # =======================================================================
+      environment:
+        description: "Target environment (staging, production)"
+        required: true
+        type: string
+      branch:
+        description: "Git branch to deploy from"
+        required: true
+        type: string
+      image_tag:
+        description: "Image tag to use (e.g., sha-abc1234, v1.0.0)"
+        required: false
+        type: string
+        default: ""
+
+      # =======================================================================
+      # Build Configuration
+      # =======================================================================
+      service:
+        description: "Services to deploy (space-separated, empty for auto-detect)"
+        required: false
+        type: string
+        default: ""
+      force_build_all:
+        description: "Force build all services"
+        required: false
+        type: boolean
+        default: false
+
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}      # =======================================================================
+      # GCP Configuration
+      # =======================================================================
+      gcp_project_id:
+        description: "GCP Project ID"
+        required: true
+        type: string
+      gke_cluster:
+        description: "GKE Cluster name"
+        required: true
+        type: string
+      gke_zone:
+        description: "GKE Zone/Region"
+        required: true
+        type: string
+{{ end }}      namespace:
+        description: "Kubernetes namespace"
+        required: false
+        type: string
+        default: "{{ .Project.Metadata.Name }}"
+
+      # =======================================================================
+      # ArgoCD Configuration
+      # =======================================================================
+      argocd_url:
+        description: "ArgoCD URL for summary links"
+        required: false
+        type: string
+        default: ""
+      services_app_name:
+        description: "ArgoCD Services application name (for summary)"
+        required: false
+        type: string
+        default: ""
+{{ if .Computed.HasHasura }}
+      # =======================================================================
+      # Hasura Migrations Configuration
+      # =======================================================================
+      skip_hasura_migrations:
+        description: "Skip Hasura migrations (use for infra-only deploys)"
+        required: false
+        type: string
+        default: "false"
+      apply_seeds:
+        description: "Apply Hasura seeds after migrations"
+        required: false
+        type: string
+        default: "true"
+{{ end }}
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER:
+        required: true
+      GCP_SERVICE_ACCOUNT:
+        required: true
+{{ end }}
+    outputs:
+      image_tag:
+        description: "Image tag that was deployed"
+        value: ${{ "{{" }} jobs.build.outputs.image_tag {{ "}}" }}
+      built_services:
+        description: "List of services that were built"
+        value: ${{ "{{" }} jobs.build.outputs.built_services {{ "}}" }}
+
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}env:
+  REGISTRY: ${{ "{{" }} inputs.gke_zone {{ "}}" }}-docker.pkg.dev/${{ "{{" }} inputs.gcp_project_id {{ "}}" }}/{{ .Project.Metadata.Name }}
+{{ end }}
+jobs:
+  # ==========================================================================
+  # Apply ArgoCD Application Manifests
+  # ==========================================================================
+  # Ensures ArgoCD Applications exist. This is idempotent:
+  # - Creates new Applications if missing
+  # - Updates existing Applications if changed
+  # - Does nothing if unchanged
+  # ==========================================================================
+  apply-argocd-apps:
+    name: Apply ArgoCD Apps
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ "{{" }} inputs.branch {{ "}}" }}
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ "{{" }} secrets.GCP_WORKLOAD_IDENTITY_PROVIDER {{ "}}" }}
+          service_account: ${{ "{{" }} secrets.GCP_SERVICE_ACCOUNT {{ "}}" }}
+
+      - name: Setup GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ "{{" }} inputs.gke_cluster {{ "}}" }}
+          location: ${{ "{{" }} inputs.gke_zone {{ "}}" }}
+          project_id: ${{ "{{" }} inputs.gcp_project_id {{ "}}" }}
+{{ end }}
+      - name: Apply ArgoCD Application manifests
+        run: |
+          echo "Applying ArgoCD Application manifests for ${{ "{{" }} inputs.environment {{ "}}" }}..."
+
+          APP_DIR="k8s/argocd/apps/${{ "{{" }} inputs.environment {{ "}}" }}"
+
+          if [ ! -d "$APP_DIR" ]; then
+            echo "Directory $APP_DIR does not exist, skipping..."
+            exit 0
+          fi
+
+          YAML_COUNT=$(find "$APP_DIR" -name "*.yaml" -type f | wc -l)
+          echo "Found $YAML_COUNT YAML files in $APP_DIR"
+
+          if [ "$YAML_COUNT" -eq 0 ]; then
+            echo "No YAML files found, skipping..."
+            exit 0
+          fi
+
+          for file in "$APP_DIR"/*.yaml; do
+            echo "  Applying: $(basename $file)"
+            kubectl apply -f "$file"
+          done
+
+          echo ""
+          echo "ArgoCD Applications applied successfully"
+          echo ""
+          echo "Current Applications:"
+          kubectl get applications -n argocd -l "environment=${{ "{{" }} inputs.environment {{ "}}" }}" -o wide || true
+
+  # ==========================================================================
+  # Build & Push Images (runs in parallel with apply-argocd-apps)
+  # ==========================================================================
+  build:
+    name: Build Images
+    uses: ./.github/workflows/build.yaml
+    with:
+      environment: ${{ "{{" }} inputs.environment {{ "}}" }}
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}      gcp_project_id: ${{ "{{" }} inputs.gcp_project_id {{ "}}" }}
+      gke_zone: ${{ "{{" }} inputs.gke_zone {{ "}}" }}
+{{ end }}      image_tag: ${{ "{{" }} inputs.image_tag {{ "}}" }}
+      service: ${{ "{{" }} inputs.service {{ "}}" }}
+      force_build_all: ${{ "{{" }} inputs.force_build_all && 'true' || 'false' {{ "}}" }}
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ "{{" }} secrets.GCP_WORKLOAD_IDENTITY_PROVIDER {{ "}}" }}
+      GCP_SERVICE_ACCOUNT: ${{ "{{" }} secrets.GCP_SERVICE_ACCOUNT {{ "}}" }}
+{{ end }}
+{{ if .Computed.HasHasura }}  # ==========================================================================
+  # Hasura Migrations
+  # ==========================================================================
+  hasura-migrate:
+    name: Hasura Migrations
+    runs-on: ubuntu-latest
+    needs: [build, apply-argocd-apps]
+    if: ${{ "{{" }} inputs.skip_hasura_migrations != 'true' {{ "}}" }}
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      skipped: ${{ "{{" }} steps.check-hasura.outputs.skipped {{ "}}" }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ "{{" }} inputs.branch {{ "}}" }}
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}
+      - name: Setup GKE
+        uses: ./.github/actions/gke-setup
+        with:
+          gcp_project_id: ${{ "{{" }} inputs.gcp_project_id {{ "}}" }}
+          gke_cluster: ${{ "{{" }} inputs.gke_cluster {{ "}}" }}
+          gke_zone: ${{ "{{" }} inputs.gke_zone {{ "}}" }}
+          namespace: ${{ "{{" }} inputs.namespace {{ "}}" }}
+          workload_identity_provider: ${{ "{{" }} secrets.GCP_WORKLOAD_IDENTITY_PROVIDER {{ "}}" }}
+          service_account: ${{ "{{" }} secrets.GCP_SERVICE_ACCOUNT {{ "}}" }}
+{{ end }}
+      - name: Check if Hasura exists
+        id: check-hasura
+        run: |
+          echo "Checking if Hasura deployment exists..."
+
+          if ! kubectl get deployment hasura -n ${{ "{{" }} inputs.namespace {{ "}}" }} &>/dev/null; then
+            echo "Hasura deployment not found in namespace '${{ "{{" }} inputs.namespace {{ "}}" }}'"
+            echo "This is normal for first-time deployments."
+            echo "Skipping migrations - they will run on next deployment after Hasura is deployed."
+            echo "skipped=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Hasura deployment found"
+          echo "skipped=false" >> $GITHUB_OUTPUT
+
+      - name: Wait for Hasura to be ready
+        if: steps.check-hasura.outputs.skipped != 'true'
+        run: |
+          echo "Waiting for Hasura to be ready..."
+
+          for i in $(seq 1 30); do
+            if kubectl wait --for=condition=available deployment/hasura \
+                -n ${{ "{{" }} inputs.namespace {{ "}}" }} --timeout=10s 2>/dev/null; then
+              echo "Hasura is ready"
+              exit 0
+            fi
+            echo "  Attempt $i/30 - Hasura not ready yet, waiting 10s..."
+            sleep 10
+          done
+
+          echo "Hasura did not become ready in time"
+          exit 1
+
+      - name: Run Hasura migrations
+        if: steps.check-hasura.outputs.skipped != 'true'
+        uses: ./.github/actions/hasura-migrate
+        with:
+          environment: ${{ "{{" }} inputs.environment {{ "}}" }}
+          namespace: ${{ "{{" }} inputs.namespace {{ "}}" }}
+          apply_seeds: ${{ "{{" }} inputs.apply_seeds {{ "}}" }}
+{{ end }}
+  # ==========================================================================
+  # Summary
+  # ==========================================================================
+  summary:
+    name: Deployment Summary
+    runs-on: ubuntu-latest
+    needs: [build, apply-argocd-apps{{ if .Computed.HasHasura }}, hasura-migrate{{ end }}]
+    if: always()
+    steps:
+      - name: Generate Summary
+        env:
+          ENVIRONMENT: ${{ "{{" }} inputs.environment {{ "}}" }}
+          BRANCH: ${{ "{{" }} inputs.branch {{ "}}" }}
+          ARGOCD_URL: ${{ "{{" }} inputs.argocd_url {{ "}}" }}
+          SERVICES_APP: ${{ "{{" }} inputs.services_app_name {{ "}}" }}
+        run: |
+          echo "## ${{ "{{" }} inputs.environment {{ "}}" }} Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Environment** | ${ENVIRONMENT} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | ${BRANCH} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Tag** | \`${{ "{{" }} needs.build.outputs.image_tag {{ "}}" }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Job Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Apply ArgoCD Apps | ${{ "{{" }} needs.apply-argocd-apps.result {{ "}}" }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build Images | ${{ "{{" }} needs.build.result {{ "}}" }} |" >> $GITHUB_STEP_SUMMARY
+{{ if .Computed.HasHasura }}
+          HASURA_RESULT="${{ "{{" }} needs.hasura-migrate.result {{ "}}" }}"
+          HASURA_SKIPPED="${{ "{{" }} needs.hasura-migrate.outputs.skipped {{ "}}" }}"
+          if [ "$HASURA_RESULT" == "skipped" ]; then
+            echo "| Hasura Migrations | skipped (disabled via input) |" >> $GITHUB_STEP_SUMMARY
+          elif [ "$HASURA_SKIPPED" == "true" ]; then
+            echo "| Hasura Migrations | skipped (Hasura not deployed yet) |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Hasura Migrations | $HASURA_RESULT |" >> $GITHUB_STEP_SUMMARY
+          fi
+{{ end }}          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### GitOps Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Deployment flow:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Build images and push to container registry" >> $GITHUB_STEP_SUMMARY
+{{ if .Computed.HasHasura }}          echo "2. Apply Hasura metadata & migrations (this workflow)" >> $GITHUB_STEP_SUMMARY
+          echo "3. ArgoCD Image Updater detects new image tags" >> $GITHUB_STEP_SUMMARY
+          echo "4. ArgoCD syncs services with new images" >> $GITHUB_STEP_SUMMARY
+{{ else }}          echo "2. ArgoCD Image Updater detects new image tags" >> $GITHUB_STEP_SUMMARY
+          echo "3. ArgoCD syncs services with new images" >> $GITHUB_STEP_SUMMARY
+{{ end }}          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -n "${ARGOCD_URL}" ]; then
+            echo "### Links" >> $GITHUB_STEP_SUMMARY
+            echo "- [ArgoCD Dashboard](https://${ARGOCD_URL})" >> $GITHUB_STEP_SUMMARY
+            if [ -n "${SERVICES_APP}" ]; then
+              echo "- [Services Application](https://${ARGOCD_URL}/applications/${SERVICES_APP})" >> $GITHUB_STEP_SUMMARY
+            fi
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "**Pure GitOps**: CI builds images, ArgoCD Image Updater + ArgoCD handles deployment!" >> $GITHUB_STEP_SUMMARY

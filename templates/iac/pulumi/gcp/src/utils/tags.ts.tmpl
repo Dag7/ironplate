@@ -1,0 +1,43 @@
+/**
+ * Default GCP labels for {{ .Project.Metadata.Name }} infrastructure.
+ *
+ * Returns a standard set of labels applied to all GCP resources
+ * for cost tracking, ownership, and automation filtering.
+ */
+
+import * as pulumi from "@pulumi/pulumi";
+
+/**
+ * Returns the standard set of GCP labels to apply to all resources.
+ *
+ * Labels include:
+ * - `project`: The project identifier
+ * - `organization`: The owning organization
+ * - `managed-by`: Always "pulumi"
+ * - `environment`: Derived from the current Pulumi stack name
+ */
+export function defaultLabels(): Record<string, string> {
+  const env = pulumi.getStack();
+
+  return {
+    project: "{{ .Project.Metadata.Name }}",
+    organization: "{{ .Organization }}",
+    "managed-by": "pulumi",
+    environment: env,
+  };
+}
+
+/**
+ * Merges additional labels with the default label set.
+ *
+ * @param extra - Additional labels to include
+ * @returns Merged label set with defaults taking precedence for conflicts
+ */
+export function withLabels(
+  extra: Record<string, string>,
+): Record<string, string> {
+  return {
+    ...extra,
+    ...defaultLabels(),
+  };
+}

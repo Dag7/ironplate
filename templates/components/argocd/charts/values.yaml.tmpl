@@ -1,0 +1,96 @@
+# =============================================================================
+# {{ .Project.Metadata.Name }} - ArgoCD Apps Chart Values
+# =============================================================================
+# Common values for the app-of-apps Helm chart. Override per-environment by
+# providing environment-specific values files:
+#
+#   helm template . -f values.yaml -f values-staging.yaml
+#
+# To add a new service group:
+#   1. Add it to the serviceGroups section below
+#   2. Ensure the Helm chart exists at k8s/helm/{{ .Project.Metadata.Name }}/<chartPath>
+#   3. Commit and push — ArgoCD will create the Application automatically
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Project identity (injected by ironplate at scaffold time)
+# ---------------------------------------------------------------------------
+projectName: {{ .Project.Metadata.Name }}
+organization: {{ .Project.Metadata.Organization }}
+
+# ---------------------------------------------------------------------------
+# Global defaults (overridden per-environment in values-<env>.yaml)
+# ---------------------------------------------------------------------------
+global:
+  environment: staging
+  namespace: {{ .Project.Metadata.Name }}
+
+  # Git configuration
+  repoURL: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+  gitBranch: main
+  valuesFile: values-staging.yaml
+
+  # Cloud configuration
+  provider: {{ .Project.Spec.Cloud.Provider }}
+  region: {{ .Project.Spec.Cloud.Region }}
+{{- if eq .Project.Spec.Cloud.Provider "gcp" }}
+  project: {{ .Project.Metadata.Name }}-staging
+{{- end }}
+
+  # Default image tag (override per-environment)
+  defaultImageTag: ""
+
+  # Image Updater configuration
+  imageUpdater:
+    enabled: {{ .Project.Spec.GitOps.ImageUpdater }}
+    updateStrategy: semver
+    allowTags: 'regexp:^v[0-9]+\.[0-9]+\.[0-9]+$'
+{{- if eq .Project.Spec.Cloud.Provider "gcp" }}
+    registryPrefix: {{ .Project.Spec.Cloud.Region }}-docker.pkg.dev
+{{- else if eq .Project.Spec.Cloud.Provider "aws" }}
+    registryPrefix: {{ .Project.Metadata.Organization }}.dkr.ecr.{{ .Project.Spec.Cloud.Region }}.amazonaws.com
+{{- else }}
+    registryPrefix: ghcr.io/{{ .Project.Metadata.Organization }}
+{{- end }}
+
+# ---------------------------------------------------------------------------
+# Sync-wave defaults
+# ---------------------------------------------------------------------------
+defaults:
+  syncWave: "4"
+
+# ---------------------------------------------------------------------------
+# ArgoCD project configuration
+# ---------------------------------------------------------------------------
+project:
+  description: {{ .Project.Metadata.Name }} ArgoCD project
+  sourceRepos:
+    - https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+
+# ---------------------------------------------------------------------------
+# Service Groups
+# ---------------------------------------------------------------------------
+# Each group represents a Helm chart that may deploy one or more services.
+# The 'services' list is used to generate image-updater annotations.
+#
+# Example:
+#   my-services:
+#     syncWave: "4"
+#     chartPath: my-svc          # k8s/helm/{{ .Project.Metadata.Name }}/my-svc
+#     services:
+#       - name: my-service
+# ---------------------------------------------------------------------------
+
+serviceGroups: {}
+  # Uncomment and add your service groups:
+  # api-services:
+  #   syncWave: "4"
+  #   chartPath: api
+  #   services:
+  #     - name: api-service

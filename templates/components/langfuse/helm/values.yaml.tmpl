@@ -1,0 +1,76 @@
+# =============================================================================
+# Langfuse LLM Observability - Values
+# =============================================================================
+# Configuration for the Langfuse observability platform.
+# Provides tracing, evaluation, and debugging for LLM applications.
+# Requires PostgreSQL and Redis.
+# =============================================================================
+
+# -- Project-level metadata (injected by Ironplate at scaffold time)
+projectName: {{ .Project.Metadata.Name }}
+
+image:
+  repository: langfuse/langfuse
+  tag: "2"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 3000
+
+# -- Database connection (PostgreSQL)
+database:
+  secretName: langfuse-database-credentials
+  secretKey: DATABASE_URL
+
+# -- Feature flags (injected by Ironplate at scaffold time)
+redis:
+  enabled: {{ .Computed.HasRedis }}
+  host: redis
+  port: 6379
+
+kafka:
+  enabled: {{ .Computed.HasKafka }}
+
+observability:
+  enabled: {{ .Computed.HasObservability }}
+
+# -- NextAuth configuration
+nextAuth:
+  url: "http://langfuse:3000"
+  secretName: langfuse-auth-secret
+  secretKey: NEXTAUTH_SECRET
+
+# -- Salt for hashing API keys
+salt:
+  secretName: langfuse-auth-secret
+  secretKey: SALT
+
+# -- CORS settings
+cors:
+  allowedOrigins: "*"
+
+# -- Resource limits suitable for local development
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+# -- Health check configuration
+healthCheck:
+  path: /api/public/health
+  initialDelaySeconds: 15
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 5
+
+# -- Pod-level settings
+namespace: {{ .Project.Metadata.Name }}
+labels:
+  app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+  app.kubernetes.io/managed-by: helm

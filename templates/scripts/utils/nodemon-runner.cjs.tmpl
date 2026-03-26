@@ -1,0 +1,116 @@
+#!/usr/bin/env node
+/**
+ * nodemon-runner.cjs - Generates nodemon.json with auto-detected dependencies
+ *
+ * Reads the service's package.json, extracts workspace dependencies,
+ * generates a nodemon.json with the correct watch paths, then runs nodemon.
+ *
+ * Usage in package.json:
+ *   "start:dev": "node ../../scripts/utils/nodemon-runner.cjs --inspect=0.0.0.0:9229"
+ *
+ * Benefits:
+ * - No manual nodemon.json maintenance
+ * - Dependencies auto-detected from package.json
+ * - Services only restart when THEIR dependencies change
+ */
+
+const { spawn } = require("child_process");
+const { readFileSync, writeFileSync, existsSync } = require("fs");
+const path = require("path");
+
+const PACKAGES_PATH = "../../packages/node";
+const SCOPE_PREFIX = "{{ .Computed.PrimaryScope }}/";
+
+/**
+ * Extract workspace dependencies from package.json
+ */
+function getWorkspaceDependencies(packageJsonPath) {
+  if (!existsSync(packageJsonPath)) {
+    console.error(`❌ package.json not found at: ${packageJsonPath}`);
+    process.exit(1);
+  }
+
+  const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8"));
+  const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+
+  return Object.entries(allDeps)
+    .filter(([name, version]) => {
+      if (!version.startsWith("workspace:")) return false;
+      return name.startsWith(SCOPE_PREFIX);
+    })
+    .map(([name]) => {
+      return name.replace(SCOPE_PREFIX, "");
+    });
+}
+
+/**
+ * Generate watch paths from package names
+ */
+function generateWatchPaths(packageNames) {
+  const paths = ["src"];
+  for (const name of packageNames) {
+    paths.push(`${PACKAGES_PATH}/${name}/dist`);
+  }
+  return paths;
+}
+
+/**
+ * Generate nodemon.json config
+ */
+function generateNodemonConfig(watchPaths) {
+  return {
+    watch: watchPaths,
+    ext: "ts,json,graphql,js",
+    ignore: [
+      "src/**/*.spec.ts",
+      "src/**/*.test.ts",
+      "src/graphql/generated",
+      "node_modules",
+      "dist",
+    ],
+    exec: "tsx src/index.ts",
+    delay: 2000,
+  };
+}
+
+/**
+ * Main entry point
+ */
+function main() {
+  const cwd = process.cwd();
+  const packageJsonPath = path.join(cwd, "package.json");
+  const nodemonConfigPath = path.join(cwd, "nodemon.json");
+
+  const extraArgs = process.argv.slice(2);
+  const dependencies = getWorkspaceDependencies(packageJsonPath);
+  const watchPaths = generateWatchPaths(dependencies);
+  const nodemonConfig = generateNodemonConfig(watchPaths);
+
+  writeFileSync(nodemonConfigPath, JSON.stringify(nodemonConfig, null, 2));
+
+  console.log("");
+  console.log("🔍 Smart Nodemon - Auto-detected dependencies:");
+  console.log("");
+  if (dependencies.length === 0) {
+    console.log("   (no workspace dependencies found)");
+  } else {
+    for (const dep of dependencies) {
+      console.log(`   📦 ${dep}`);
+    }
+  }
+  console.log("");
+  console.log("📝 Generated nodemon.json with watch paths:");
+  for (const p of watchPaths) {
+    console.log(`   • ${p}`);
+  }
+  console.log("");
+
+  const nodemonArgs = ["nodemon", "--config", "nodemon.json", ...extraArgs];
+  const nodemon = spawn("npx", nodemonArgs, { stdio: "inherit", cwd });
+
+  nodemon.on("exit", (code) => process.exit(code || 0));
+  process.on("SIGINT", () => nodemon.kill("SIGINT"));
+  process.on("SIGTERM", () => nodemon.kill("SIGTERM"));
+}
+
+main();

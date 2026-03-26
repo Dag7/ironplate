@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+{{ if .Computed.HasNode }}  lint-node:
+    name: Lint (Node.js)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "{{ .Project.Spec.Monorepo.NodeVersion }}"
+          cache: "{{ .Project.Spec.Monorepo.PackageManager }}"
+      - run: {{ .Project.Spec.Monorepo.PackageManager }} install
+      - run: {{ .Project.Spec.Monorepo.PackageManager }} nx run-many --target=lint
+
+  test-node:
+    name: Test (Node.js)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "{{ .Project.Spec.Monorepo.NodeVersion }}"
+          cache: "{{ .Project.Spec.Monorepo.PackageManager }}"
+      - run: {{ .Project.Spec.Monorepo.PackageManager }} install
+      - run: {{ .Project.Spec.Monorepo.PackageManager }} nx run-many --target=test
+
+  typecheck:
+    name: TypeCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "{{ .Project.Spec.Monorepo.NodeVersion }}"
+          cache: "{{ .Project.Spec.Monorepo.PackageManager }}"
+      - run: {{ .Project.Spec.Monorepo.PackageManager }} install
+      - run: {{ .Project.Spec.Monorepo.PackageManager }} nx run-many --target=typecheck
+{{ end }}
+{{ if .Computed.HasGo }}  lint-go:
+    name: Lint (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "{{ .Project.Spec.Monorepo.GoVersion }}"
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  test-go:
+    name: Test (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "{{ .Project.Spec.Monorepo.GoVersion }}"
+      - run: go test -race -count=1 -coverprofile=coverage.out ./...
+{{ end }}
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: [{{ if .Computed.HasNode }}lint-node, test-node, typecheck{{ end }}{{ if and .Computed.HasNode .Computed.HasGo }}, {{ end }}{{ if .Computed.HasGo }}lint-go, test-go{{ end }}]
+    steps:
+      - uses: actions/checkout@v4
+{{ if .Computed.HasNode }}      - uses: actions/setup-node@v4
+        with:
+          node-version: "{{ .Project.Spec.Monorepo.NodeVersion }}"
+          cache: "{{ .Project.Spec.Monorepo.PackageManager }}"
+      - run: {{ .Project.Spec.Monorepo.PackageManager }} install
+      - run: {{ .Project.Spec.Monorepo.PackageManager }} nx run-many --target=build
+{{ end }}
+{{ if .Computed.HasGo }}      - uses: actions/setup-go@v5
+        with:
+          go-version: "{{ .Project.Spec.Monorepo.GoVersion }}"
+      - run: go build ./...
+{{ end }}

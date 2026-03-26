@@ -1,0 +1,55 @@
+# Set Up ArgoCD for a Service
+
+## Arguments
+- `service`: Service name to add to ArgoCD
+- `group`: Helm chart group the service belongs to
+- `environments` (optional): Which environments to deploy to (default: all)
+
+## Steps
+
+### 1. Verify ArgoCD Application Set
+- Check `k8s/helm/{{ .Project.Metadata.Name }}/argocd/` contains the ApplicationSet template
+- The ApplicationSet should auto-discover services via directory generator
+- If using matrix generator, verify service's Helm chart path is included
+
+### 2. Add Service to ArgoCD Values
+- Update `k8s/helm/{{ .Project.Metadata.Name }}/argocd/values.yaml`:
+```yaml
+services:
+  {service}:
+    group: {group}
+    path: k8s/helm/{{ .Project.Metadata.Name }}/{group}/{service}
+    autoSync: true
+```
+
+### 3. Configure Image Updater
+- Add annotation to service Helm chart `Chart.yaml`:
+```yaml
+annotations:
+  argocd-image-updater.argoproj.io/image-list: >-
+    {service}={{ .Project.Spec.Cloud.Region }}-docker.pkg.dev/PROJECT/{{ .Project.Metadata.Name }}/{service}
+  argocd-image-updater.argoproj.io/{service}.update-strategy: latest-version
+```
+
+### 4. Create Environment Overrides
+- Ensure `values-staging.yaml` exists in the service Helm chart
+- Ensure `values-production.yaml` exists in the service Helm chart
+- ArgoCD applies the correct values file per environment
+
+### 5. Verify Sync
+- `argocd app list` — service should appear
+- `argocd app sync {{ .Project.Metadata.Name }}-{service}-staging` — manual sync test
+- Check that auto-sync policy is working
+
+## Critical Rules
+1. Never use `argocd app delete` without `--cascade=false` — it deletes the deployed resources
+2. Always verify on staging before promoting to production
+3. Image updater watches the container registry — ensure CI pushes images with proper tags
+4. Rollback: `argocd app rollback {{ .Project.Metadata.Name }}-{service}-staging <revision>`
+
+## Checklist
+- [ ] Service added to ArgoCD values
+- [ ] Image updater annotations configured
+- [ ] Environment-specific values files exist
+- [ ] ArgoCD detects and syncs the service
+- [ ] Auto-sync policy verified

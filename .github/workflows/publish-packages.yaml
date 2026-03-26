@@ -1,0 +1,166 @@
+name: Publish Packages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/**"
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Detect which packages changed ──────────────────────────────────
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      node-changed: ${{ steps.changes.outputs.node-changed }}
+      go-changed: ${{ steps.changes.outputs.go-changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Detect changed packages
+        id: changes
+        run: |
+          # Node packages that have changes
+          node_changed="false"
+          if git diff --name-only HEAD~1 HEAD -- packages/node/ | grep -q .; then
+            node_changed="true"
+          fi
+          echo "node-changed=$node_changed" >> "$GITHUB_OUTPUT"
+
+          # Go packages that have changes
+          go_changed="false"
+          if git diff --name-only HEAD~1 HEAD -- packages/go/ | grep -q .; then
+            go_changed="true"
+          fi
+          echo "go-changed=$go_changed" >> "$GITHUB_OUTPUT"
+
+  # ── Publish Node packages to npm ───────────────────────────────────
+  publish-node:
+    name: Publish Node Packages
+    needs: detect-changes
+    if: needs.detect-changes.outputs.node-changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Publish changed packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          published=0
+
+          for dir in packages/node/*/; do
+            [ -f "$dir/package.json" ] || continue
+
+            pkg_name=$(node -p "require('./$dir/package.json').name")
+            local_version=$(node -p "require('./$dir/package.json').version")
+
+            # Check what's currently published on npm
+            published_version=$(npm view "$pkg_name" version 2>/dev/null || echo "")
+
+            if [ "$local_version" = "$published_version" ]; then
+              echo "⏭️  $pkg_name@$local_version — already published, skipping"
+              continue
+            fi
+
+            echo "📦 Publishing $pkg_name@$local_version (npm has: ${published_version:-none})"
+
+            # Build the package
+            cd "$dir"
+            yarn install 2>/dev/null || npm install
+            yarn build
+            npm publish --access public
+            cd -
+
+            # Create git tag
+            tag="${pkg_name}@${local_version}"
+            if ! git rev-parse "$tag" >/dev/null 2>&1; then
+              git tag -a "$tag" -m "Release $pkg_name v$local_version"
+              echo "🏷️  Created tag: $tag"
+            fi
+
+            published=$((published + 1))
+          done
+
+          # Push all new tags at once
+          if [ $published -gt 0 ]; then
+            git push origin --tags
+            echo "✅ Published $published package(s)"
+          else
+            echo "ℹ️  No packages needed publishing"
+          fi
+
+  # ── Tag Go packages ────────────────────────────────────────────────
+  publish-go:
+    name: Tag Go Packages
+    needs: detect-changes
+    if: needs.detect-changes.outputs.go-changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Tag changed Go packages
+        run: |
+          tagged=0
+
+          for dir in packages/go/*/; do
+            [ -f "$dir/go.mod" ] || continue
+            [ -f "$dir/VERSION" ] || continue
+
+            pkg=$(basename "$dir")
+            version=$(cat "$dir/VERSION" | tr -d '[:space:]')
+
+            # Go module tag convention for nested modules
+            tag="packages/go/${pkg}/v${version}"
+
+            if git rev-parse "$tag" >/dev/null 2>&1; then
+              echo "⏭️  $tag — already exists, skipping"
+              continue
+            fi
+
+            # Check if files actually changed since last tag for this package
+            last_tag=$(git tag -l "packages/go/${pkg}/v*" --sort=-version:refname | head -n1)
+            if [ -n "$last_tag" ]; then
+              changes=$(git diff --name-only "$last_tag" HEAD -- "$dir" | wc -l)
+              if [ "$changes" -eq 0 ]; then
+                echo "⏭️  $pkg — no changes since $last_tag, skipping"
+                continue
+              fi
+            fi
+
+            echo "🏷️  Creating tag: $tag"
+            git tag -a "$tag" -m "Release $pkg v$version"
+            tagged=$((tagged + 1))
+          done
+
+          if [ $tagged -gt 0 ]; then
+            git push origin --tags
+            echo "✅ Tagged $tagged package(s)"
+          else
+            echo "ℹ️  No Go packages needed tagging"
+          fi

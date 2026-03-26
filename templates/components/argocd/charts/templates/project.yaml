@@ -1,0 +1,51 @@
+{{/*
+=============================================================================
+ArgoCD AppProject
+=============================================================================
+Defines the ArgoCD project with allowed sources, destinations, and RBAC
+policies.
+=============================================================================
+*/}}
+{{- $global := .Values.global -}}
+{{- $environment := $global.environment -}}
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: {{ .Values.projectName }}-{{ $environment }}
+  namespace: argocd
+  labels:
+    {{- include "apps.labels" (dict "projectName" .Values.projectName "environment" $environment) | nindent 4 }}
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: {{ .Values.project.description }}
+
+  sourceRepos:
+    {{- toYaml .Values.project.sourceRepos | nindent 4 }}
+
+  destinations:
+    - namespace: {{ $global.namespace }}
+      server: https://kubernetes.default.svc
+    - namespace: argocd
+      server: https://kubernetes.default.svc
+
+  clusterResourceWhitelist:
+    {{- toYaml .Values.project.clusterResourceWhitelist | nindent 4 }}
+
+  namespaceResourceWhitelist:
+    {{- toYaml .Values.project.namespaceResourceWhitelist | nindent 4 }}
+
+  roles:
+    - name: admin
+      description: Admin access to {{ .Values.projectName }} project
+      policies:
+        - "p, proj:{{ .Values.projectName }}-{{ $environment }}:admin, applications, *, {{ .Values.projectName }}-{{ $environment }}/*, allow"
+      groups:
+        - {{ .Values.organization }}:admin
+    - name: readonly
+      description: Read-only access to {{ .Values.projectName }} project
+      policies:
+        - "p, proj:{{ .Values.projectName }}-{{ $environment }}:readonly, applications, get, {{ .Values.projectName }}-{{ $environment }}/*, allow"
+        - "p, proj:{{ .Values.projectName }}-{{ $environment }}:readonly, logs, get, {{ .Values.projectName }}-{{ $environment }}/*, allow"
+      groups:
+        - {{ .Values.organization }}:developers

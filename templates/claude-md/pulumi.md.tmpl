@@ -1,0 +1,48 @@
+## Infrastructure as Code (Pulumi)
+
+### Structure
+```
+iac/pulumi/{{ .Project.Spec.Cloud.Provider }}/
+  Pulumi.yaml              # Project definition
+  Pulumi.staging.yaml      # Staging stack config
+  Pulumi.production.yaml   # Production stack config
+  src/
+    index.ts               # 12-phase orchestrator
+    config/                # Type definitions and config loader
+    core/                  # Network, GKE, IAM, security
+    data/                  # Database, Redis, storage, registry
+    kubernetes/            # Namespaces, secrets, ingress, ArgoCD
+    utils/                 # Naming conventions, tags
+```
+
+### Stack Management
+```bash
+# Preview changes
+pulumi preview --stack {{ .Project.Metadata.Name }}-staging
+
+# Apply changes
+pulumi up --stack {{ .Project.Metadata.Name }}-staging
+
+# View outputs
+pulumi stack output --stack {{ .Project.Metadata.Name }}-staging
+```
+
+### Adding Infrastructure
+1. Add the resource in the appropriate phase file under `src/`
+2. Export any outputs needed by other phases or services
+3. Run `pulumi preview` to verify
+4. Apply via CI/CD (never `pulumi up` directly in production)
+
+### Critical Rules
+1. **NEVER** run `pulumi up` on production locally — always use CI/CD pipeline
+2. All secrets must use `pulumi.secret()` — never store plaintext
+3. Resource names must use the naming utility: `resourceName('vpc', env)`
+4. Always add standard tags/labels via `defaultTags()`
+5. Database changes require a migration plan — Pulumi handles infra, not schema
+6. Test infrastructure changes on staging first — production mirrors staging config
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}
+### GCP-Specific
+- Authentication: Workload Identity for GKE pods, Service Account keys for CI/CD
+- Artifact Registry: `{{ .Project.Spec.Cloud.Region }}-docker.pkg.dev`
+- Cloud SQL: Private IP only, accessed via VPC peering
+- Memorystore: Private IP, VPC-peered Redis{{ end }}

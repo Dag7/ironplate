@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Go CLI ──────────────────────────────────────────────────────────
+  go-lint:
+    name: Go Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  go-test:
+    name: Go Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Run tests
+        run: go test -race -count=1 -coverprofile=coverage.out ./...
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.out
+
+  go-build:
+    name: Go Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Build
+        run: go build -o /dev/null ./cmd/iron
+      - name: Verify version
+        run: go run ./cmd/iron version
+
+  # ── Go Packages ─────────────────────────────────────────────────────
+  go-packages:
+    name: Go Packages
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [envconfig, graceful, health]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - name: Test ${{ matrix.package }}
+        working-directory: packages/go/${{ matrix.package }}
+        run: go test -race -count=1 ./...
+
+  # ── Node Packages ───────────────────────────────────────────────────
+  node-packages:
+    name: Node Packages
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [errors, health, cache, graphql, testing, logger, config, http-client, eventbus, service, auth, encryption, metrics, tracing, validation, feature-flags, jobs, tilt-manager, dev-cli]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: yarn
+      - name: Install dependencies
+        working-directory: packages/node/${{ matrix.package }}
+        run: yarn install
+      - name: Build ${{ matrix.package }}
+        working-directory: packages/node/${{ matrix.package }}
+        run: yarn build
+      - name: Typecheck ${{ matrix.package }}
+        working-directory: packages/node/${{ matrix.package }}
+        run: yarn typecheck

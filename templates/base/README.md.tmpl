@@ -1,0 +1,99 @@
+# {{ .Project.Metadata.Name }}
+
+{{ .Project.Metadata.Description }}
+
+> Scaffolded with [ironplate](https://github.com/ironplate-dev/ironplate)
+
+## Quick Start
+
+### Prerequisites
+
+Ensure you have the required tools installed:
+
+```bash
+iron doctor
+```
+
+### Development
+
+{{- if eq .Project.Spec.DevEnvironment.Type "devcontainer" }}
+
+1. Open this project in VS Code
+2. When prompted, reopen in devcontainer
+3. The devcontainer will set up all tools automatically
+{{- end }}
+
+{{- if .Computed.HasNode }}
+
+Install dependencies:
+
+```bash
+{{ .Project.Spec.Monorepo.PackageManager }} install
+```
+{{- end }}
+
+Start local development:
+
+```bash
+{{- if eq .Project.Spec.DevEnvironment.DevTool "tilt" }}
+tilt up
+{{- end }}
+```
+
+### Generate New Services
+
+```bash
+iron generate service my-service --type node-api --group my-group
+iron generate service my-worker --type go-api --group workers
+iron generate package my-lib --scope {{ .Computed.PrimaryScope }}
+```
+
+### Add Infrastructure Components
+
+```bash
+iron add redis
+iron add kafka
+iron add observability
+```
+
+## Project Structure
+
+```
+{{ .Project.Metadata.Name }}/
+  apps/                    # Microservices
+  packages/                # Shared libraries
+{{- if .Computed.HasNode }}
+    node/                  # Node.js packages
+{{- end }}
+{{- if .Computed.HasGo }}
+    go/                    # Go packages
+{{- end }}
+  k8s/
+    helm/
+      {{ .Project.Metadata.Name }}/  # Service Helm charts
+      infra/               # Infrastructure charts
+{{- if .Computed.HasArgoCD }}
+    argocd/                # GitOps configuration
+{{- end }}
+  dockerfiles/             # Shared Dockerfiles
+{{- if ne .Project.Spec.Cloud.Provider "none" }}
+  iac/pulumi/              # Infrastructure as Code
+{{- end }}
+  utils/
+    tilt/                  # Tilt utility files
+  scripts/                 # Utility scripts
+```
+
+## Architecture
+
+- **Monorepo**: {{ .Project.Spec.Monorepo.BuildSystem }} workspace with {{ .Project.Spec.Monorepo.PackageManager }}
+- **Local K8s**: {{ .Project.Spec.DevEnvironment.K8sLocal }} cluster with {{ .Project.Spec.DevEnvironment.DevTool }} hot reload
+- **Deployment**: Helm charts{{ if .Project.Spec.GitOps.Enabled }} + {{ .Project.Spec.GitOps.Tool }} GitOps{{ end }}
+{{- if ne .Project.Spec.Cloud.Provider "none" }}
+- **Cloud**: {{ .Project.Spec.Cloud.Provider | upperCase }} ({{ .Project.Spec.Cloud.Region }})
+- **IaC**: Pulumi (TypeScript)
+{{- end }}
+
+## License
+
+Proprietary - All rights reserved.

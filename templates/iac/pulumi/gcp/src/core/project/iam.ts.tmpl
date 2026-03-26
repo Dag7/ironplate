@@ -1,0 +1,85 @@
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import { projectId, stackName } from "../../config/loader";
+
+export interface ServiceAccountOutputs {
+  /** GKE node service account */
+  nodeServiceAccount: gcp.serviceaccount.Account;
+  /** Application workload identity service account */
+  appServiceAccount: gcp.serviceaccount.Account;
+  /** CI/CD service account for GitHub Actions OIDC */
+  cicdServiceAccount: gcp.serviceaccount.Account;
+}
+
+/**
+ * Creates IAM service accounts and role bindings for the
+ * {{ .Project.Metadata.Name }} project.
+ */
+export function createServiceAccounts(
+  dependsOn: pulumi.Resource[] = [],
+): ServiceAccountOutputs {
+  // ── GKE Node Service Account ──────────────────────────────────────
+  const nodeServiceAccount = new gcp.serviceaccount.Account("gke-node-sa", {
+    accountId: `{{ .Project.Metadata.Name }}-${stackName}-gke-node`,
+    displayName: `GKE Node SA (${stackName})`,
+    project: projectId,
+  }, { dependsOn });
+
+  const nodeRoles = [
+    "roles/logging.logWriter",
+    "roles/monitoring.metricWriter",
+    "roles/monitoring.viewer",
+    "roles/artifactregistry.reader",
+  ];
+
+  nodeRoles.forEach((role, index) => {
+    new gcp.projects.IAMMember(`gke-node-role-${index}`, {
+      project: projectId,
+      role,
+      member: pulumi.interpolate`serviceAccount:${nodeServiceAccount.email}`,
+    });
+  });
+
+  // ── Application Service Account (Workload Identity) ───────────────
+  const appServiceAccount = new gcp.serviceaccount.Account("app-sa", {
+    accountId: `{{ .Project.Metadata.Name }}-${stackName}-app`,
+    displayName: `Application SA (${stackName})`,
+    project: projectId,
+  }, { dependsOn });
+
+  // Allow GKE workloads in the project namespace to impersonate this SA
+  new gcp.serviceaccount.IAMBinding("app-sa-workload-identity", {
+    serviceAccountId: appServiceAccount.name,
+    role: "roles/iam.workloadIdentityUser",
+    members: [
+      pulumi.interpolate`serviceAccount:${projectId}.svc.id.goog[{{ .Project.Metadata.Name }}/{{ .Project.Metadata.Name }}-app]`,
+    ],
+  });
+
+  // ── CI/CD Service Account (GitHub Actions OIDC) ───────────────────
+  const cicdServiceAccount = new gcp.serviceaccount.Account("cicd-sa", {
+    accountId: `{{ .Project.Metadata.Name }}-${stackName}-cicd`,
+    displayName: `CI/CD SA for GitHub Actions (${stackName})`,
+    project: projectId,
+  }, { dependsOn });
+
+  const cicdRoles = [
+    "roles/container.developer",
+    "roles/artifactregistry.writer",
+    "roles/iam.serviceAccountTokenCreator",
+  ];
+
+  cicdRoles.forEach((role, index) => {
+    new gcp.projects.IAMMember(`cicd-role-${index}`, {
+      project: projectId,
+      role,
+      member: pulumi.interpolate`serviceAccount:${cicdServiceAccount.email}`,
+    });
+  });
+
+  return {
+    nodeServiceAccount,
+    appServiceAccount,
+    cicdServiceAccount,
+  };
+}

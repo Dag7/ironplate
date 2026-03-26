@@ -1,0 +1,80 @@
+# New Database Migration
+
+## Arguments
+- `name`: Migration name (snake_case, e.g., `add_user_preferences_table`)
+- `description` (optional): What this migration does
+
+## Steps
+
+### 1. Create Migration Files
+{{ if .Computed.HasHasura }}- Use Hasura CLI:
+```bash
+hasura migrate create {name} --database-name default
+```
+- This creates:
+  - `hasura/migrations/default/<timestamp>_{name}/up.sql`
+  - `hasura/migrations/default/<timestamp>_{name}/down.sql`
+{{ else }}- Create migration files manually in `db/migrations/`:
+  - `<timestamp>_{name}.up.sql`
+  - `<timestamp>_{name}.down.sql`
+{{ end }}
+
+### 2. Write Migration SQL
+
+**up.sql** — the forward migration:
+```sql
+-- Create tables, add columns, create indexes, etc.
+-- Use IF NOT EXISTS for safety
+CREATE TABLE IF NOT EXISTS user_preferences (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key VARCHAR(255) NOT NULL,
+    value JSONB NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(user_id, key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_preferences_user_id ON user_preferences(user_id);
+```
+
+**down.sql** — the rollback:
+```sql
+DROP TABLE IF EXISTS user_preferences;
+```
+
+### 3. Apply Migration (Dev)
+{{ if .Computed.HasHasura }}- Apply: `hasura migrate apply --database-name default`
+- Track new tables: `hasura metadata reload`
+- Verify in Hasura console: `http://localhost:9695`{{ else }}- Apply: run migration tool against dev database
+- Verify: `psql -c '\dt'` to list tables{{ end }}
+
+### 4. Update Hasura Metadata (if applicable)
+{{ if .Computed.HasHasura }}- Track new tables in Hasura
+- Add relationships between tables
+- Set permissions for each role
+- Export metadata: `hasura metadata export`
+- Commit both migration + metadata changes together{{ end }}
+
+### 5. Update Types
+{{ if .Computed.HasNode }}- If using codegen: re-run `{{ .Project.Spec.Monorepo.PackageManager }} nx codegen` for affected services
+- Update shared types if the table is exposed via API{{ end }}
+
+## SQL Guidelines
+1. Always include both `up.sql` and `down.sql`
+2. Use `IF NOT EXISTS` / `IF EXISTS` for idempotency
+3. Large tables: use `CREATE INDEX CONCURRENTLY` (won't lock table)
+4. Always add `created_at` and `updated_at` timestamps
+5. Use `UUID` for primary keys, not auto-increment integers
+6. Foreign keys must have explicit `ON DELETE` behavior
+7. Never drop columns in production without a deprecation period — mark nullable first
+
+## Checklist
+- [ ] Migration files created (up + down)
+- [ ] Forward migration tested locally
+- [ ] Rollback migration tested locally
+{{ if .Computed.HasHasura }}- [ ] Tables tracked in Hasura metadata
+- [ ] Permissions set for all roles
+- [ ] Metadata exported and committed{{ end }}
+- [ ] Types regenerated if needed
+- [ ] No destructive changes without migration plan

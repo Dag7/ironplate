@@ -1,0 +1,64 @@
+# =============================================================================
+# {{ .Service.Group | title }} Services - Local Development Values (Base)
+# =============================================================================
+# Base values for local development with Tilt + k3d.
+# Per-service configuration is defined under the `services` key.
+# =============================================================================
+
+global:
+  environment: development
+  namespace: {{ .Project.Metadata.Name }}
+  domain: localhost
+  tlsSecretName: ""
+  image:
+    pullPolicy: Always
+    registry: {{ .Project.Metadata.Name }}
+  commonEnv:
+    LOG_LEVEL: debug
+
+defaults:
+  serviceAccount:
+    create: true
+  replicas: 1
+  port: {{ .Service.Port }}
+  serviceType: ClusterIP
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  healthCheck:
+    enabled: true
+    readinessPath: /healthz
+    livenessPath: /healthz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 5
+  autoscaling:
+    enabled: false
+  pdb:
+    enabled: false
+
+# =============================================================================
+# Services
+# =============================================================================
+services:
+  {{ .Service.Name }}:
+    enabled: true
+    port: {{ .Service.Port }}
+    image:
+      tag: latest
+    env:
+      LOG_LEVEL: debug{{ if hasItem .Service.Features "hasura" }}
+      HASURA_GRAPHQL_URL: http://hasura:8080/v1/graphql{{ end }}{{ if hasItem .Service.Features "dapr" }}
+      DAPR_HTTP_PORT: "3500"
+      DAPR_GRPC_PORT: "50001"
+    podAnnotations:
+      dapr.io/enabled: "true"
+      dapr.io/app-id: {{ .Service.Name }}
+      dapr.io/app-port: "{{ .Service.Port }}"{{ end }}{{ if hasItem .Service.Features "cache" }}
+    secrets:
+      - redis-credentials{{ end }}

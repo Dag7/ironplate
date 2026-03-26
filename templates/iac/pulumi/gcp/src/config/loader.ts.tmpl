@@ -1,0 +1,82 @@
+import * as pulumi from "@pulumi/pulumi";
+import { EnvironmentConfig, NetworkConfig, GkeConfig, DatabaseConfig } from "./types";
+
+/**
+ * Loads and returns typed infrastructure configuration from Pulumi config.
+ *
+ * Reads values from `Pulumi.<stack>.yaml` with sensible defaults for
+ * the {{ .Project.Metadata.Name }} project.
+ */
+
+const config = new pulumi.Config();
+const gcpConfig = new pulumi.Config("gcp");
+
+/** Current GCP project ID */
+export const projectId = gcpConfig.require("project");
+
+/** Current GCP region */
+export const region = gcpConfig.get("region") || "{{ .Project.Spec.Cloud.Region }}";
+
+/** Current Pulumi stack name, used as the environment identifier */
+export const stackName = pulumi.getStack();
+
+/**
+ * Loads the environment configuration from Pulumi config values,
+ * applying defaults appropriate for the current stack.
+ */
+export function loadEnvironmentConfig(): EnvironmentConfig {
+  const isProduction = stackName === "production" || stackName === "prod";
+
+  return {
+    name: config.get("environmentName") || stackName,
+    shortName: config.get("environmentShortName") || (isProduction ? "prod" : "stg"),
+    domain: config.get("domain") || (isProduction
+      ? "{{ .Domain }}"
+      : `${stackName}.{{ .Domain }}`),
+    nodeCount: config.getNumber("nodeCount") || (isProduction ? 3 : 2),
+    machineType: config.get("machineType") || (isProduction ? "e2-standard-4" : "e2-standard-2"),
+  };
+}
+
+/**
+ * Loads the network configuration from Pulumi config values.
+ */
+export function loadNetworkConfig(): NetworkConfig {
+  return {
+    vpcName: config.get("vpcName") || `{{ .Project.Metadata.Name }}-${stackName}-vpc`,
+    subnetCidr: config.get("subnetCidr") || "10.0.0.0/20",
+    podCidr: config.get("podCidr") || "10.4.0.0/14",
+    serviceCidr: config.get("serviceCidr") || "10.8.0.0/20",
+  };
+}
+
+/**
+ * Loads the GKE cluster configuration from Pulumi config values.
+ */
+export function loadGkeConfig(): GkeConfig {
+  const envConfig = loadEnvironmentConfig();
+  const isProduction = stackName === "production" || stackName === "prod";
+
+  return {
+    clusterName: config.get("clusterName") || `{{ .Project.Metadata.Name }}-${stackName}`,
+    nodePoolName: config.get("nodePoolName") || "default-pool",
+    minNodes: config.getNumber("minNodes") || (isProduction ? 2 : 1),
+    maxNodes: config.getNumber("maxNodes") || (isProduction ? 10 : 5),
+    machineType: envConfig.machineType,
+    diskSizeGb: config.getNumber("diskSizeGb") || (isProduction ? 100 : 50),
+  };
+}
+
+/**
+ * Loads the database configuration from Pulumi config values.
+ */
+export function loadDatabaseConfig(): DatabaseConfig {
+  const isProduction = stackName === "production" || stackName === "prod";
+
+  return {
+    tier: config.get("dbTier") || (isProduction ? "db-custom-2-8192" : "db-custom-1-3840"),
+    storageGb: config.getNumber("dbStorageGb") || (isProduction ? 50 : 20),
+    highAvailability: config.getBoolean("dbHighAvailability") ?? isProduction,
+    databases: config.getObject<string[]>("databases") || ["{{ .Project.Metadata.Name }}"],
+  };
+}

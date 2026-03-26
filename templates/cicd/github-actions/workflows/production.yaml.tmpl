@@ -1,0 +1,121 @@
+# =============================================================================
+# Production Deployment (ArgoCD GitOps)
+# =============================================================================
+# Deploys to production environment via ArgoCD GitOps.
+#
+# Deployment Flow:
+#   1. CI validates version (semver format v1.x.x)
+#   2. CI applies ArgoCD Application manifests (ensures apps exist)
+#   3. CI builds images and pushes to container registry with version tag
+{{ if .Computed.HasHasura }}#   4. CI runs Hasura migrations (full visibility in GH Actions)
+{{ end }}#   5. ArgoCD Image Updater detects new image tags
+#   6. ArgoCD auto-syncs applications (sync-wave order)
+# =============================================================================
+
+name: Deploy to Production (ArgoCD)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g., v1.0.0). Required for manual deploy."
+        required: true
+        type: string
+      service:
+        description: "Services to deploy (space-separated, empty for all)"
+        required: false
+        default: ""
+{{ if .Computed.HasHasura }}      skip_hasura_migrations:
+        description: "Skip Hasura migrations (for infra-only deploys)"
+        required: false
+        type: boolean
+        default: false
+{{ end }}      confirm_production:
+        description: "Type 'production' to confirm deployment"
+        required: true
+        type: string
+
+  release:
+    types: [published]
+
+# Prevent concurrent deployments
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  # ==========================================================================
+  # Validation
+  # ==========================================================================
+  validate:
+    name: Validate
+    if: github.actor != 'argocd-image-updater[bot]'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ "{{" }} steps.version.outputs.version {{ "}}" }}
+    steps:
+      - name: Validate confirmation
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [[ "${{ "{{" }} inputs.confirm_production {{ "}}" }}" != "production" ]]; then
+            echo "Production deployment not confirmed."
+            echo "You must type 'production' in the confirmation field."
+            exit 1
+          fi
+          echo "Production deployment confirmed"
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ "{{" }} github.event_name {{ "}}" }}" = "release" ]; then
+            VERSION="${{ "{{" }} github.event.release.tag_name {{ "}}" }}"
+          else
+            VERSION="${{ "{{" }} inputs.version {{ "}}" }}"
+          fi
+
+          # Validate version format
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version format: $VERSION"
+            echo "Expected format: v1.2.3"
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Version: ${VERSION}"
+
+  # ==========================================================================
+  # Deploy (Build & Push Images)
+  # ==========================================================================
+  deploy:
+    name: Build & Push Images
+    needs: validate
+    uses: ./.github/workflows/_deploy-argocd.yaml
+    with:
+      # Environment
+      environment: production
+      branch: main
+      image_tag: ${{ "{{" }} needs.validate.outputs.version {{ "}}" }}
+
+      # Build options
+      service: ${{ "{{" }} inputs.service || '' {{ "}}" }}
+      # For releases, build all services
+      force_build_all: ${{ "{{" }} github.event_name == 'release' {{ "}}" }}
+
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}      # GCP Configuration
+      gcp_project_id: ${{ "{{" }} vars.GCP_PROJECT_ID_PRODUCTION {{ "}}" }}
+      gke_cluster: ${{ "{{" }} vars.GKE_CLUSTER_PRODUCTION {{ "}}" }}
+      gke_zone: {{ .Project.Spec.Cloud.Region }}
+{{ end }}      namespace: {{ .Project.Metadata.Name }}
+
+      # ArgoCD URLs (for summary links)
+      argocd_url: ${{ "{{" }} vars.ARGOCD_URL_PRODUCTION {{ "}}" }}
+      services_app_name: {{ .Project.Metadata.Name }}-apps-production
+{{ if .Computed.HasHasura }}
+      # Hasura migrations
+      skip_hasura_migrations: ${{ "{{" }} inputs.skip_hasura_migrations && 'true' || 'false' {{ "}}" }}
+      apply_seeds: "true"
+{{ end }}
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ "{{" }} secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_PRODUCTION {{ "}}" }}
+      GCP_SERVICE_ACCOUNT: ${{ "{{" }} secrets.GCP_SERVICE_ACCOUNT_PRODUCTION {{ "}}" }}
+{{ end }}

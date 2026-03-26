@@ -1,0 +1,376 @@
+# =============================================================================
+# Build Workflow (Reusable)
+# =============================================================================
+# Builds and pushes Docker images to container registry.
+# Called by: staging.yaml, production.yaml, _deploy-argocd.yaml
+#
+# Flow:
+#   1. Detect affected services ({{ if .Computed.HasNode }}NX + {{ end }}git diff)
+#   2. Build images in parallel matrix
+#   3. Push to registry with proper tags
+#
+# Image Tagging Strategy:
+#   - Commits: sha-<short-sha> (e.g., sha-abc1234)
+#   - Releases: v<version> (e.g., v1.2.3)
+#   - Always: latest (for cache)
+# =============================================================================
+
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+        description: "Target environment (staging, production)"
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}      gcp_project_id:
+        required: true
+        type: string
+        description: "GCP project ID"
+      gke_zone:
+        required: true
+        type: string
+        description: "GKE zone/region"
+        default: "{{ .Project.Spec.Cloud.Region }}"
+{{ end }}      image_tag:
+        required: false
+        type: string
+        default: ""
+        description: "Image tag override (empty for auto: sha-<commit>)"
+      service:
+        required: false
+        type: string
+        default: ""
+        description: "Specific service to build (space-separated, empty for auto-detect)"
+      force_build_all:
+        required: false
+        type: string
+        default: "false"
+        description: "Force build all services"
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER:
+        required: true
+        description: "GCP Workload Identity Provider path"
+      GCP_SERVICE_ACCOUNT:
+        required: true
+        description: "GCP Service Account email"
+{{ end }}    outputs:
+      image_tag:
+        description: "Image tag used for builds"
+        value: ${{ "{{" }} jobs.build-setup.outputs.image_tag {{ "}}" }}
+      built_services:
+        description: "JSON array of built services"
+        value: ${{ "{{" }} jobs.build-summary.outputs.built_services {{ "}}" }}
+
+env:
+  IMAGE_TAG: ${{ "{{" }} inputs.image_tag || format('sha-{0}', github.sha) {{ "}}" }}
+
+jobs:
+  # ==========================================================================
+  # Build Setup & Change Detection
+  # ==========================================================================
+  build-setup:
+    name: Build Setup
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ "{{" }} steps.setup.outputs.image_tag {{ "}}" }}
+      all_services: ${{ "{{" }} steps.detect.outputs.all_services {{ "}}" }}
+      affected_services: ${{ "{{" }} steps.detect.outputs.affected_services {{ "}}" }}
+      services_to_build: ${{ "{{" }} steps.determine.outputs.services {{ "}}" }}
+      has_services: ${{ "{{" }} steps.determine.outputs.has_services {{ "}}" }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup build configuration
+        id: setup
+        run: |
+          # Determine image tag
+          if [ -n "${{ "{{" }} inputs.image_tag {{ "}}" }}" ]; then
+            TAG="${{ "{{" }} inputs.image_tag {{ "}}" }}"
+          else
+            SHORT_SHA=$(echo "${{ "{{" }} github.sha {{ "}}" }}" | cut -c1-7)
+            TAG="sha-${SHORT_SHA}"
+          fi
+
+          echo "image_tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Image tag: ${TAG}"
+{{ if .Computed.HasNode }}
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "{{ .Project.Spec.Monorepo.NodeVersion }}"
+          cache: "{{ .Project.Spec.Monorepo.PackageManager }}"
+
+      - name: Install dependencies
+        run: {{ .Project.Spec.Monorepo.PackageManager }} install --frozen-lockfile
+{{ end }}
+      - name: Detect affected services
+        id: detect
+        run: |
+          # Determine base commit for comparison
+          if [ -n "${{ "{{" }} github.event.before {{ "}}" }}" ] && [ "${{ "{{" }} github.event.before {{ "}}" }}" != "0000000000000000000000000000000000000000" ]; then
+            BASE="${{ "{{" }} github.event.before {{ "}}" }}"
+          elif git rev-parse HEAD~1 >/dev/null 2>&1; then
+            BASE="HEAD~1"
+          else
+            BASE=$(git hash-object -t tree /dev/null)
+            echo "No base commit available, using empty tree"
+          fi
+
+          chmod +x ./.github/scripts/detect-affected.sh
+          ./.github/scripts/detect-affected.sh "$BASE" "HEAD"
+
+      - name: Determine services to build
+        id: determine
+        run: |
+          FORCE_ALL="${{ "{{" }} inputs.force_build_all {{ "}}" }}"
+          INPUT_SERVICE="${{ "{{" }} inputs.service {{ "}}" }}"
+          ALL_SERVICES='${{ "{{" }} steps.detect.outputs.all_services {{ "}}" }}'
+          AFFECTED_SERVICES='${{ "{{" }} steps.detect.outputs.affected_services {{ "}}" }}'
+
+          if [ -n "$INPUT_SERVICE" ]; then
+            # Specific services requested - convert space-separated to JSON array
+            SERVICES_JSON=$(echo "$INPUT_SERVICE" | tr ' ' '\n' | jq -R . | jq -sc .)
+            echo "Building specific services: $INPUT_SERVICE"
+          elif [ "$FORCE_ALL" = "true" ]; then
+            SERVICES_JSON="$ALL_SERVICES"
+            echo "Building all services (forced)"
+          else
+            SERVICES_JSON="$AFFECTED_SERVICES"
+            echo "Building affected services"
+          fi
+
+          COUNT=$(echo "$SERVICES_JSON" | jq 'length')
+          HAS_SERVICES="false"
+          if [ "$COUNT" -gt 0 ]; then
+            HAS_SERVICES="true"
+          fi
+
+          echo "services=${SERVICES_JSON}" >> $GITHUB_OUTPUT
+          echo "has_services=${HAS_SERVICES}" >> $GITHUB_OUTPUT
+          echo "Services to build ($COUNT): $(echo $SERVICES_JSON | jq -r '.[]' | tr '\n' ' ')"
+
+  # ==========================================================================
+  # Build Services (Parallel Matrix)
+  # ==========================================================================
+  build-service:
+    name: Build ${{ "{{" }} matrix.service {{ "}}" }}
+    runs-on: ubuntu-latest
+    needs: build-setup
+    if: needs.build-setup.outputs.has_services == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ "{{" }} fromJson(needs.build-setup.outputs.services_to_build) {{ "}}" }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and push image
+        uses: ./.github/actions/build-push-image
+        with:
+          service: ${{ "{{" }} matrix.service {{ "}}" }}
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}          gcp_project_id: ${{ "{{" }} inputs.gcp_project_id {{ "}}" }}
+          gke_zone: ${{ "{{" }} inputs.gke_zone {{ "}}" }}
+          image_tag: ${{ "{{" }} needs.build-setup.outputs.image_tag {{ "}}" }}
+          workload_identity_provider: ${{ "{{" }} secrets.GCP_WORKLOAD_IDENTITY_PROVIDER {{ "}}" }}
+          service_account: ${{ "{{" }} secrets.GCP_SERVICE_ACCOUNT {{ "}}" }}
+{{ end }}
+{{ if .Computed.HasHasura }}  # ==========================================================================
+  # Build Hasura Migrations Image
+  # ==========================================================================
+  build-hasura-migrations:
+    name: Build Hasura Migrations
+    runs-on: ubuntu-latest
+    needs: build-setup
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for Hasura changes
+        id: hasura-changes
+        run: |
+          if [ -n "${{ "{{" }} github.event.before {{ "}}" }}" ] && [ "${{ "{{" }} github.event.before {{ "}}" }}" != "0000000000000000000000000000000000000000" ]; then
+            BASE="${{ "{{" }} github.event.before {{ "}}" }}"
+          elif git rev-parse HEAD~1 >/dev/null 2>&1; then
+            BASE="HEAD~1"
+          else
+            BASE=$(git hash-object -t tree /dev/null)
+          fi
+          FORCE_ALL="${{ "{{" }} inputs.force_build_all {{ "}}" }}"
+
+          if [ "$FORCE_ALL" = "true" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Building hasura-migrations (forced)"
+          elif git diff --name-only "$BASE" HEAD | grep -q "^hasura/\|^scripts/hasura/\|^dockerfiles/hasura-migrations"; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Building hasura-migrations (changes detected)"
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "Skipping hasura-migrations (no changes)"
+          fi
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}
+      - name: Authenticate to GCP
+        if: steps.hasura-changes.outputs.should_build == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ "{{" }} secrets.GCP_WORKLOAD_IDENTITY_PROVIDER {{ "}}" }}
+          service_account: ${{ "{{" }} secrets.GCP_SERVICE_ACCOUNT {{ "}}" }}
+
+      - name: Setup gcloud CLI
+        if: steps.hasura-changes.outputs.should_build == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ "{{" }} inputs.gcp_project_id {{ "}}" }}
+
+      - name: Configure Docker for Artifact Registry
+        if: steps.hasura-changes.outputs.should_build == 'true'
+        run: |
+          gcloud auth configure-docker ${{ "{{" }} inputs.gke_zone {{ "}}" }}-docker.pkg.dev --quiet
+{{ end }}
+      - name: Set up Docker Buildx
+        if: steps.hasura-changes.outputs.should_build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push hasura-migrations image
+        if: steps.hasura-changes.outputs.should_build == 'true'
+        env:
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}          REGISTRY: ${{ "{{" }} inputs.gke_zone {{ "}}" }}-docker.pkg.dev/${{ "{{" }} inputs.gcp_project_id {{ "}}" }}/{{ .Project.Metadata.Name }}
+{{ end }}          IMAGE_TAG: ${{ "{{" }} needs.build-setup.outputs.image_tag {{ "}}" }}
+        run: |
+          IMAGE="${REGISTRY}/hasura-migrations"
+
+          echo "Building hasura-migrations image..."
+          docker buildx build \
+            --file dockerfiles/hasura-migrations.Dockerfile \
+            --tag "${IMAGE}:${IMAGE_TAG}" \
+            --tag "${IMAGE}:latest" \
+            --push \
+            --cache-from "type=registry,ref=${IMAGE}:cache" \
+            --cache-to "type=registry,ref=${IMAGE}:cache,mode=max" \
+            .
+
+          echo "Built: ${IMAGE}:${IMAGE_TAG}"
+{{ end }}
+  # ==========================================================================
+  # Retag Unchanged Services (for releases)
+  # ==========================================================================
+  # When deploying a release, retag unchanged services instead of rebuilding.
+  # This is fast and cost-effective.
+  # ==========================================================================
+  retag-unchanged:
+    name: Retag Unchanged
+    runs-on: ubuntu-latest
+    needs: [build-setup, build-service]
+    if: |
+      always() &&
+      (needs.build-service.result == 'success' || needs.build-service.result == 'skipped') &&
+      inputs.image_tag != '' &&
+      inputs.force_build_all != 'true'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ "{{" }} secrets.GCP_WORKLOAD_IDENTITY_PROVIDER {{ "}}" }}
+          service_account: ${{ "{{" }} secrets.GCP_SERVICE_ACCOUNT {{ "}}" }}
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ "{{" }} inputs.gcp_project_id {{ "}}" }}
+
+      - name: Retag unchanged services with release version
+        env:
+          LOCATION: ${{ "{{" }} inputs.gke_zone {{ "}}" }}
+          PROJECT: ${{ "{{" }} inputs.gcp_project_id {{ "}}" }}
+          REPOSITORY: {{ .Project.Metadata.Name }}
+          RELEASE_TAG: ${{ "{{" }} needs.build-setup.outputs.image_tag {{ "}}" }}
+        run: |
+          ALL_SERVICES='${{ "{{" }} needs.build-setup.outputs.all_services {{ "}}" }}'
+          BUILT_SERVICES='${{ "{{" }} needs.build-setup.outputs.services_to_build {{ "}}" }}'
+
+          echo "Release tag: ${RELEASE_TAG}"
+          echo "Built services: $(echo $BUILT_SERVICES | jq -r '.[]' | tr '\n' ' ')"
+          echo ""
+
+          RETAGGED=0
+          SKIPPED=0
+          FAILED=0
+
+          for service in $(echo "$ALL_SERVICES" | jq -r '.[]'); do
+            if echo "$BUILT_SERVICES" | jq -r '.[]' | grep -qx "$service"; then
+              echo "$service - already built with ${RELEASE_TAG}"
+              SKIPPED=$((SKIPPED + 1))
+              continue
+            fi
+
+            SOURCE="${LOCATION}-docker.pkg.dev/${PROJECT}/${REPOSITORY}/${service}:latest"
+
+            echo -n "$service - adding tag ${RELEASE_TAG} to latest... "
+
+            if gcloud artifacts docker tags add "${SOURCE}" "${RELEASE_TAG}" 2>/dev/null; then
+              echo "done"
+              RETAGGED=$((RETAGGED + 1))
+            else
+              echo "skipped (image may not exist yet)"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          echo ""
+          echo "Summary: ${RETAGGED} retagged, ${SKIPPED} already built, ${FAILED} skipped (no existing image)"
+{{ end }}
+  # ==========================================================================
+  # Build Summary
+  # ==========================================================================
+  build-summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    needs: [build-setup, build-service{{ if .Computed.HasHasura }}, build-hasura-migrations{{ end }}, retag-unchanged]
+    if: always()
+    outputs:
+      built_services: ${{ "{{" }} needs.build-setup.outputs.services_to_build {{ "}}" }}
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Environment** | ${{ "{{" }} inputs.environment {{ "}}" }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Image Tag** | \`${{ "{{" }} needs.build-setup.outputs.image_tag {{ "}}" }}\` |" >> $GITHUB_STEP_SUMMARY
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}          echo "| **Registry** | ${{ "{{" }} inputs.gke_zone {{ "}}" }}-docker.pkg.dev/${{ "{{" }} inputs.gcp_project_id {{ "}}" }}/{{ .Project.Metadata.Name }} |" >> $GITHUB_STEP_SUMMARY
+{{ end }}          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Built Services" >> $GITHUB_STEP_SUMMARY
+          SERVICES='${{ "{{" }} needs.build-setup.outputs.services_to_build {{ "}}" }}'
+          if [ "$SERVICES" != "[]" ] && [ -n "$SERVICES" ]; then
+            echo "$SERVICES" | jq -r '.[]' | while read service; do
+              echo "- \`$service\`" >> $GITHUB_STEP_SUMMARY
+            done
+          else
+            echo "_No services built_" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+{{ if .Computed.HasHasura }}          echo "### Infrastructure Images" >> $GITHUB_STEP_SUMMARY
+          echo "- hasura-migrations: ${{ "{{" }} needs.build-hasura-migrations.result {{ "}}" }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+{{ end }}
+          if [ "${{ "{{" }} needs.build-service.result {{ "}}" }}" = "success" ] || [ "${{ "{{" }} needs.build-service.result {{ "}}" }}" = "skipped" ]; then
+            echo "**Build completed successfully**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Build had failures**" >> $GITHUB_STEP_SUMMARY
+          fi

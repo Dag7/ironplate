@@ -1,0 +1,68 @@
+# =============================================================================
+# Hasura Event Relay - Values
+# =============================================================================
+# Lightweight service that receives Hasura event triggers and publishes
+# them to Kafka via Dapr pub/sub sidecar.
+# Requires: hasura, kafka, dapr.
+# =============================================================================
+
+# -- Project-level metadata (injected by Ironplate at scaffold time)
+projectName: {{ .Project.Metadata.Name }}
+
+image:
+  registry: {{ .Project.Metadata.Name }}
+  repository: hasura-event-relay
+  tag: latest
+  pullPolicy: Always
+
+replicas: 1
+
+service:
+  type: ClusterIP
+  port: 3000
+
+# -- Environment variables
+env:
+  PORT: "3000"
+  DAPR_HTTP_PORT: "3500"
+  PUBSUB_NAME: kafka-pubsub
+  TOPIC_PREFIX: {{ .Project.Metadata.Name }}
+
+# -- Secrets to mount as environment variables
+secrets:
+  - hasura-credentials
+
+# -- Dapr sidecar annotations
+dapr:
+  enabled: true
+  appId: hasura-event-relay
+  appPort: 3000
+
+# -- Health check configuration
+healthCheck:
+  enabled: true
+  path: /healthz
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# -- Service account
+serviceAccount:
+  create: true
+  name: hasura-event-relay
+
+# -- Resource limits suitable for local development
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# -- Pod-level settings
+namespace: {{ .Project.Metadata.Name }}
+labels:
+  app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+  app.kubernetes.io/managed-by: helm

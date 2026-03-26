@@ -1,0 +1,10 @@
+{{/*
+=============================================================================
+Service Rendering
+=============================================================================
+Renders all services defined in values.yaml using the shared service
+library chart. Each service under .Values.services gets a full set of
+K8s resources (Deployment, Service, ServiceAccount, etc.).
+*/}}
+
+{{ include "service.render" . }}

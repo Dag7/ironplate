@@ -1,0 +1,58 @@
+{{- range $name, $ingress := .Values.ingresses }}
+{{- if $ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-{{ $name }}
+  namespace: {{ $.Values.global.namespace }}
+  labels:
+    {{- include "ingress.labels" $ | nindent 4 }}
+    ingress-name: {{ $name }}
+  annotations:
+    {{- range $key, $value := $.Values.defaults.annotations }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+    {{- $middlewares := list }}
+    {{- if $ingress.middlewares }}
+      {{- $middlewares = $ingress.middlewares }}
+    {{- else if $ingress.middlewarePreset }}
+      {{- if hasKey $.Values.middlewarePresets $ingress.middlewarePreset }}
+        {{- $middlewares = index $.Values.middlewarePresets $ingress.middlewarePreset }}
+      {{- end }}
+    {{- end }}
+    {{- if $middlewares }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ join "," $middlewares }}
+    {{- end }}
+    {{- if $ingress.stickySession }}
+    traefik.ingress.kubernetes.io/service.sticky.cookie: "true"
+    traefik.ingress.kubernetes.io/service.sticky.cookie.name: {{ $name }}-affinity
+    traefik.ingress.kubernetes.io/service.sticky.cookie.secure: "true"
+    traefik.ingress.kubernetes.io/service.sticky.cookie.httponly: "true"
+    {{- end }}
+    {{- with $ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  ingressClassName: {{ $.Values.defaults.className }}
+  {{- if $.Values.global.tlsSecretName }}
+  tls:
+    - hosts:
+        - {{ $ingress.host }}
+      secretName: {{ $.Values.global.tlsSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ $ingress.host }}
+      http:
+        paths:
+          {{- range $ingress.routes }}
+          - path: {{ .path }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ .service }}
+                port:
+                  number: {{ .port | default 80 }}
+          {{- end }}
+{{- end }}
+{{- end }}

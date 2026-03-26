@@ -1,0 +1,169 @@
+{{/*
+=============================================================================
+Kafka Cluster - Strimzi Custom Resources
+=============================================================================
+Creates a single-node Kafka cluster using Strimzi KafkaNodePool + Kafka CRs.
+*/}}
+
+{{- if .Values.kafka }}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: {{ .Values.kafka.clusterName }}-pool
+  namespace: {{ .Values.namespace }}
+  labels:
+    strimzi.io/cluster: {{ .Values.kafka.clusterName }}
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+    app.kubernetes.io/managed-by: helm
+spec:
+  replicas: {{ .Values.kafka.replicas | default 1 }}
+  roles:
+    - controller
+    - broker
+  storage:
+    type: {{ .Values.kafka.storage.type | default "ephemeral" }}
+    {{- if eq (default "ephemeral" .Values.kafka.storage.type) "persistent-claim" }}
+    size: {{ .Values.kafka.storage.size | default "10Gi" }}
+    {{- if .Values.kafka.storage.storageClass }}
+    class: {{ .Values.kafka.storage.storageClass }}
+    {{- end }}
+    {{- end }}
+  {{- with .Values.kafka.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.kafka.jvmOptions }}
+  jvmOptions:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: {{ .Values.kafka.clusterName }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+    app.kubernetes.io/managed-by: helm
+  annotations:
+    strimzi.io/node-pools: enabled
+    strimzi.io/kraft: enabled
+spec:
+  kafka:
+    version: {{ .Values.kafka.version | default "3.7.0" | quote }}
+    replicas: {{ .Values.kafka.replicas | default 1 }}
+    listeners:
+      - name: plain
+        port: {{ .Values.kafka.listeners.plain.port | default 9092 }}
+        type: {{ .Values.kafka.listeners.plain.type | default "internal" }}
+        tls: {{ .Values.kafka.listeners.plain.tls | default false }}
+      - name: external
+        port: {{ .Values.kafka.listeners.external.port | default 9094 }}
+        type: {{ .Values.kafka.listeners.external.type | default "nodeport" }}
+        tls: {{ .Values.kafka.listeners.external.tls | default false }}
+    config:
+      {{- range $key, $value := .Values.kafka.config }}
+      {{ $key }}: {{ $value | quote }}
+      {{- end }}
+    storage:
+      type: {{ .Values.kafka.storage.type | default "ephemeral" }}
+      {{- if eq (default "ephemeral" .Values.kafka.storage.type) "persistent-claim" }}
+      size: {{ .Values.kafka.storage.size | default "10Gi" }}
+      {{- if .Values.kafka.storage.storageClass }}
+      class: {{ .Values.kafka.storage.storageClass }}
+      {{- end }}
+      {{- end }}
+    {{- if .Values.metrics }}
+    {{- if .Values.metrics.enabled }}
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef:
+          name: {{ .Values.kafka.clusterName }}-metrics
+          key: kafka-metrics-config.yml
+    {{- end }}
+    {{- end }}
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+
+{{/* Kafka Topics */}}
+{{- range .Values.topics }}
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    strimzi.io/cluster: {{ $.Values.kafka.clusterName }}
+    app.kubernetes.io/part-of: {{ $.Values.projectName }}
+spec:
+  partitions: {{ .partitions | default 1 }}
+  replicas: {{ .replicas | default 1 }}
+  {{- if .config }}
+  config:
+    {{- range $key, $value := .config }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+
+{{/* Metrics ConfigMap */}}
+{{- if .Values.metrics }}
+{{- if .Values.metrics.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.kafka.clusterName }}-metrics
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: kafka
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+data:
+  kafka-metrics-config.yml: |
+    lowercaseOutputName: true
+    lowercaseOutputLabelNames: true
+    rules:
+      # Broker metrics
+      - pattern: kafka.server<type=(.+), name=(.+), clientId=(.+), topic=(.+), partition=(.*)>Value
+        name: kafka_server_$1_$2
+        type: GAUGE
+        labels:
+          clientId: "$3"
+          topic: "$4"
+          partition: "$5"
+      - pattern: kafka.server<type=(.+), name=(.+), clientId=(.+), brokerHost=(.+), brokerPort=(.+)>Value
+        name: kafka_server_$1_$2
+        type: GAUGE
+        labels:
+          clientId: "$3"
+          broker: "$4:$5"
+      - pattern: kafka.server<type=(.+), name=(.+)>Value
+        name: kafka_server_$1_$2
+        type: GAUGE
+      # Controller metrics
+      - pattern: kafka.controller<type=(.+), name=(.+)>Value
+        name: kafka_controller_$1_$2
+        type: GAUGE
+      # Log metrics
+      - pattern: kafka.log<type=(.+), name=(.+), topic=(.+), partition=(.+)>Value
+        name: kafka_log_$1_$2
+        type: GAUGE
+        labels:
+          topic: "$3"
+          partition: "$4"
+      # Network metrics
+      - pattern: kafka.network<type=(.+), name=(.+), request=(.+)>Value
+        name: kafka_network_$1_$2
+        type: GAUGE
+        labels:
+          request: "$3"
+{{- end }}
+{{- end }}
+
+{{- end }}

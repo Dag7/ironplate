@@ -1,0 +1,38 @@
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import { projectId } from "../../config/loader";
+
+/**
+ * Enables required GCP APIs for the {{ .Project.Metadata.Name }} project.
+ *
+ * Each API is created as a Pulumi resource so that it can be tracked and
+ * depended upon by downstream resources.
+ */
+export function enableApis(): Record<string, gcp.projects.Service> {
+  const apis: Record<string, string> = {
+    compute: "compute.googleapis.com",
+    container: "container.googleapis.com",
+    sqladmin: "sqladmin.googleapis.com",
+    redis: "redis.googleapis.com",
+    dns: "dns.googleapis.com",
+    certificatemanager: "certificatemanager.googleapis.com",
+    secretmanager: "secretmanager.googleapis.com",
+    artifactregistry: "artifactregistry.googleapis.com",
+    iam: "iam.googleapis.com",
+    cloudresourcemanager: "cloudresourcemanager.googleapis.com",{{ if hasItem .Project.Spec.Infrastructure.Components "observability" }}
+    monitoring: "monitoring.googleapis.com",{{ end }}
+  };
+
+  const enabledApis: Record<string, gcp.projects.Service> = {};
+
+  for (const [name, api] of Object.entries(apis)) {
+    enabledApis[name] = new gcp.projects.Service(`api-${name}`, {
+      project: projectId,
+      service: api,
+      disableDependentServices: false,
+      disableOnDestroy: false,
+    });
+  }
+
+  return enabledApis;
+}

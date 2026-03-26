@@ -1,0 +1,160 @@
+# Fake GCS Server for local development
+# Emulates Google Cloud Storage API using fsouza/fake-gcs-server
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Project.Metadata.Name }}-fake-gcs-data
+  namespace: {{ .Project.Metadata.Name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fake-gcs
+  namespace: {{ .Project.Metadata.Name }}
+  labels:
+    app.kubernetes.io/name: fake-gcs
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fake-gcs
+  template:
+    metadata:
+      labels:
+        app: fake-gcs
+    spec:
+      initContainers:
+        - name: create-buckets
+          image: busybox:1.36
+          command: ['sh', '-c']
+          args:
+            - |
+              mkdir -p /data/{{ .Project.Metadata.Name }}-files-dev
+              mkdir -p /data/{{ .Project.Metadata.Name }}-uploads-dev
+          volumeMounts:
+            - name: gcs-data
+              mountPath: /data
+      containers:
+        - name: nginx
+          image: nginx:1.25-alpine
+          ports:
+            - containerPort: 4443
+              name: http
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+          resources:
+            requests:
+              memory: 32Mi
+              cpu: 10m
+            limits:
+              memory: 64Mi
+              cpu: 100m
+          readinessProbe:
+            tcpSocket:
+              port: 4443
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 4443
+            initialDelaySeconds: 5
+            periodSeconds: 10
+        - name: fake-gcs
+          image: fsouza/fake-gcs-server:1.52.3
+          args:
+            - -scheme=http
+            - -port=4444
+            - -backend=filesystem
+            - -filesystem-root=/data
+            - -public-host=fake-gcs:4443
+          ports:
+            - containerPort: 4444
+          volumeMounts:
+            - name: gcs-data
+              mountPath: /data
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 4444
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 4444
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: gcs-data
+          persistentVolumeClaim:
+            claimName: {{ .Project.Metadata.Name }}-fake-gcs-data
+        - name: nginx-config
+          configMap:
+            name: fake-gcs-nginx-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fake-gcs-nginx-config
+  namespace: {{ .Project.Metadata.Name }}
+data:
+  default.conf: |
+    server {
+        listen 4443;
+        client_max_body_size 256m;
+
+        # List objects: /b/{bucket}/o?prefix=...
+        location ~ ^/b/([^/]+)/o$ {
+            rewrite ^/b/([^/]+)/o(.*)$ /storage/v1/b/$1/o$2 break;
+            proxy_pass http://localhost:4444;
+            proxy_set_header Host $host;
+        }
+
+        # Download object: /b/{bucket}/o/{object}
+        location ~ ^/b/([^/]+)/o/(.+)$ {
+            rewrite ^/b/([^/]+)/o/(.+)$ /download/storage/v1/b/$1/o/$2 break;
+            proxy_pass http://localhost:4444;
+            proxy_set_header Host $host;
+        }
+
+        # Pass everything else directly
+        location / {
+            proxy_pass http://localhost:4444;
+            proxy_set_header Host $host;
+        }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fake-gcs
+  namespace: {{ .Project.Metadata.Name }}
+  labels:
+    app.kubernetes.io/name: fake-gcs
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 4443
+      targetPort: 4443
+      protocol: TCP
+      name: http
+  selector:
+    app: fake-gcs

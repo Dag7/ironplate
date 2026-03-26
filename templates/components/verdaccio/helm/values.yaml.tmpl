@@ -1,0 +1,90 @@
+# =============================================================================
+# Verdaccio Private NPM Registry - Values
+# =============================================================================
+# Configuration for a lightweight private NPM registry.
+# Proxies to npmjs.org for public packages and caches internally.
+# =============================================================================
+
+# -- Project-level metadata (injected by Ironplate at scaffold time)
+projectName: {{ .Project.Metadata.Name }}
+
+image:
+  repository: verdaccio/verdaccio
+  tag: "6.0.5"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 4873
+
+persistence:
+  enabled: true
+  accessMode: ReadWriteOnce
+  size: 8Gi
+
+# -- Verdaccio configuration (rendered into a ConfigMap)
+configMap: |
+  storage: /verdaccio/storage/data
+
+  web:
+    title: "{{ .Project.Metadata.Name }} NPM Registry"
+
+  auth:
+    htpasswd:
+      file: /verdaccio/storage/htpasswd
+
+  uplinks:
+    npmjs:
+      url: https://registry.npmjs.org/
+      agent_options:
+        keepAlive: true
+        maxSockets: 40
+        maxFreeSockets: 10
+
+  packages:
+    '@*/*':
+      access: $all
+      publish: $authenticated
+      proxy: npmjs
+    '**':
+      access: $all
+      publish: $authenticated
+      proxy: npmjs
+
+  middlewares:
+    audit:
+      enabled: true
+
+  log: {type: stdout, format: pretty, level: http}
+
+# -- Pod security context
+podSecurityContext:
+  fsGroup: 101
+
+securityContext:
+  runAsUser: 10001
+
+# -- Resource limits suitable for local development
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi
+
+# -- Health check configuration
+healthCheck:
+  path: /-/ping
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# -- Pod-level settings
+namespace: {{ .Project.Metadata.Name }}
+labels:
+  app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+  app.kubernetes.io/managed-by: helm

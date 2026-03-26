@@ -1,0 +1,28 @@
+## Development Environment
+
+### Dev Container
+- Open in VS Code → "Reopen in Container"
+- Resources: 6 CPUs, 24GB RAM
+- Tools: kubectl, helm, k3d, tilt{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}, hasura{{ end }}{{ if .Project.Spec.GitOps.Enabled }}, argocd{{ end }}
+
+### Local Kubernetes (k3d)
+- Cluster: `k3d-{{ .Project.Metadata.Name }}-cluster`
+- Registry: `k3d-{{ .Project.Metadata.Name }}-registry:5005`
+- Namespace: `{{ .Project.Metadata.Name }}`
+
+### Tilt (Hot Reload)
+- Start: `tilt up`
+- Dashboard: http://localhost:10350
+- Services auto-rebuild on file changes
+{{ if .Computed.HasNode }}
+### Hot Reload Rules (Node.js)
+- Source changes (`src/`) → nodemon restarts process (~2s)
+- Package changes (`packages/node/*/dist/`) → nodemon restarts dependent services
+- `package.json` changes → container rebuild
+- Only packages a service depends on are synced (selective package sync)
+{{ end }}
+### Helm Charts
+- All services use the shared `_lib/service` library chart
+- Service charts are in `k8s/helm/{{ .Project.Metadata.Name }}/`
+- Infrastructure charts are in `k8s/helm/infra/`
+- Image registry: `{{ .Project.Metadata.Name }}/SERVICE_NAME` (local k3d)

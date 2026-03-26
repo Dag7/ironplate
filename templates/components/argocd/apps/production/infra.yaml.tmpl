@@ -1,0 +1,298 @@
+# =============================================================================
+# ArgoCD Infrastructure Applications - Production
+# =============================================================================
+# One Application per infrastructure component, ordered by sync-wave.
+# Production uses PruneLast and higher revision history limits.
+# =============================================================================
+{{ if .Computed.HasExternalSecrets }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: external-secrets-production
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+    app.kubernetes.io/component: external-secrets
+    environment: production
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Project.Metadata.Name }}-production
+  source:
+    repoURL: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+    targetRevision: main
+    path: k8s/helm/infra/external-secrets
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Project.Metadata.Name }}
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
+{{ end }}{{ if .Computed.HasKafka }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kafka-production
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+    app.kubernetes.io/component: kafka
+    environment: production
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Project.Metadata.Name }}-production
+  source:
+    repoURL: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+    targetRevision: main
+    path: k8s/helm/infra/kafka
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Project.Metadata.Name }}
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
+{{ end }}{{ if .Computed.HasObservability }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: observability-production
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+    app.kubernetes.io/component: observability
+    environment: production
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Project.Metadata.Name }}-production
+  source:
+    repoURL: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+    targetRevision: main
+    path: k8s/helm/infra/observability
+    helm:
+      releaseName: observability-stack
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Project.Metadata.Name }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
+{{ end }}{{ if .Computed.HasRedis }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: redis-production
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+    app.kubernetes.io/component: redis
+    environment: production
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Project.Metadata.Name }}-production
+  source:
+    repoURL: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+    targetRevision: main
+    path: k8s/helm/infra/redis
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Project.Metadata.Name }}
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
+{{ end }}{{ if .Computed.HasDapr }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dapr-production
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+    app.kubernetes.io/component: dapr
+    environment: production
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Project.Metadata.Name }}-production
+  source:
+    repoURL: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+    targetRevision: main
+    path: k8s/helm/infra/dapr
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Project.Metadata.Name }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
+{{ end }}{{ if .Computed.HasHasura }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hasura-production
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+    app.kubernetes.io/component: hasura
+    environment: production
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Project.Metadata.Name }}-production
+  source:
+    repoURL: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+    targetRevision: main
+    path: k8s/helm/infra/hasura
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Project.Metadata.Name }}
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
+{{ end }}{{ if .Computed.HasLangfuse }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: langfuse-production
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+    app.kubernetes.io/component: langfuse
+    environment: production
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Project.Metadata.Name }}-production
+  source:
+    repoURL: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+    targetRevision: main
+    path: k8s/helm/infra/langfuse
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Project.Metadata.Name }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 10
+{{ end }}

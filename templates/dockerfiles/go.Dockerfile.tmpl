@@ -1,0 +1,91 @@
+# syntax = docker/dockerfile:1.17.0
+# =============================================================================
+# Go Dockerfile with optimized caching
+# =============================================================================
+
+# Global ARGs
+ARG GOARCH=amd64
+
+# -----------------------------------------------------------------------------
+# Stage 1: Extract go.mod/go.sum files for dependency caching
+# -----------------------------------------------------------------------------
+FROM golang:{{ .Project.Spec.Monorepo.GoVersion }} AS gomod-files
+WORKDIR /workspace
+ARG TARGET_SRC_FOLDER
+ARG TARGET_NAME
+ENV TARGET_NAME=${TARGET_NAME}
+ENV TARGET_SRC_FOLDER=${TARGET_SRC_FOLDER}
+
+# Copy go.mod/go.sum from packages and target
+COPY ./packages/go ./packages/go
+COPY ./${TARGET_SRC_FOLDER}/${TARGET_NAME} ./${TARGET_SRC_FOLDER}/${TARGET_NAME}
+
+# Keep only go.mod and go.sum files
+RUN find . -type f -not -iname "go.mod" -not -iname "go.sum" -delete && find . -type d -empty -delete
+
+# -----------------------------------------------------------------------------
+# Stage 2: Build the application
+# -----------------------------------------------------------------------------
+FROM golang:{{ .Project.Spec.Monorepo.GoVersion }} AS builder
+ARG TARGET_SRC_FOLDER
+ARG TARGET_NAME
+ARG GOARCH=amd64
+ENV TARGET_NAME=${TARGET_NAME}
+ENV TARGET_SRC_FOLDER=${TARGET_SRC_FOLDER}
+
+# Copy only go.mod/go.sum first for better layer caching
+COPY --from=gomod-files /workspace /workspace
+WORKDIR /workspace/${TARGET_SRC_FOLDER}/${TARGET_NAME}
+
+# Download dependencies with caching
+RUN --mount=type=cache,id=${TARGET_NAME}-mod,target=/go/pkg/mod \
+    --mount=type=cache,id=${TARGET_NAME}-cache,target=/root/.cache/go-build \
+    go mod download -x
+
+# Copy source code
+WORKDIR /workspace
+COPY ${TARGET_SRC_FOLDER}/${TARGET_NAME} ./${TARGET_SRC_FOLDER}/${TARGET_NAME}
+COPY ./packages/go ./packages/go
+
+# Build with caching
+WORKDIR /workspace/${TARGET_SRC_FOLDER}/${TARGET_NAME}
+RUN --mount=type=cache,id=${TARGET_NAME}-mod,target=/go/pkg/mod \
+    --mount=type=cache,id=${TARGET_NAME}-cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${GOARCH} go build \
+    -ldflags="-s -w" \
+    -o /workspace/app .
+
+# -----------------------------------------------------------------------------
+# Stage 3: Test
+# -----------------------------------------------------------------------------
+FROM builder AS test
+RUN --mount=type=cache,id=${TARGET_NAME}-mod,target=/go/pkg/mod \
+    --mount=type=cache,id=${TARGET_NAME}-cache,target=/root/.cache/go-build \
+    go test ./...
+
+# -----------------------------------------------------------------------------
+# Stage 4: Debug with Delve
+# -----------------------------------------------------------------------------
+FROM golang:{{ .Project.Spec.Monorepo.GoVersion }} AS delve
+ENV CGO_ENABLED=0
+WORKDIR /go/src/
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go install github.com/go-delve/delve/cmd/dlv@latest
+
+FROM alpine:3.19 AS debug
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=builder /workspace/app /app
+COPY --from=delve /go/bin/dlv /dlv
+EXPOSE 40000
+CMD ["/dlv", "--listen=:40000", "--accept-multiclient", "--continue", "--headless=true", "--api-version=2", "exec", "/app"]
+
+# -----------------------------------------------------------------------------
+# Stage 5: Production (distroless)
+# -----------------------------------------------------------------------------
+FROM --platform=linux/${GOARCH} gcr.io/distroless/static:nonroot AS production
+WORKDIR /
+COPY --from=builder /workspace/app /app
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+USER nonroot:nonroot
+ENTRYPOINT ["/app"]

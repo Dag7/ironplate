@@ -1,0 +1,23 @@
+# =============================================================================
+# {{ .Project.Metadata.Name }}-observability - Helm Chart
+# =============================================================================
+# Observability stack for {{ .Project.Metadata.Name }}: OpenTelemetry Collector,
+# Grafana Tempo, Prometheus, and Grafana.
+# =============================================================================
+apiVersion: v2
+name: {{ .Project.Metadata.Name }}-observability
+description: Observability stack for {{ .Project.Metadata.Name }}
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+keywords:
+  - {{ .Project.Metadata.Name }}
+  - observability
+  - opentelemetry
+  - prometheus
+  - grafana
+  - tempo
+
+maintainers:
+  - name: {{ .Project.Metadata.Name }} Team

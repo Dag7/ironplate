@@ -1,0 +1,105 @@
+# Set Up Feature Flags
+
+## Arguments
+- `service`: Service name
+- `provider`: `local` | `custom` (local for dev, implement IFeatureFlagProvider for production)
+
+## Architecture
+
+```
+Request → requireFlag('feature-x') middleware → enabled? → handler
+                                              ↓ disabled
+                                           404 Not Found
+
+Service code → flags.isEnabled('feature-x', user) → boolean
+```
+
+## Steps
+
+### 1. Add Dependencies
+- Add `@ironplate/feature-flags` to `apps/{service}/package.json`
+- Run `{{ .Project.Spec.Monorepo.PackageManager }} install`
+
+### 2. Create Feature Flag Client
+
+```typescript
+import { FeatureFlagClient, LocalProvider } from '@ironplate/feature-flags';
+
+// Development: use local provider
+const provider = new LocalProvider({
+  'new-dashboard': true,
+  'beta-api-v2': false,
+  'max-upload-size': 50,
+});
+
+export const flags = new FeatureFlagClient({ provider });
+await flags.initialize();
+```
+
+### 3. Check Flags in Code
+
+```typescript
+// Boolean check
+if (await flags.isEnabled('new-dashboard', { userId: req.auth.userId })) {
+  return newDashboardData();
+}
+return legacyDashboardData();
+
+// Dynamic config
+const maxSize = await flags.getValue<number>('max-upload-size', user, 10);
+```
+
+### 4. Gate Routes with Middleware
+
+```typescript
+import { requireFlag } from '@ironplate/feature-flags';
+
+// Route only accessible when flag is enabled
+router.get(
+  '/v2/dashboard',
+  requireFlag(flags, 'beta-api-v2', (req) => ({
+    userId: (req as AuthenticatedRequest).auth?.userId ?? 'anonymous',
+  })),
+  dashboardHandler,
+);
+```
+
+### 5. Implement Custom Provider (Production)
+
+```typescript
+import type { IFeatureFlagProvider, FeatureFlagUser } from '@ironplate/feature-flags';
+
+export class StatsigProvider implements IFeatureFlagProvider {
+  async initialize(): Promise<void> {
+    // Connect to Statsig/LaunchDarkly/etc
+  }
+
+  async isEnabled(flag: string, user?: FeatureFlagUser): Promise<boolean> {
+    // Query provider
+  }
+
+  async getValue<T>(flag: string, user?: FeatureFlagUser, defaultValue?: T): Promise<T> {
+    // Query provider
+  }
+
+  async shutdown(): Promise<void> {
+    // Cleanup
+  }
+}
+```
+
+## CRITICAL Rules
+- Feature flags default to `false` on errors (fail-closed)
+- ALWAYS pass user context for percentage rollouts
+- Use `LocalProvider` in development and tests — never call external services
+- ALWAYS call `flags.shutdown()` during graceful shutdown
+- Name flags with kebab-case: `feature-name`, not `featureName`
+
+## Checklist
+- [ ] `@ironplate/feature-flags` dependency added
+- [ ] FeatureFlagClient initialized with provider
+- [ ] `LocalProvider` used for development
+- [ ] Production provider implemented (if needed)
+- [ ] Route gating middleware applied
+- [ ] Flags checked with user context for rollouts
+- [ ] Shutdown registered for cleanup

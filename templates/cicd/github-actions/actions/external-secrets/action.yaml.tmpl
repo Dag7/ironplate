@@ -1,0 +1,101 @@
+{{ if .Computed.HasExternalSecrets -}}
+# =============================================================================
+# External Secrets Action
+# =============================================================================
+# Applies ExternalSecret manifests, optionally forces a refresh, and waits
+# for all secrets to reach the Ready condition.
+#
+# Usage:
+#   - uses: ./.github/actions/external-secrets
+#     with:
+#       namespace: {{ .Project.Metadata.Name }}
+#       manifests_path: k8s/deployment/secrets
+# =============================================================================
+
+name: "External Secrets"
+description: "Apply and sync ExternalSecret resources in Kubernetes"
+
+inputs:
+  namespace:
+    description: "Kubernetes namespace"
+    required: true
+    default: "{{ .Project.Metadata.Name }}"
+  manifests_path:
+    description: "Directory containing ExternalSecret manifests"
+    required: false
+    default: "k8s/deployment/secrets"
+  timeout:
+    description: "Timeout for waiting on secrets to sync"
+    required: false
+    default: "120s"
+  force_refresh:
+    description: "Force refresh of all secrets via annotation"
+    required: false
+    default: "false"
+
+runs:
+  using: "composite"
+  steps:
+    # =========================================================================
+    # Apply External Secrets
+    # =========================================================================
+    - name: Apply External Secrets
+      shell: bash
+      run: |
+        echo "Applying external secrets..."
+
+        SECRETS_PATH="${{ "{{" }} inputs.manifests_path {{ "}}" }}"
+
+        if [ ! -d "$SECRETS_PATH" ]; then
+          echo "Secrets directory not found: $SECRETS_PATH"
+          echo "Skipping external secrets..."
+          exit 0
+        fi
+
+        # Apply all secret manifests
+        for file in "$SECRETS_PATH"/*.yaml; do
+          if [ -f "$file" ]; then
+            echo "Applying: $file"
+            kubectl apply -f "$file" -n ${{ "{{" }} inputs.namespace {{ "}}" }}
+          fi
+        done
+
+        echo "External secrets applied"
+
+    # =========================================================================
+    # Force Refresh Secrets
+    # =========================================================================
+    - name: Force Refresh Secrets
+      if: ${{ "{{" }} inputs.force_refresh == 'true' {{ "}}" }}
+      shell: bash
+      run: |
+        echo "Force refreshing external secrets..."
+
+        # Annotate ExternalSecrets to trigger refresh
+        kubectl get externalsecrets -n ${{ "{{" }} inputs.namespace {{ "}}" }} -o name | while read es; do
+          echo "Refreshing: $es"
+          kubectl annotate $es -n ${{ "{{" }} inputs.namespace {{ "}}" }} \
+            force-sync=$(date +%s) --overwrite || true
+        done
+
+        echo "Secrets refresh triggered"
+
+    # =========================================================================
+    # Wait for Secrets Sync
+    # =========================================================================
+    - name: Wait for Secrets Sync
+      shell: bash
+      run: |
+        echo "Waiting for secrets to sync..."
+
+        # Wait for ExternalSecrets to be ready
+        kubectl wait externalsecrets --all \
+          -n ${{ "{{" }} inputs.namespace {{ "}}" }} \
+          --for=condition=Ready \
+          --timeout=${{ "{{" }} inputs.timeout {{ "}}" }} 2>/dev/null || true
+
+        echo "External secrets status:"
+        kubectl get externalsecrets -n ${{ "{{" }} inputs.namespace {{ "}}" }} || true
+
+        echo "Secrets sync complete"
+{{- end }}

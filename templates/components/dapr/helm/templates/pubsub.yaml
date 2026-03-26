@@ -1,0 +1,33 @@
+{{- if .Values.kafka.enabled }}
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: {{ .Values.pubsub.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.pubsub.type }}
+  version: {{ .Values.pubsub.version }}
+  metadata:
+    - name: brokers
+      value: {{ .Values.pubsub.metadata.brokers | quote }}
+    - name: consumerGroup
+      value: {{ .Values.pubsub.metadata.consumerGroup | quote }}
+    - name: authRequired
+      value: {{ .Values.pubsub.metadata.authRequired | quote }}
+{{- else }}
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: {{ .Values.pubsub.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.pubsub.type }}
+  version: {{ .Values.pubsub.version }}
+  metadata: []
+{{- end }}

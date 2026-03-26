@@ -1,0 +1,67 @@
+{{/*
+=============================================================================
+ArgoCD Application Resources
+=============================================================================
+Generates one Application per service group defined in values.yaml.
+Follows the app-of-apps pattern from the doorz reference.
+
+Note: Image Updater configuration has moved to ImageUpdater CRs (v1.0.x).
+See: templates/image-updaters.yaml
+=============================================================================
+*/}}
+
+{{- $global := .Values.global -}}
+{{- $defaults := .Values.defaults -}}
+{{- $environment := $global.environment -}}
+{{- $projectName := .Values.projectName -}}
+
+{{- range $groupName, $group := .Values.serviceGroups }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ $groupName }}-{{ $environment }}
+  namespace: argocd
+  labels:
+    {{- include "apps.labels" (dict "projectName" $projectName "environment" $environment) | nindent 4 }}
+    app.kubernetes.io/component: {{ $groupName }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "{{ $group.syncWave | default $defaults.syncWave }}"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ $projectName }}-{{ $environment }}
+
+  source:
+    repoURL: {{ $global.repoURL }}
+    targetRevision: {{ $global.gitBranch }}
+    path: k8s/helm/{{ $projectName }}/{{ $group.chartPath | default $groupName }}
+    helm:
+      valueFiles:
+        - values.yaml
+        - {{ $global.valuesFile }}
+      {{- if $global.defaultImageTag }}
+      parameters:
+        - name: global.image.tag
+          value: {{ $global.defaultImageTag | quote }}
+      {{- end }}
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ $global.namespace }}
+
+  syncPolicy:
+    {{- include "apps.syncPolicy" (dict "environment" $environment) | nindent 4 }}
+
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas
+    - group: ""
+      kind: ServiceAccount
+      jsonPointers:
+        - /secrets
+
+  revisionHistoryLimit: {{ if eq $environment "production" }}10{{ else }}5{{ end }}
+{{- end }}

@@ -1,0 +1,20 @@
+# =============================================================================
+# {{ .Project.Metadata.Name }}-apps — ArgoCD App-of-Apps Helm Chart
+# =============================================================================
+# Generates ArgoCD Application + ImageUpdater CRs for each service group.
+# =============================================================================
+apiVersion: v2
+name: {{ .Project.Metadata.Name }}-apps
+description: ArgoCD app-of-apps chart for {{ .Project.Metadata.Name }}
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+keywords:
+  - {{ .Project.Metadata.Name }}
+  - argocd
+  - gitops
+  - app-of-apps
+
+maintainers:
+  - name: {{ .Project.Metadata.Organization }}

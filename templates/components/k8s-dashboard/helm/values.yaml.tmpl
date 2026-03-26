@@ -1,0 +1,92 @@
+# =============================================================================
+# Kubernetes Dashboard - Values
+# =============================================================================
+# Configuration for the Kubernetes Dashboard addon.
+# Provides cluster visibility for local development.
+# =============================================================================
+
+# -- Project-level metadata (injected by Ironplate at scaffold time)
+projectName: {{ .Project.Metadata.Name }}
+
+namespace: kubernetes-dashboard
+createNamespace: true
+
+fullnameOverride: kubernetes-dashboard
+
+replicaCount: 1
+
+image:
+  repository: kubernetesui/dashboard
+  tag: v2.7.0
+  pullPolicy: IfNotPresent
+
+metricsScraper:
+  enabled: true
+  image:
+    repository: kubernetesui/metrics-scraper
+    tag: v1.0.8
+    pullPolicy: IfNotPresent
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  service:
+    name: dashboard-metrics-scraper
+    port: 8000
+
+serviceAccount:
+  create: true
+  name: ""
+  automount: true
+
+rbac:
+  create: true
+  # -- Set to true for local dev; false for production
+  clusterAdmin: true
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: http
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+extraArgs:
+  - --enable-skip-login
+  - --disable-settings-authorizer
+  - --namespace=kubernetes-dashboard
+  - --token-ttl=86400
+  - --enable-insecure-login
+  - --insecure-bind-address=0.0.0.0
+  - --insecure-port=9090
+  - --sidecar-host=http://localhost:8000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Resource limits suitable for local development
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# -- Pod-level settings
+labels:
+  app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+  app.kubernetes.io/managed-by: helm

@@ -1,0 +1,38 @@
+# New Package
+
+## Arguments
+- `name`: Package name (kebab-case, e.g., `shared-types`)
+- `type`: `node` | `go`
+
+## Steps
+
+### 1. Create Package Files
+{{ if .Computed.HasNode }}
+**Node.js** (`packages/node/{name}/`):
+- `package.json` with `{{ .Computed.PrimaryScope }}/{name}` scope
+- `tsconfig.json` extending base config
+- `tsconfig.build.json` for production builds
+- `vitest.config.ts`
+- `src/index.ts` (barrel export)
+- `src/types.ts` (initial types)
+{{ end }}
+{{ if .Computed.HasGo }}
+**Go** (`packages/go/{name}/`):
+- `go.mod` with module path
+- `{name}.go` with package declaration
+{{ end }}
+
+### 2. Register in Workspace
+{{ if .Computed.HasNode }}- Package is auto-discovered by {{ .Project.Spec.Monorepo.PackageManager }} workspaces{{ end }}
+{{ if .Computed.HasGo }}- Add to `go.work`: `use ./packages/go/{name}`{{ end }}
+
+### 3. Build
+{{ if .Computed.HasNode }}- Run `{{ .Project.Spec.Monorepo.PackageManager }} install`
+- Run `{{ .Project.Spec.Monorepo.PackageManager }} nx build {name}`{{ end }}
+{{ if .Computed.HasGo }}- Run `go work sync && go mod tidy`{{ end }}
+
+## Checklist
+- [ ] Package files created
+- [ ] Registered in workspace
+- [ ] Builds successfully
+- [ ] Can be imported by services

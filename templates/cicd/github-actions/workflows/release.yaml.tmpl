@@ -1,0 +1,249 @@
+# =============================================================================
+# Release Workflow
+# =============================================================================
+# Creates semantic version releases with changelog and tags.
+#
+# Workflow:
+#   1. Manual trigger with version bump type (patch, minor, major)
+#   2. Calculates next version
+#   3. Generates changelog from commits
+#   4. Creates GitHub release with tag
+#   5. Optionally triggers production deployment
+# =============================================================================
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      deploy_to_production:
+        description: "Deploy to production after release"
+        required: false
+        type: boolean
+        default: false
+      dry_run:
+        description: "Dry run (don't create release)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  # ==========================================================================
+  # Calculate Version
+  # ==========================================================================
+  version:
+    name: Calculate Version
+    runs-on: ubuntu-latest
+    outputs:
+      current_version: ${{ "{{" }} steps.version.outputs.current {{ "}}" }}
+      new_version: ${{ "{{" }} steps.version.outputs.new {{ "}}" }}
+      tag: ${{ "{{" }} steps.version.outputs.tag {{ "}}" }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get current version
+        id: version
+        run: |
+          # Get latest tag or default to v0.0.0
+          CURRENT=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+
+          # Strip 'v' prefix for semver calculation
+          VERSION=${CURRENT#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          # Calculate new version
+          case "${{ "{{" }} inputs.version_bump {{ "}}" }}" in
+            major)
+              NEW_VERSION="$((MAJOR + 1)).0.0"
+              ;;
+            minor)
+              NEW_VERSION="${MAJOR}.$((MINOR + 1)).0"
+              ;;
+            patch)
+              NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+              ;;
+          esac
+
+          echo "new=v${NEW_VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=v${NEW_VERSION}" >> $GITHUB_OUTPUT
+
+          echo "Version bump: $CURRENT -> v${NEW_VERSION}"
+
+  # ==========================================================================
+  # Create Release
+  # ==========================================================================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [version]
+    if: inputs.dry_run == false
+    outputs:
+      release_url: ${{ "{{" }} steps.release.outputs.url {{ "}}" }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        run: |
+          PREVIOUS_TAG="${{ "{{" }} needs.version.outputs.current_version {{ "}}" }}"
+
+          # If no previous tag, get all commits
+          if [ "$PREVIOUS_TAG" = "v0.0.0" ]; then
+            COMMITS=$(git log --oneline --no-merges | head -50)
+          else
+            COMMITS=$(git log ${PREVIOUS_TAG}..HEAD --oneline --no-merges)
+          fi
+
+          # Categorize commits
+          FEATURES=""
+          FIXES=""
+          CHORES=""
+          OTHER=""
+
+          while IFS= read -r line; do
+            if [ -z "$line" ]; then continue; fi
+
+            HASH=$(echo "$line" | cut -d' ' -f1)
+            MSG=$(echo "$line" | cut -d' ' -f2-)
+
+            case "$MSG" in
+              feat:*|feature:*)
+                FEATURES="${FEATURES}- ${MSG} (${HASH})"$'\n'
+                ;;
+              fix:*|bugfix:*)
+                FIXES="${FIXES}- ${MSG} (${HASH})"$'\n'
+                ;;
+              chore:*|ci:*|docs:*|refactor:*|test:*)
+                CHORES="${CHORES}- ${MSG} (${HASH})"$'\n'
+                ;;
+              *)
+                OTHER="${OTHER}- ${MSG} (${HASH})"$'\n'
+                ;;
+            esac
+          done <<< "$COMMITS"
+
+          # Build release body
+          {
+            echo "## Release ${{ "{{" }} needs.version.outputs.new_version {{ "}}" }}"
+            echo ""
+            echo "**Released:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+            echo "**Commit:** ${{ "{{" }} github.sha {{ "}}" }}"
+            echo ""
+            echo "---"
+            echo ""
+
+            if [ -n "$FEATURES" ]; then
+              echo "### Features"
+              echo ""
+              printf "%s" "$FEATURES"
+              echo ""
+            fi
+
+            if [ -n "$FIXES" ]; then
+              echo "### Bug Fixes"
+              echo ""
+              printf "%s" "$FIXES"
+              echo ""
+            fi
+
+            if [ -n "$CHORES" ]; then
+              echo "### Maintenance"
+              echo ""
+              printf "%s" "$CHORES"
+              echo ""
+            fi
+
+            if [ -n "$OTHER" ]; then
+              echo "### Other Changes"
+              echo ""
+              printf "%s" "$OTHER"
+              echo ""
+            fi
+
+            echo "---"
+            echo ""
+            echo "### Docker Images"
+            echo ""
+            echo "All images for this release are tagged with:"
+            echo "- \`${{ "{{" }} needs.version.outputs.tag {{ "}}" }}\`"
+            echo "- \`${{ "{{" }} github.sha {{ "}}" }}\`"
+            echo ""
+            echo "### Deployment"
+            echo ""
+            echo "To deploy this release:"
+            echo "\`\`\`bash"
+            echo "# Staging (automatic if configured)"
+            echo "# Production (requires manual approval)"
+            echo "\`\`\`"
+          } > release-body.md
+
+          echo "Generated release body:"
+          cat release-body.md
+
+      - name: Create Release
+        id: release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ "{{" }} needs.version.outputs.tag {{ "}}" }}
+          name: "Release ${{ "{{" }} needs.version.outputs.new_version {{ "}}" }}"
+          body_path: release-body.md
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+
+      - name: Output release info
+        run: |
+          echo "## Release Created" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ "{{" }} needs.version.outputs.new_version {{ "}}" }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** ${{ "{{" }} needs.version.outputs.tag {{ "}}" }}" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** ${{ "{{" }} steps.release.outputs.url {{ "}}" }}" >> $GITHUB_STEP_SUMMARY
+
+  # ==========================================================================
+  # Deploy to Production (Optional)
+  # ==========================================================================
+  deploy-production:
+    name: Build & Push to Production
+    needs: [version, release]
+    if: inputs.deploy_to_production == true && inputs.dry_run == false
+    uses: ./.github/workflows/_deploy-argocd.yaml
+    with:
+      # Environment
+      environment: production
+      branch: main
+      image_tag: ${{ "{{" }} needs.version.outputs.tag {{ "}}" }}
+
+      # Smart build: only rebuild changed services, retag unchanged ones
+      force_build_all: false
+
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}      # GCP Configuration
+      gcp_project_id: ${{ "{{" }} vars.GCP_PROJECT_ID_PRODUCTION {{ "}}" }}
+      gke_cluster: ${{ "{{" }} vars.GKE_CLUSTER_PRODUCTION {{ "}}" }}
+      gke_zone: {{ .Project.Spec.Cloud.Region }}
+{{ end }}      namespace: {{ .Project.Metadata.Name }}
+
+      # ArgoCD URLs (for summary links)
+      argocd_url: ${{ "{{" }} vars.ARGOCD_URL_PRODUCTION {{ "}}" }}
+      services_app_name: {{ .Project.Metadata.Name }}-apps-production
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}
+    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ "{{" }} secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_PRODUCTION {{ "}}" }}
+      GCP_SERVICE_ACCOUNT: ${{ "{{" }} secrets.GCP_SERVICE_ACCOUNT_PRODUCTION {{ "}}" }}
+{{ end }}

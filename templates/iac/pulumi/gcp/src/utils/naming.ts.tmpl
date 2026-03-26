@@ -1,0 +1,77 @@
+/**
+ * Naming utilities for {{ .Project.Metadata.Name }} infrastructure.
+ *
+ * Provides consistent resource naming, label formatting, and
+ * per-environment domain generation across the stack.
+ */
+
+import * as pulumi from "@pulumi/pulumi";
+
+const PROJECT_PREFIX = "{{ .Project.Metadata.Name }}";
+
+/**
+ * Generates a cloud resource name with the project prefix.
+ *
+ * @param base - Resource type or category (e.g. "sql", "gke", "gcs")
+ * @param suffix - Specific resource identifier (e.g. "instance", "main")
+ * @returns A hyphen-delimited resource name
+ *
+ * @example
+ * resourceName("sql", "instance") // "{{ .Project.Metadata.Name }}-sql-instance"
+ */
+export function resourceName(base: string, suffix: string): string {
+  const env = pulumi.getStack();
+  return `${PROJECT_PREFIX}-${base}-${suffix}-${env}`;
+}
+
+/**
+ * Generates a short resource name without the stack suffix.
+ * Useful for resources with tight character limits.
+ *
+ * @param base - Resource type or category
+ * @param suffix - Specific resource identifier
+ * @returns A hyphen-delimited resource name without the environment suffix
+ */
+export function shortResourceName(base: string, suffix: string): string {
+  return `${PROJECT_PREFIX}-${base}-${suffix}`;
+}
+
+/**
+ * Converts a string to a Kubernetes-safe label value.
+ *
+ * Label values must be 63 characters or fewer, begin and end with an
+ * alphanumeric character, and contain only alphanumerics, hyphens,
+ * underscores, and dots.
+ *
+ * @param s - The input string
+ * @returns A sanitized label value
+ */
+export function toLabel(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]/g, "-")
+    .replace(/^[^a-z0-9]+/, "")
+    .replace(/[^a-z0-9]+$/, "")
+    .slice(0, 63);
+}
+
+/**
+ * Generates a per-environment domain name.
+ *
+ * Production uses the base domain directly; other environments get a
+ * subdomain prefix.
+ *
+ * @param env - Environment name (e.g. "staging", "production")
+ * @param baseDomain - Base domain (e.g. "{{ .Domain }}")
+ * @returns The environment-specific domain
+ *
+ * @example
+ * envDomain("production", "example.com") // "example.com"
+ * envDomain("staging", "example.com")    // "staging.example.com"
+ */
+export function envDomain(env: string, baseDomain: string): string {
+  if (env === "production" || env === "prod") {
+    return baseDomain;
+  }
+  return `${env}.${baseDomain}`;
+}

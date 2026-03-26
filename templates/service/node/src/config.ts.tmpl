@@ -1,0 +1,26 @@
+import { z } from 'zod';
+import 'dotenv/config';
+
+const configSchema = z.object({
+  port: z.coerce.number().default(3000),
+  nodeEnv: z.enum(['development', 'production', 'test']).default('development'),
+  logLevel: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}
+  hasuraUrl: z.string().url().default('http://hasura:8080/v1/graphql'),
+  hasuraAdminSecret: z.string().optional(),{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "redis" }}
+  redisUrl: z.string().default('redis://redis-master:6379'),{{ end }}{{ if hasItem .Service.Features "dapr" }}
+  daprHttpPort: z.coerce.number().default(3500),
+  daprGrpcPort: z.coerce.number().default(50001),{{ end }}
+});
+
+export const config = configSchema.parse({
+  port: process.env.PORT,
+  nodeEnv: process.env.NODE_ENV,
+  logLevel: process.env.LOG_LEVEL,{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}
+  hasuraUrl: process.env.HASURA_GRAPHQL_URL,
+  hasuraAdminSecret: process.env.HASURA_GRAPHQL_ADMIN_SECRET,{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "redis" }}
+  redisUrl: process.env.REDIS_URL,{{ end }}{{ if hasItem .Service.Features "dapr" }}
+  daprHttpPort: process.env.DAPR_HTTP_PORT,
+  daprGrpcPort: process.env.DAPR_GRPC_PORT,{{ end }}
+});
+
+export type Config = z.infer<typeof configSchema>;

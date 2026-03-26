@@ -1,0 +1,22 @@
+# =============================================================================
+# {{ .Project.Metadata.Name }} - ArgoCD Apps: Production Overrides
+# =============================================================================
+# Production uses semver image tags. Only explicit version bumps deploy.
+# =============================================================================
+
+global:
+  environment: production
+  namespace: {{ .Project.Metadata.Name }}
+  repoURL: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+  gitBranch: main
+  valuesFile: values-prod.yaml
+  project: {{ .Project.Metadata.Name }}-production
+  defaultImageTag: v0.1.0
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}
+  # GCP Artifact Registry
+  region: {{ .Project.Spec.Cloud.Region }}
+{{ end }}
+  imageUpdater:
+    enabled: {{ .Project.Spec.GitOps.ImageUpdater }}
+    updateStrategy: semver
+    allowTags: "regexp:^v[0-9]+\\.[0-9]+\\.[0-9]+$"

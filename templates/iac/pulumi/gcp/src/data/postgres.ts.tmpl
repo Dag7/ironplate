@@ -1,0 +1,160 @@
+/**
+ * Cloud SQL PostgreSQL database resources for {{ .Project.Metadata.Name }}.
+ *
+ * Creates a Cloud SQL PostgreSQL 16 instance with private networking,
+ * automated backups, and point-in-time recovery. Provisions application
+ * databases and a user with a generated password.
+ */
+
+import * as pulumi from "@pulumi/pulumi";
+import * as gcp from "@pulumi/gcp";
+import * as random from "@pulumi/random";
+import { defaultLabels } from "../utils/tags";
+import { resourceName } from "../utils/naming";
+import { DatabaseConfig, InfraOutputs } from "../config/types";
+
+export interface DatabaseOutputs {
+  /** Cloud SQL instance name */
+  instanceName: pulumi.Output<string>;
+  /** Cloud SQL instance connection name */
+  connectionName: pulumi.Output<string>;
+  /** Private IP address of the instance */
+  privateIpAddress: pulumi.Output<string>;
+  /** Database user name */
+  userName: pulumi.Output<string>;
+  /** Database user password */
+  userPassword: pulumi.Output<string>;
+  /** Full connection string for the application database */
+  connectionString: pulumi.Output<string>;
+}
+
+export function createDatabase(
+  infra: InfraOutputs,
+  dbConfig: DatabaseConfig,
+): DatabaseOutputs {
+  const config = new pulumi.Config();
+  const project = config.require("gcpProject");
+  const region = config.get("gcpRegion") || "{{ .Project.Spec.Cloud.Region }}";
+  const labels = defaultLabels();
+
+  // Reserve a private IP range for Cloud SQL
+  const privateIpRange = new gcp.compute.GlobalAddress(
+    resourceName("sql", "ip-range"),
+    {
+      project,
+      purpose: "VPC_PEERING",
+      addressType: "INTERNAL",
+      prefixLength: 16,
+      network: infra.networkSelfLink,
+    },
+  );
+
+  // Create VPC peering for private services access
+  const privateVpcConnection =
+    new gcp.servicenetworking.Connection(
+      resourceName("sql", "vpc-peering"),
+      {
+        network: infra.networkSelfLink,
+        service: "servicenetworking.googleapis.com",
+        reservedPeeringRanges: [privateIpRange.name],
+      },
+    );
+
+  // Cloud SQL PostgreSQL instance
+  const instance = new gcp.sql.DatabaseInstance(
+    resourceName("sql", "instance"),
+    {
+      project,
+      region,
+      databaseVersion: "POSTGRES_16",
+      deletionProtection: true,
+      settings: {
+        tier: dbConfig.tier,
+        diskSize: dbConfig.storageGb,
+        diskType: "PD_SSD",
+        availabilityType: dbConfig.highAvailability ? "REGIONAL" : "ZONAL",
+        userLabels: labels,
+        ipConfiguration: {
+          ipv4Enabled: false,
+          privateNetwork: infra.networkSelfLink,
+          enablePrivatePathForGoogleCloudServices: true,
+        },
+        backupConfiguration: {
+          enabled: true,
+          startTime: "03:00",
+          pointInTimeRecoveryEnabled: true,
+          transactionLogRetentionDays: 7,
+          backupRetentionSettings: {
+            retainedBackups: 14,
+            retentionUnit: "COUNT",
+          },
+        },
+        maintenanceWindow: {
+          day: 7, // Sunday
+          hour: 4,
+          updateTrack: "stable",
+        },
+        insightsConfig: {
+          queryInsightsEnabled: true,
+          queryStringLength: 1024,
+          recordApplicationTags: true,
+          recordClientAddress: true,
+        },
+        databaseFlags: [
+          { name: "log_checkpoints", value: "on" },
+          { name: "log_connections", value: "on" },
+          { name: "log_disconnections", value: "on" },
+          { name: "log_lock_waits", value: "on" },
+        ],
+      },
+    },
+    { dependsOn: [privateVpcConnection] },
+  );
+
+  // Create application databases
+  const databases = dbConfig.databases.map(
+    (dbName) =>
+      new gcp.sql.Database(resourceName("db", dbName), {
+        project,
+        instance: instance.name,
+        name: dbName,
+        charset: "UTF8",
+        collation: "en_US.UTF8",
+      }),
+  );
+
+  // Generate a random password for the database user
+  const dbPassword = new random.RandomPassword(
+    resourceName("sql", "password"),
+    {
+      length: 32,
+      special: true,
+      overrideSpecial: "!#$%&*()-_=+[]{}<>:?",
+    },
+  );
+
+  // Create database user
+  const dbUser = new gcp.sql.User(resourceName("sql", "user"), {
+    project,
+    instance: instance.name,
+    name: "{{ .Project.Metadata.Name }}-app",
+    password: dbPassword.result,
+  });
+
+  // Build the connection string for the primary application database
+  const primaryDb =
+    dbConfig.databases.length > 0
+      ? dbConfig.databases[0]
+      : "{{ .Project.Metadata.Name }}";
+
+  const connectionString = pulumi.interpolate`postgresql://${dbUser.name}:${dbPassword.result}@${instance.privateIpAddress}:5432/${primaryDb}?sslmode=require`;
+
+  return {
+    instanceName: instance.name,
+    connectionName: instance.connectionName,
+    privateIpAddress: instance.privateIpAddress,
+    userName: dbUser.name,
+    userPassword: dbPassword.result,
+    connectionString,
+  };
+}

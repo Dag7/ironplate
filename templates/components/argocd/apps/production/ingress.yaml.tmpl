@@ -1,0 +1,51 @@
+# =============================================================================
+# ArgoCD Ingress Application - Production
+# =============================================================================
+# Centralized ingress routing for all services.
+# Sync Wave: 2 (after infrastructure, before services)
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ingress-production
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+    app.kubernetes.io/component: ingress
+    environment: production
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Project.Metadata.Name }}-production
+
+  source:
+    repoURL: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+    targetRevision: main
+    path: k8s/helm/ingress
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-prod.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Project.Metadata.Name }}
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true
+      - PruneLast=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  revisionHistoryLimit: 10

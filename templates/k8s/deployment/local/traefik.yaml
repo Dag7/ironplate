@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: traefik-dashboard
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: traefik-dashboard
+    app.kubernetes.io/component: dashboard
+    environment: local
+spec:
+  selector:
+    app.kubernetes.io/name: traefik
+  type: ClusterIP
+  ports:
+    - name: dashboard
+      port: 80
+      targetPort: 9000
+      protocol: TCP

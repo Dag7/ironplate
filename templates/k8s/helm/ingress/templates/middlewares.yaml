@@ -1,0 +1,65 @@
+{{- if .Values.middlewares.enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ .Values.global.namespace }}-rate-limit
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "ingress.labels" . | nindent 4 }}
+spec:
+  rateLimit:
+    average: {{ .Values.middlewares.rateLimit.average | default 100 }}
+    burst: {{ .Values.middlewares.rateLimit.burst | default 200 }}
+    period: {{ .Values.middlewares.rateLimit.period | default "1s" }}
+    sourceCriterion:
+      ipStrategy:
+        depth: 1
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ .Values.global.namespace }}-security-headers
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "ingress.labels" . | nindent 4 }}
+spec:
+  headers:
+    frameDeny: true
+    contentTypeNosniff: true
+    browserXssFilter: true
+    referrerPolicy: "strict-origin-when-cross-origin"
+    contentSecurityPolicy: {{ .Values.middlewares.securityHeaders.csp | quote }}
+    permissionsPolicy: "geolocation=(), microphone=(), camera=()"
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    stsPreload: true
+    customResponseHeaders:
+      X-Powered-By: ""
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ .Values.global.namespace }}-cors
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    {{- include "ingress.labels" . | nindent 4 }}
+spec:
+  headers:
+    accessControlAllowMethods:
+      - GET
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+      - OPTIONS
+    accessControlAllowHeaders:
+      - "*"
+    accessControlAllowOriginList:
+      {{- range .Values.middlewares.cors.allowedOrigins }}
+      - {{ . | quote }}
+      {{- end }}
+    accessControlMaxAge: 86400
+    addVaryHeader: true
+    accessControlAllowCredentials: true
+{{- end }}

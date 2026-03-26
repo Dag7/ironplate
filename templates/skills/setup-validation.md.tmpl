@@ -1,0 +1,128 @@
+# Set Up Request Validation
+
+## Arguments
+- `service`: Service name
+- `routes`: Comma-separated route paths to validate (e.g., `POST /users,PUT /users/:id`)
+
+## Architecture
+
+```
+Request → validate({ body, query, params }) → Zod parse → handler
+                                            ↓ fail
+                                    422 ValidationError
+```
+
+## Steps
+
+### 1. Add Dependencies
+- Add `@ironplate/validation` to `apps/{service}/package.json`
+- Run `{{ .Project.Spec.Monorepo.PackageManager }} install`
+
+### 2. Define Schemas
+
+```typescript
+import { z } from 'zod';
+import { uuid, email, nonEmptyString, pagination } from '@ironplate/validation';
+
+export const createUserSchema = z.object({
+  name: nonEmptyString,
+  email: email,
+  role: z.enum(['admin', 'member', 'viewer']).default('member'),
+});
+
+export const getUsersQuerySchema = pagination.extend({
+  role: z.enum(['admin', 'member', 'viewer']).optional(),
+  search: z.string().optional(),
+});
+
+export const userIdParams = z.object({
+  id: uuid,
+});
+
+export type CreateUserDto = z.infer<typeof createUserSchema>;
+```
+
+### 3. Apply Validation Middleware
+
+```typescript
+import { validate } from '@ironplate/validation';
+import { Router } from 'express';
+
+const router = Router();
+
+router.post(
+  '/users',
+  validate({ body: createUserSchema }),
+  async (req, res) => {
+    // req.body is typed and validated
+    const user = await createUser(req.body);
+    res.status(201).json(user);
+  },
+);
+
+router.get(
+  '/users',
+  validate({ query: getUsersQuerySchema }),
+  async (req, res) => {
+    // req.query.page, req.query.limit are numbers
+    const users = await listUsers(req.query);
+    res.json(users);
+  },
+);
+
+router.get(
+  '/users/:id',
+  validate({ params: userIdParams }),
+  async (req, res) => {
+    // req.params.id is a valid UUID
+    const user = await getUser(req.params.id);
+    res.json(user);
+  },
+);
+```
+
+### 4. Combine Body + Query + Params
+
+```typescript
+router.put(
+  '/users/:id',
+  validate({
+    params: userIdParams,
+    body: createUserSchema.partial(), // all fields optional for updates
+  }),
+  updateUser,
+);
+```
+
+## Built-in Schemas
+
+| Schema | Type | Description |
+|--------|------|-------------|
+| `uuid` | string | UUID v4 format |
+| `email` | string | Valid email, lowercased |
+| `nonEmptyString` | string | Trimmed, min length 1 |
+| `url` | string | Valid URL |
+| `isoDate` | string | ISO 8601 datetime |
+| `positiveInt` | number | Integer > 0 |
+| `nonNegativeInt` | number | Integer >= 0 |
+| `pagination` | object | `{ page, limit }` with defaults |
+| `sort` | object | `{ sortBy, sortOrder }` |
+| `slug` | string | Kebab-case URL-safe |
+| `commaSeparatedList` | string→array | Splits on comma |
+| `semver` | string | Semantic version |
+
+## CRITICAL Rules
+- ALWAYS validate at the route level — never trust client input
+- ALWAYS use `validate()` middleware — never call `schema.parse()` manually in routes
+- Use `.partial()` for update endpoints (PATCH/PUT with optional fields)
+- The middleware strips unknown keys by default (safe against mass assignment)
+- Validation errors return 422 with structured error details
+- Use `z.coerce.number()` for query params (they arrive as strings)
+
+## Checklist
+- [ ] `@ironplate/validation` dependency added
+- [ ] Zod schemas defined for all route inputs
+- [ ] `validate()` middleware applied to all routes accepting input
+- [ ] Query params use coercion (`z.coerce.number()`)
+- [ ] Update routes use `.partial()` schemas
+- [ ] Schema types exported for handler typing (`z.infer<typeof schema>`)

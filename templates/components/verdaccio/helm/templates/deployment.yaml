@@ -1,0 +1,141 @@
+{{/*
+=============================================================================
+Verdaccio Private NPM Registry
+=============================================================================
+PVC + ConfigMap + Deployment + Service
+*/}}
+---
+{{- if .Values.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: verdaccio
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: verdaccio
+    app.kubernetes.io/name: verdaccio
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+spec:
+  accessModes:
+    - {{ .Values.persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: verdaccio
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: verdaccio
+    app.kubernetes.io/name: verdaccio
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+data:
+  config.yaml: |-
+    {{- .Values.configMap | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: verdaccio
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: verdaccio
+    app.kubernetes.io/name: verdaccio
+    app.kubernetes.io/instance: verdaccio
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+    app.kubernetes.io/managed-by: helm
+spec:
+  replicas: {{ .Values.replicaCount }}
+  {{- if .Values.persistence.enabled }}
+  strategy:
+    type: Recreate
+  {{- end }}
+  selector:
+    matchLabels:
+      app: verdaccio
+  template:
+    metadata:
+      labels:
+        app: verdaccio
+        app.kubernetes.io/name: verdaccio
+        app.kubernetes.io/instance: verdaccio
+        app.kubernetes.io/part-of: {{ .Values.projectName }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/deployment.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: verdaccio
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 4873
+              name: http
+          env:
+            - name: VERDACCIO_PORT
+              value: "4873"
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+          volumeMounts:
+            - mountPath: /verdaccio/storage
+              name: storage
+            - mountPath: /verdaccio/conf
+              name: config
+              readOnly: true
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: verdaccio
+        - name: storage
+        {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: verdaccio
+        {{- else }}
+          emptyDir: {}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: verdaccio
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: verdaccio
+    app.kubernetes.io/name: verdaccio
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+    app.kubernetes.io/managed-by: helm
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: verdaccio

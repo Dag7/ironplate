@@ -1,0 +1,85 @@
+/**
+ * Cloud Storage bucket for {{ .Project.Metadata.Name }}.
+ *
+ * Creates a GCS bucket for application assets and uploads with
+ * uniform bucket-level access, lifecycle rules, and CORS configuration.
+ */
+
+import * as pulumi from "@pulumi/pulumi";
+import * as gcp from "@pulumi/gcp";
+import { defaultLabels } from "../utils/tags";
+import { resourceName } from "../utils/naming";
+
+export interface StorageOutputs {
+  /** GCS bucket name */
+  bucketName: pulumi.Output<string>;
+  /** GCS bucket URL */
+  bucketUrl: pulumi.Output<string>;
+  /** GCS bucket self-link */
+  bucketSelfLink: pulumi.Output<string>;
+}
+
+export function createStorage(): StorageOutputs {
+  const config = new pulumi.Config();
+  const project = config.require("gcpProject");
+  const region = config.get("gcpRegion") || "{{ .Project.Spec.Cloud.Region }}";
+  const labels = defaultLabels();
+
+  const bucket = new gcp.storage.Bucket(
+    resourceName("gcs", "assets"),
+    {
+      project,
+      name: resourceName("gcs", "assets"),
+      location: region,
+      storageClass: "STANDARD",
+      uniformBucketLevelAccess: true,
+      versioning: {
+        enabled: true,
+      },
+      labels,
+      lifecycleRules: [
+        {
+          action: { type: "Delete" },
+          condition: {
+            age: 30,
+            matchesPrefix: ["tmp/"],
+          },
+        },
+        {
+          action: { type: "SetStorageClass", storageClass: "NEARLINE" },
+          condition: {
+            age: 90,
+            matchesPrefix: ["archive/"],
+          },
+        },
+        {
+          action: { type: "AbortIncompleteMultipartUpload" },
+          condition: {
+            age: 7,
+          },
+        },
+      ],
+      cors: [
+        {
+          origins: [
+            "https://{{ .Domain }}",
+            "https://*.{{ .Domain }}",
+          ],
+          methods: ["GET", "HEAD", "PUT", "POST", "DELETE"],
+          responseHeaders: [
+            "Content-Type",
+            "Content-Disposition",
+            "Cache-Control",
+          ],
+          maxAgeSeconds: 3600,
+        },
+      ],
+    },
+  );
+
+  return {
+    bucketName: bucket.name,
+    bucketUrl: bucket.url,
+    bucketSelfLink: bucket.selfLink,
+  };
+}

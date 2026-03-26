@@ -1,0 +1,271 @@
+#!/bin/bash
+# =============================================================================
+# Detect Affected Services (Auto-Discovery)
+# =============================================================================
+# Automatically discovers deployable services and detects which ones are
+# affected by changes.
+#
+# Discovery Conventions:
+{{ if .Computed.HasNode }}#   - Node.js service: apps/<name>/ with package.json + Dockerfile
+{{ end }}{{ if .Computed.HasGo }}#   - Go service: apps/<name>/ with go.mod + (main.go or Dockerfile)
+{{ end }}#
+# Detection Strategy:
+{{ if .Computed.HasNode }}#   - Node.js services: NX dependency graph
+{{ end }}{{ if .Computed.HasGo }}#   - Go services: Git diff + shared package detection
+{{ end }}#
+# Usage:
+#   ./detect-affected.sh [base] [head]
+#   ./detect-affected.sh HEAD~1 HEAD
+#
+# Outputs (GitHub Actions):
+#   - affected_services: JSON array of affected service names
+#   - all_services: JSON array of all discovered services
+#   - affected_count: Number of affected services
+#   - has_affected: 'true' if any services affected
+# =============================================================================
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+BASE="${1:-HEAD~1}"
+HEAD="${2:-HEAD}"
+
+echo "Detecting affected services..."
+echo "   Base: $BASE"
+echo "   Head: $HEAD"
+echo "   Repo: $REPO_ROOT"
+
+# =============================================================================
+# Auto-Discovery Functions
+# =============================================================================
+{{ if .Computed.HasNode }}
+discover_node_services() {
+  local services=()
+
+  for dir in "$REPO_ROOT"/apps/*/; do
+    local name=$(basename "$dir")
+
+    # Skip non-deployable apps
+    if [[ "$name" == "e2e-tests" ]]; then
+      continue
+    fi
+
+    # Check if it's a Node.js service (has package.json)
+    if [[ -f "$dir/package.json" ]]; then
+      # Must have Dockerfile to be deployable
+      if [[ -f "$dir/Dockerfile" ]] || [[ -f "$REPO_ROOT/dockerfiles/node.Dockerfile" ]]; then
+        # Skip if it's a Go service (has go.mod)
+        if [[ ! -f "$dir/go.mod" ]]; then
+          services+=("$name")
+        fi
+      fi
+    fi
+  done
+
+  echo "${services[@]}"
+}
+
+# Build NX project name from service name
+get_nx_project_name() {
+  local service="$1"
+
+  # Check if project.json exists and read the name
+  local project_json="$REPO_ROOT/apps/$service/project.json"
+  if [[ -f "$project_json" ]]; then
+    local nx_name=$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$project_json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    if [[ -n "$nx_name" ]]; then
+      echo "$nx_name"
+      return
+    fi
+  fi
+
+  # Fallback: check package.json
+  local package_json="$REPO_ROOT/apps/$service/package.json"
+  if [[ -f "$package_json" ]]; then
+    local pkg_name=$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$package_json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')
+    if [[ -n "$pkg_name" ]]; then
+      echo "$pkg_name"
+      return
+    fi
+  fi
+
+  # Final fallback
+  echo "$service"
+}
+{{ end }}
+{{ if .Computed.HasGo }}
+discover_go_services() {
+  local services=()
+
+  for dir in "$REPO_ROOT"/apps/*/; do
+    local name=$(basename "$dir")
+
+    if [[ -f "$dir/go.mod" ]]; then
+      services+=("$name")
+    fi
+  done
+
+  echo "${services[@]}"
+}
+
+discover_go_shared_packages() {
+  local packages=()
+
+  for dir in "$REPO_ROOT"/packages/go/*/; do
+    if [[ -f "$dir/go.mod" ]]; then
+      local rel_path="${dir#$REPO_ROOT/}"
+      rel_path="${rel_path%/}"
+      packages+=("$rel_path")
+    fi
+  done
+
+  echo "${packages[@]}"
+}
+{{ end }}
+# =============================================================================
+# Discover All Services
+# =============================================================================
+echo ""
+echo "Discovering deployable services..."
+{{ if .Computed.HasNode }}
+NODE_SERVICES=($(discover_node_services))
+echo "   Node.js services: ${NODE_SERVICES[*]:-none}"
+{{ end }}{{ if .Computed.HasGo }}
+GO_SERVICES_LIST=($(discover_go_services))
+GO_SHARED_PACKAGES=($(discover_go_shared_packages))
+echo "   Go services: ${GO_SERVICES_LIST[*]:-none}"
+echo "   Go shared packages: ${GO_SHARED_PACKAGES[*]:-none}"
+{{ end }}
+ALL_SERVICES=({{ if .Computed.HasNode }}"${NODE_SERVICES[@]}" {{ end }}{{ if .Computed.HasGo }}"${GO_SERVICES_LIST[@]}"{{ end }})
+echo "   Total: ${#ALL_SERVICES[@]} services"
+
+AFFECTED_SERVICES=()
+{{ if .Computed.HasNode }}
+# =============================================================================
+# Node.js Detection (NX)
+# =============================================================================
+echo ""
+echo "Detecting Node.js changes with NX..."
+
+NX_AFFECTED=$(npx nx show projects --affected --base="$BASE" --head="$HEAD" 2>/dev/null || echo "")
+
+if [ -n "$NX_AFFECTED" ]; then
+  echo "   NX affected projects:"
+  for service in "${NODE_SERVICES[@]}"; do
+    nx_name=$(get_nx_project_name "$service")
+    if echo "$NX_AFFECTED" | grep -qw "$nx_name"; then
+      AFFECTED_SERVICES+=("$service")
+      echo "   $nx_name -> $service"
+    fi
+  done
+else
+  echo "   NX returned no affected projects (or failed)"
+fi
+{{ end }}{{ if .Computed.HasGo }}
+# =============================================================================
+# Go Detection (Git Diff)
+# =============================================================================
+echo ""
+echo "Detecting Go changes with git diff..."
+
+CHANGED_FILES=$(git diff --name-only "$BASE" "$HEAD" 2>/dev/null || echo "")
+
+# Check if Go shared packages changed (affects all Go services)
+GO_SHARED_CHANGED=false
+for pkg in "${GO_SHARED_PACKAGES[@]}"; do
+  if echo "$CHANGED_FILES" | grep -q "^${pkg}/"; then
+    echo "   Go shared package changed: $pkg"
+    GO_SHARED_CHANGED=true
+    break
+  fi
+done
+
+# If shared packages changed, add all Go services
+if [ "$GO_SHARED_CHANGED" = true ]; then
+  echo "   All Go services affected by shared package change"
+  for service in "${GO_SERVICES_LIST[@]}"; do
+    AFFECTED_SERVICES+=("$service")
+    echo "   apps/$service -> $service"
+  done
+else
+  # Check individual Go services
+  for service in "${GO_SERVICES_LIST[@]}"; do
+    if echo "$CHANGED_FILES" | grep -q "^apps/${service}/"; then
+      AFFECTED_SERVICES+=("$service")
+      echo "   apps/$service -> $service"
+    fi
+  done
+fi
+{{ end }}{{ if .Computed.HasNode }}
+# =============================================================================
+# Fallback: Git diff for Node.js (if NX failed)
+# =============================================================================
+if [ -z "$NX_AFFECTED" ]; then
+  echo ""
+  echo "NX detection failed, checking git diff for Node.js apps..."
+
+  CHANGED_FILES=${CHANGED_FILES:-$(git diff --name-only "$BASE" "$HEAD" 2>/dev/null || echo "")}
+
+  for app in $(echo "$CHANGED_FILES" | grep "^apps/" | cut -d'/' -f2 | sort -u); do
+    for service in "${NODE_SERVICES[@]}"; do
+      if [ "$app" == "$service" ]; then
+        # Don't double-add if already detected
+        if [[ ! " ${AFFECTED_SERVICES[*]} " =~ " ${service} " ]]; then
+          AFFECTED_SERVICES+=("$service")
+          echo "   Git detected: $service"
+        fi
+      fi
+    done
+  done
+fi
+{{ end }}
+# Remove duplicates
+AFFECTED_SERVICES=($(echo "${AFFECTED_SERVICES[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+ALL_SERVICES=($(echo "${ALL_SERVICES[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+
+# Build JSON array
+build_json_array() {
+  local arr=("$@")
+  local json="["
+  local first=true
+  for item in "${arr[@]}"; do
+    if [ -n "$item" ]; then
+      if [ "$first" = true ]; then
+        json+="\"$item\""
+        first=false
+      else
+        json+=",\"$item\""
+      fi
+    fi
+  done
+  json+="]"
+  echo "$json"
+}
+
+AFFECTED_JSON=$(build_json_array "${AFFECTED_SERVICES[@]}")
+ALL_JSON=$(build_json_array "${ALL_SERVICES[@]}")
+
+COUNT=${#AFFECTED_SERVICES[@]}
+TOTAL=${#ALL_SERVICES[@]}
+HAS_AFFECTED="false"
+if [ $COUNT -gt 0 ]; then
+  HAS_AFFECTED="true"
+fi
+
+echo ""
+echo "Results:"
+echo "   All services ($TOTAL): ${ALL_SERVICES[*]:-none}"
+echo "   Affected ($COUNT): ${AFFECTED_SERVICES[*]:-none}"
+echo "   Affected JSON: $AFFECTED_JSON"
+
+# Output for GitHub Actions
+if [ -n "$GITHUB_OUTPUT" ]; then
+  echo "affected_services=$AFFECTED_JSON" >> "$GITHUB_OUTPUT"
+  echo "all_services=$ALL_JSON" >> "$GITHUB_OUTPUT"
+  echo "affected_count=$COUNT" >> "$GITHUB_OUTPUT"
+  echo "total_count=$TOTAL" >> "$GITHUB_OUTPUT"
+  echo "has_affected=$HAS_AFFECTED" >> "$GITHUB_OUTPUT"
+  echo "Outputs written to GITHUB_OUTPUT"
+fi

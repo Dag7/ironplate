@@ -1,0 +1,88 @@
+# =============================================================================
+# Staging Deployment (ArgoCD GitOps)
+# =============================================================================
+# Deploys to staging environment using pure GitOps.
+#
+# Deployment Flow (CI):
+#   1. Apply ArgoCD Application manifests (ensures apps exist)
+#   2. Build images and push to container registry with correct tags
+{{ if .Computed.HasHasura }}#   3. Run Hasura migrations (full visibility in GH Actions)
+{{ end }}#
+# Deployment Flow (ArgoCD - Automatic via Image Updater):
+#   1. ArgoCD Image Updater detects new image tags
+#   2. Updates image versions in Applications
+#   3. Syncs infrastructure apps (sync-wave order)
+#   4. Deploys services with new images
+# =============================================================================
+
+name: Deploy to Staging (ArgoCD)
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Services to deploy (space-separated, empty for auto-detect)"
+        required: false
+        default: ""
+      force_build_all:
+        description: "Force build all services"
+        required: false
+        type: boolean
+        default: false
+{{ if .Computed.HasHasura }}      skip_hasura_migrations:
+        description: "Skip Hasura migrations (for infra-only deploys)"
+        required: false
+        type: boolean
+        default: false
+{{ end }}
+  push:
+    branches: [staging]
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "k8s/helm/{{ .Project.Metadata.Name }}/**"
+      - "!k8s/helm/{{ .Project.Metadata.Name }}/**/.argocd-source-*.yaml"
+      - "k8s/helm/infra/**"
+      - "k8s/argocd/apps/staging/**"
+      - "k8s/argocd/charts/**"
+      - "dockerfiles/**"
+{{ if .Computed.HasHasura }}      - "hasura/**"
+{{ end }}
+# Prevent concurrent deployments
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Staging
+    # Skip if commit is from ArgoCD Image Updater
+    if: github.actor != 'argocd-image-updater[bot]'
+    uses: ./.github/workflows/_deploy-argocd.yaml
+    with:
+      # Environment
+      environment: staging
+      branch: staging
+
+      # Build options
+      service: ${{ "{{" }} inputs.service || '' {{ "}}" }}
+      force_build_all: ${{ "{{" }} inputs.force_build_all || false {{ "}}" }}
+
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}      # GCP Configuration
+      gcp_project_id: ${{ "{{" }} vars.GCP_PROJECT_ID_STAGING {{ "}}" }}
+      gke_cluster: ${{ "{{" }} vars.GKE_CLUSTER_STAGING {{ "}}" }}
+      gke_zone: {{ .Project.Spec.Cloud.Region }}
+{{ end }}      namespace: {{ .Project.Metadata.Name }}
+
+      # ArgoCD URLs (for summary links)
+      argocd_url: ${{ "{{" }} vars.ARGOCD_URL_STAGING {{ "}}" }}
+      services_app_name: {{ .Project.Metadata.Name }}-apps-staging
+{{ if .Computed.HasHasura }}
+      # Hasura migrations
+      skip_hasura_migrations: ${{ "{{" }} inputs.skip_hasura_migrations && 'true' || 'false' {{ "}}" }}
+      apply_seeds: "true"
+{{ end }}
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ "{{" }} secrets.GCP_WORKLOAD_IDENTITY_PROVIDER_STAGING {{ "}}" }}
+      GCP_SERVICE_ACCOUNT: ${{ "{{" }} secrets.GCP_SERVICE_ACCOUNT_STAGING {{ "}}" }}
+{{ end }}

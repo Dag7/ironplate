@@ -1,0 +1,251 @@
+# =============================================================================
+# Helm Deploy Action
+# =============================================================================
+# Deploys Helm charts to a Kubernetes cluster with lint, template, and
+# install/upgrade. Supports atomic deployments, rollback, and dry-run.
+#
+# Usage:
+#   - uses: ./.github/actions/helm-deploy
+#     with:
+#       chart_path: services
+#       release_name: {{ .Project.Metadata.Name }}-services
+#       namespace: {{ .Project.Metadata.Name }}
+# =============================================================================
+
+name: "Helm Deploy"
+description: "Deploy Helm charts to Kubernetes cluster"
+
+inputs:
+  chart_path:
+    description: "Path to the Helm chart directory (relative to k8s/helm/)"
+    required: true
+  release_name:
+    description: "Helm release name"
+    required: true
+  namespace:
+    description: "Kubernetes namespace"
+    required: true
+    default: "{{ .Project.Metadata.Name }}"
+  values_file:
+    description: "Path to values file (relative to chart directory)"
+    required: false
+    default: "values.yaml"
+  set_values:
+    description: "Additional Helm --set values (comma-separated key=value pairs)"
+    required: false
+    default: ""
+  dry_run:
+    description: "Perform a dry run without actually deploying"
+    required: false
+    default: "false"
+  timeout:
+    description: "Timeout for Helm operations"
+    required: false
+    default: "10m"
+  atomic:
+    description: "If set, upgrade process rolls back changes on failure"
+    required: false
+    default: "true"
+  wait:
+    description: "Wait for all resources to be ready"
+    required: false
+    default: "true"
+  force:
+    description: "Force resource updates through a replacement strategy"
+    required: false
+    default: "false"
+  create_namespace:
+    description: "Create namespace if it doesn't exist"
+    required: false
+    default: "true"
+  additional_helm_args:
+    description: "Additional Helm arguments (space-separated)"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    # =========================================================================
+    # Install Helm
+    # =========================================================================
+    - name: Install Helm
+      shell: bash
+      run: |
+        echo "Installing Helm..."
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        helm version
+        echo "Helm installed successfully"
+
+    # =========================================================================
+    # Create Namespace
+    # =========================================================================
+    - name: Create Namespace
+      if: ${{ "{{" }} inputs.create_namespace == 'true' {{ "}}" }}
+      shell: bash
+      run: |
+        echo "Creating namespace: ${{ "{{" }} inputs.namespace {{ "}}" }}..."
+        kubectl create namespace ${{ "{{" }} inputs.namespace {{ "}}" }} --dry-run=client -o yaml | kubectl apply -f -
+        echo "Namespace ${{ "{{" }} inputs.namespace {{ "}}" }} created/updated"
+
+    # =========================================================================
+    # Validate Chart and Values
+    # =========================================================================
+    - name: Validate Chart and Values
+      shell: bash
+      run: |
+        CHART_DIR="k8s/helm/${{ "{{" }} inputs.chart_path {{ "}}" }}"
+        VALUES_FILE="$CHART_DIR/${{ "{{" }} inputs.values_file {{ "}}" }}"
+
+        echo "Validating Helm chart..."
+        echo "Chart directory: $CHART_DIR"
+        echo "Values file: $VALUES_FILE"
+
+        if [ ! -d "$CHART_DIR" ]; then
+          echo "Chart directory not found: $CHART_DIR"
+          exit 1
+        fi
+
+        if [ ! -f "$VALUES_FILE" ]; then
+          echo "Values file not found: $VALUES_FILE"
+          exit 1
+        fi
+
+        # Validate chart syntax
+        helm lint "$CHART_DIR" --values "$VALUES_FILE"
+        echo "Chart validation passed"
+
+    # =========================================================================
+    # Helm Template (Dry Run Preview)
+    # =========================================================================
+    - name: Helm Template (Dry Run)
+      shell: bash
+      run: |
+        CHART_DIR="k8s/helm/${{ "{{" }} inputs.chart_path {{ "}}" }}"
+        VALUES_FILE="$CHART_DIR/${{ "{{" }} inputs.values_file {{ "}}" }}"
+
+        echo "Generating Helm templates..."
+
+        TEMPLATE_ARGS=("template" "${{ "{{" }} inputs.release_name {{ "}}" }}" "$CHART_DIR")
+        TEMPLATE_ARGS+=("--values" "$VALUES_FILE")
+        TEMPLATE_ARGS+=("--namespace" "${{ "{{" }} inputs.namespace {{ "}}" }}")
+
+        # Add --set values if provided
+        if [ -n "${{ "{{" }} inputs.set_values {{ "}}" }}" ]; then
+          IFS=',' read -ra SET_PAIRS <<< "${{ "{{" }} inputs.set_values {{ "}}" }}"
+          for pair in "${SET_PAIRS[@]}"; do
+            pair=$(echo "$pair" | xargs)
+            if [ -n "$pair" ]; then
+              TEMPLATE_ARGS+=("--set" "$pair")
+            fi
+          done
+        fi
+
+        if [ -n "${{ "{{" }} inputs.additional_helm_args {{ "}}" }}" ]; then
+          read -ra ADDITIONAL_ARGS <<< "${{ "{{" }} inputs.additional_helm_args {{ "}}" }}"
+          TEMPLATE_ARGS+=("${ADDITIONAL_ARGS[@]}")
+        fi
+
+        TEMPLATE_ARGS+=("--debug")
+
+        helm "${TEMPLATE_ARGS[@]}" > /tmp/helm-template-output.yaml
+
+        echo "Generated templates (first 50 lines):"
+        head -50 /tmp/helm-template-output.yaml
+        echo "Template generation successful"
+
+    # =========================================================================
+    # Helm Deploy
+    # =========================================================================
+    - name: Helm Deploy
+      if: ${{ "{{" }} inputs.dry_run != 'true' {{ "}}" }}
+      shell: bash
+      run: |
+        CHART_DIR="k8s/helm/${{ "{{" }} inputs.chart_path {{ "}}" }}"
+        VALUES_FILE="$CHART_DIR/${{ "{{" }} inputs.values_file {{ "}}" }}"
+
+        echo "Deploying Helm chart"
+        echo "Release name: ${{ "{{" }} inputs.release_name {{ "}}" }}"
+        echo "Namespace: ${{ "{{" }} inputs.namespace {{ "}}" }}"
+
+        # Build Helm command arguments safely using array
+        HELM_ARGS=("upgrade" "--install" "${{ "{{" }} inputs.release_name {{ "}}" }}" "$CHART_DIR")
+        HELM_ARGS+=("--values" "$VALUES_FILE")
+        HELM_ARGS+=("--namespace" "${{ "{{" }} inputs.namespace {{ "}}" }}")
+        HELM_ARGS+=("--timeout" "${{ "{{" }} inputs.timeout {{ "}}" }}")
+
+        if [ "${{ "{{" }} inputs.atomic {{ "}}" }}" = "true" ]; then
+          HELM_ARGS+=("--atomic")
+        fi
+
+        if [ "${{ "{{" }} inputs.wait {{ "}}" }}" = "true" ]; then
+          HELM_ARGS+=("--wait")
+        fi
+
+        if [ "${{ "{{" }} inputs.force {{ "}}" }}" = "true" ]; then
+          HELM_ARGS+=("--force")
+        fi
+
+        # Add --set values if provided
+        if [ -n "${{ "{{" }} inputs.set_values {{ "}}" }}" ]; then
+          IFS=',' read -ra SET_PAIRS <<< "${{ "{{" }} inputs.set_values {{ "}}" }}"
+          for pair in "${SET_PAIRS[@]}"; do
+            pair=$(echo "$pair" | xargs)
+            if [ -n "$pair" ]; then
+              HELM_ARGS+=("--set" "$pair")
+            fi
+          done
+        fi
+
+        # Safely handle additional helm args
+        if [ -n "${{ "{{" }} inputs.additional_helm_args {{ "}}" }}" ]; then
+          read -ra ADDITIONAL_ARGS <<< "${{ "{{" }} inputs.additional_helm_args {{ "}}" }}"
+          HELM_ARGS+=("${ADDITIONAL_ARGS[@]}")
+        fi
+
+        echo "Executing: helm ${HELM_ARGS[*]}"
+        helm "${HELM_ARGS[@]}"
+
+        echo "Helm deployment completed successfully"
+
+    # =========================================================================
+    # Verify Deployment
+    # =========================================================================
+    - name: Verify Deployment
+      if: ${{ "{{" }} inputs.dry_run != 'true' {{ "}}" }}
+      shell: bash
+      run: |
+        echo "Verifying deployment status..."
+
+        # Check Helm release status
+        echo "Helm release status:"
+        helm status ${{ "{{" }} inputs.release_name {{ "}}" }} --namespace ${{ "{{" }} inputs.namespace {{ "}}" }}
+
+        # List all resources for this release
+        echo "Resources in namespace ${{ "{{" }} inputs.namespace {{ "}}" }}:"
+        kubectl get all -n ${{ "{{" }} inputs.namespace {{ "}}" }} -l app.kubernetes.io/instance=${{ "{{" }} inputs.release_name {{ "}}" }} || true
+
+        # Check pod status
+        echo "Pod status:"
+        kubectl get pods -n ${{ "{{" }} inputs.namespace {{ "}}" }} -l app.kubernetes.io/instance=${{ "{{" }} inputs.release_name {{ "}}" }} || true
+
+        # Show recent warning events
+        echo "Recent events in namespace:"
+        kubectl get events -n ${{ "{{" }} inputs.namespace {{ "}}" }} --sort-by='.lastTimestamp' --field-selector type!=Normal | tail -10 || true
+
+        echo "Deployment verification completed"
+
+    # =========================================================================
+    # Dry Run Summary
+    # =========================================================================
+    - name: Dry Run Summary
+      if: ${{ "{{" }} inputs.dry_run == 'true' {{ "}}" }}
+      shell: bash
+      run: |
+        echo "Dry Run Summary:"
+        echo "  Chart: k8s/helm/${{ "{{" }} inputs.chart_path {{ "}}" }}"
+        echo "  Release: ${{ "{{" }} inputs.release_name {{ "}}" }}"
+        echo "  Namespace: ${{ "{{" }} inputs.namespace {{ "}}" }}"
+        echo "  Values file: ${{ "{{" }} inputs.values_file {{ "}}" }}"
+        echo ""
+        echo "Dry run completed successfully - no resources were deployed"

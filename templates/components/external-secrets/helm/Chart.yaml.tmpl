@@ -1,0 +1,20 @@
+# =============================================================================
+# {{ .Project.Metadata.Name }} - External Secrets Helm Chart
+# =============================================================================
+# Manages ExternalSecret and ClusterSecretStore resources for syncing
+# secrets from cloud provider secret managers into Kubernetes.
+# =============================================================================
+apiVersion: v2
+name: {{ .Project.Metadata.Name }}-external-secrets
+description: External Secrets configuration for {{ .Project.Metadata.Name }}
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+
+keywords:
+  - {{ .Project.Metadata.Name }}
+  - external-secrets
+  - secrets
+
+maintainers:
+  - name: {{ .Project.Metadata.Organization }}

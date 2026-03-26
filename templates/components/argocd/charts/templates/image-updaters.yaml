@@ -1,0 +1,77 @@
+{{/*
+=============================================================================
+ArgoCD Image Updater CRs (v1.0.x CRD-based)
+=============================================================================
+Generates one ImageUpdater CR per service group, mirroring the Application
+structure for a clean 1:1 mapping.
+
+Migration from annotations (v0.x) to CRD (v1.x):
+- Annotations on Applications are removed
+- ImageUpdater CRs define what to watch and how to update
+- Registry credentials remain in registries.conf (managed by IaC)
+=============================================================================
+*/}}
+
+{{- $global := .Values.global -}}
+{{- $environment := $global.environment -}}
+{{- $projectName := .Values.projectName -}}
+{{- $registry := include "apps.registry" (dict "global" $global "projectName" $projectName) -}}
+
+{{- if $global.imageUpdater.enabled }}
+{{- range $groupName, $group := .Values.serviceGroups }}
+{{- $groupImageUpdater := $group.imageUpdater | default dict }}
+{{- if ne (default true $groupImageUpdater.enabled) false }}
+---
+apiVersion: argocd-image-updater.argoproj.io/v1alpha1
+kind: ImageUpdater
+metadata:
+  name: {{ $groupName }}-{{ $environment }}
+  namespace: argocd
+  labels:
+    {{- include "apps.labels" (dict "projectName" $projectName "environment" $environment) | nindent 4 }}
+    app.kubernetes.io/component: {{ $groupName }}
+spec:
+  # Namespace where ArgoCD Applications are located
+  namespace: argocd
+
+  # Global update settings for all images in this group
+  commonUpdateSettings:
+    updateStrategy: {{ $groupImageUpdater.updateStrategy | default $global.imageUpdater.updateStrategy | default "semver" }}
+    allowTags: {{ $groupImageUpdater.allowTags | default $global.imageUpdater.allowTags | default "regexp:^v[0-9]+\\.[0-9]+\\.[0-9]+$" | quote }}
+    {{- if or $groupImageUpdater.ignoreTags $global.imageUpdater.ignoreTags }}
+    ignoreTags:
+      {{- toYaml ($groupImageUpdater.ignoreTags | default $global.imageUpdater.ignoreTags) | nindent 6 }}
+    {{- end }}
+
+  # Git write-back configuration
+  writeBackConfig:
+    method: git
+    gitConfig:
+      repository: {{ $global.repoURL }}
+      branch: {{ $global.gitBranch }}
+      writeBackTarget: "helmvalues:.argocd-source-{{ $groupName }}-{{ $environment }}.yaml"
+
+  # Application reference — matches the corresponding ArgoCD Application
+  applicationRefs:
+    - namePattern: {{ $groupName }}-{{ $environment }}
+      images:
+        {{- range $group.services }}
+        - alias: {{ .name | quote }}
+          imageName: {{ $registry }}/{{ .name }}
+          {{- if .imageUpdater }}
+          commonUpdateSettings:
+            {{- if .imageUpdater.updateStrategy }}
+            updateStrategy: {{ .imageUpdater.updateStrategy }}
+            {{- end }}
+            {{- if .imageUpdater.allowTags }}
+            allowTags: {{ .imageUpdater.allowTags | quote }}
+            {{- end }}
+          {{- end }}
+          manifestTargets:
+            helm:
+              name: services.{{ .name }}.image.repository
+              tag: services.{{ .name }}.image.tag
+        {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

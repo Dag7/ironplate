@@ -1,0 +1,67 @@
+# =============================================================================
+# Dapr - Values
+# =============================================================================
+# Configuration for the Dapr distributed application runtime.
+# Provides pub/sub, state management, and service invocation building blocks.
+# =============================================================================
+
+# -- Project identity (injected by ironplate at scaffold time)
+projectName: {{ .Project.Metadata.Name }}
+
+# -- Dapr system settings
+namespace: {{ .Project.Metadata.Name }}
+labels:
+  app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+  app.kubernetes.io/managed-by: helm
+
+# -- Sidecar injector
+sidecarInjector:
+  enabled: true
+
+# -- Logging
+logLevel: debug
+
+# -- mTLS (disabled for dev simplicity)
+mtls:
+  enabled: false
+
+# -- Feature flags (injected by ironplate at scaffold time)
+kafka:
+  enabled: {{ if .Computed.HasKafka }}true{{ else }}false{{ end }}
+redis:
+  enabled: {{ if .Computed.HasRedis }}true{{ else }}false{{ end }}
+observability:
+  enabled: {{ if .Computed.HasObservability }}true{{ else }}false{{ end }}
+
+# -- Pub/Sub component
+pubsub:
+  name: pubsub{{ if .Computed.HasKafka }}
+  type: pubsub.kafka
+  version: v1
+  metadata:
+    brokers: "kafka:9092"
+    consumerGroup: "{{ .Project.Metadata.Name }}"
+    authRequired: false{{ else }}
+  type: pubsub.in-memory
+  version: v1{{ end }}
+
+# -- State store
+statestore:
+  name: statestore{{ if .Computed.HasRedis }}
+  type: state.redis
+  version: v1
+  metadata:
+    redisHost: "redis:6379"
+    redisPassword: ""{{ else }}
+  type: state.in-memory
+  version: v1{{ end }}
+
+# -- Tracing / Observability
+tracing:{{ if .Computed.HasObservability }}
+  enabled: true
+  samplingRate: "1"
+  otel:
+    endpoint: "http://otel-collector:4318"
+    isSecure: false
+    protocol: http{{ else }}
+  enabled: false{{ end }}

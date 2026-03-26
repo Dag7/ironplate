@@ -1,0 +1,78 @@
+apiVersion: ironplate.dev/v1
+kind: Project
+
+metadata:
+  name: {{ .Project.Metadata.Name }}
+  organization: {{ .Project.Metadata.Organization }}
+{{- if .Project.Metadata.Domain }}
+  domain: {{ .Project.Metadata.Domain }}
+{{- end }}
+{{- if .Project.Metadata.Description }}
+  description: {{ .Project.Metadata.Description }}
+{{- end }}
+
+spec:
+  languages:
+{{- range .Project.Spec.Languages }}
+    - {{ . }}
+{{- end }}
+
+  monorepo:
+    packageManager: {{ .Project.Spec.Monorepo.PackageManager }}
+    nodeVersion: "{{ .Project.Spec.Monorepo.NodeVersion }}"
+    goVersion: "{{ .Project.Spec.Monorepo.GoVersion }}"
+    buildSystem: {{ .Project.Spec.Monorepo.BuildSystem }}
+    scopes:
+{{- range .Project.Spec.Monorepo.Scopes }}
+      - "{{ . }}"
+{{- end }}
+
+  cloud:
+    provider: {{ .Project.Spec.Cloud.Provider }}
+    region: {{ .Project.Spec.Cloud.Region }}
+    environments:
+{{- range .Project.Spec.Cloud.Environments }}
+      - name: {{ .Name }}
+        shortName: {{ .ShortName }}
+{{- if .Project }}
+        project: {{ .Project }}
+{{- end }}
+{{- end }}
+
+  infrastructure:
+    components:
+{{- range .Project.Spec.Infrastructure.Components }}
+      - {{ . }}
+{{- end }}
+    database:
+      type: {{ .Project.Spec.Infrastructure.Database.Type }}
+      version: "{{ .Project.Spec.Infrastructure.Database.Version }}"
+    messageBus: {{ .Project.Spec.Infrastructure.MessageBus }}
+    ingressController: {{ .Project.Spec.Infrastructure.IngressController }}
+    secretManager: {{ .Project.Spec.Infrastructure.SecretManager }}
+
+  devEnvironment:
+    type: {{ .Project.Spec.DevEnvironment.Type }}
+    k8sLocal: {{ .Project.Spec.DevEnvironment.K8sLocal }}
+    devTool: {{ .Project.Spec.DevEnvironment.DevTool }}
+
+  cicd:
+    platform: {{ .Project.Spec.CICD.Platform }}
+    auth: {{ .Project.Spec.CICD.Auth }}
+
+  gitops:
+    enabled: {{ .Project.Spec.GitOps.Enabled }}
+    tool: {{ .Project.Spec.GitOps.Tool }}
+    imageUpdater: {{ .Project.Spec.GitOps.ImageUpdater }}
+
+  observability:
+    tracing: {{ .Project.Spec.Observability.Tracing }}
+    metrics: {{ .Project.Spec.Observability.Metrics }}
+    logging: {{ .Project.Spec.Observability.Logging }}
+
+  ai:
+    claudeCode: {{ .Project.Spec.AI.ClaudeCode }}
+    claudeMD: {{ .Project.Spec.AI.ClaudeMD }}
+
+  services: []
+  packages: []

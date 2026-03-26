@@ -1,0 +1,98 @@
+# =============================================================================
+# Package Detection Utilities
+# =============================================================================
+# Dynamically detects which workspace packages a service uses
+# Includes TRANSITIVE dependencies (packages that packages depend on)
+# =============================================================================
+
+def _package_name_to_folder(dep_name):
+    """Convert a package name to its folder name."""
+    prefix = '{{ .Computed.PrimaryScope }}/'
+    if dep_name.startswith(prefix):
+        return dep_name.split('/')[-1]
+    else:
+        return dep_name.split('/')[-1]
+
+
+def _get_workspace_deps_from_json(pkg_json_content):
+    """Extract workspace dependencies from package.json content."""
+    pkg = decode_json(pkg_json_content)
+    packages = []
+
+    all_deps = {}
+    all_deps.update(pkg.get('dependencies', {}))
+    all_deps.update(pkg.get('devDependencies', {}))
+
+    prefix = '{{ .Computed.PrimaryScope }}/'
+    for dep_name in all_deps.keys():
+        if dep_name.startswith(prefix):
+            pkg_folder = _package_name_to_folder(dep_name)
+            packages.append(pkg_folder)
+
+    return packages
+
+
+def _get_package_deps(pkg_folder):
+    """Get workspace dependencies of a package."""
+    pkg_path = 'packages/node/{}/package.json'.format(pkg_folder)
+    result = local(
+        'cat {} 2>/dev/null || echo "{{}}"'.format(pkg_path),
+        quiet=True
+    )
+    return _get_workspace_deps_from_json(str(result))
+
+
+def get_service_packages(service_name, src_folder='apps'):
+    """
+    Get ALL packages a service uses, INCLUDING transitive dependencies.
+
+    Walks the dependency tree to find all nested workspace packages.
+
+    Args:
+        service_name: Name of the service (e.g., 'auth-service')
+        src_folder: Source folder containing the service (default: 'apps')
+
+    Returns:
+        List of ALL package folder names (direct + transitive)
+    """
+    pkg_path = '{}/{}/package.json'.format(src_folder, service_name)
+    pkg_content = read_file(pkg_path)
+    direct_deps = _get_workspace_deps_from_json(pkg_content)
+
+    all_deps = set(direct_deps)
+    to_process = list(direct_deps)
+    processed = set()
+
+    while to_process:
+        pkg = to_process.pop()
+
+        if pkg in processed:
+            continue
+        processed.add(pkg)
+
+        pkg_deps = _get_package_deps(pkg)
+        for dep in pkg_deps:
+            if dep not in all_deps:
+                all_deps.add(dep)
+                to_process.append(dep)
+
+    return list(all_deps)
+
+
+def get_all_packages():
+    """Get list of all package folder names in packages/node/."""
+    result = local(
+        'find packages/node -maxdepth 1 -mindepth 1 -type d -exec basename {} \\;',
+        quiet=True
+    )
+    packages = [p.strip() for p in str(result).strip().split('\n') if p.strip()]
+    return packages
+
+
+def print_service_packages(service_name, packages):
+    """Debug helper: Print which packages a service uses."""
+    if len(packages) > 5:
+        preview = ', '.join(packages[:5]) + ', ... ({} total)'.format(len(packages))
+    else:
+        preview = ', '.join(packages) if packages else 'none'
+    print('📦 {} uses: {}'.format(service_name, preview))

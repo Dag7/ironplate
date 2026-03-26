@@ -1,0 +1,32 @@
+# =============================================================================
+# {{ .Service.Group | title }} Services - Staging Values
+# =============================================================================
+
+global:
+  environment: staging
+  namespace: {{ .Project.Metadata.Name }}
+  domain: staging.{{ .Project.Metadata.Domain }}
+  tlsSecretName: {{ .Project.Metadata.Name }}-staging-tls
+  image:
+    pullPolicy: IfNotPresent
+    registry: {{ .Project.Spec.CICD.Registry.URL }}/{{ .Project.Metadata.Name }}
+  commonEnv:
+    LOG_LEVEL: info
+
+defaults:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  healthCheck:
+    initialDelaySeconds: 30
+    periodSeconds: 15
+
+services:
+  {{ .Service.Name }}:
+    env:
+      LOG_LEVEL: info

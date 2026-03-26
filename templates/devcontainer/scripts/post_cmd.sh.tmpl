@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# =============================================================================
+# {{ .Project.Metadata.Name }} - Post-create setup script
+# =============================================================================
+# Runs after the dev container is created.
+# Sets up kubeconfig, k3d cluster, and development dependencies.
+# =============================================================================
+set -euo pipefail
+
+echo "🚀 Setting up {{ .Project.Metadata.Name }} development environment..."
+
+# ---------------------------------------------------------------------------
+# Kubeconfig setup
+# ---------------------------------------------------------------------------
+echo "📋 Setting up kubeconfig..."
+mkdir -p /home/vscode/.kube
+if [ -f /tmp/host/.kube/config ]; then
+    cp /tmp/host/.kube/config /home/vscode/.kube/config
+    chmod 600 /home/vscode/.kube/config
+fi
+
+# ---------------------------------------------------------------------------
+# Git config
+# ---------------------------------------------------------------------------
+echo "📋 Setting up git config..."
+if [ -f /tmp/host/.gitconfig ]; then
+    cp /tmp/host/.gitconfig /home/vscode/.gitconfig
+fi
+{{ if ne .Project.Spec.Cloud.Provider "none" }}
+# ---------------------------------------------------------------------------
+# Cloud provider setup
+# ---------------------------------------------------------------------------
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}
+echo "☁️  Setting up GCP credentials..."
+if [ -d /tmp/host/.pulumi ]; then
+    mkdir -p /home/vscode/.pulumi
+    cp -r /tmp/host/.pulumi/* /home/vscode/.pulumi/ 2>/dev/null || true
+fi
+{{ end }}
+{{ if eq .Project.Spec.Cloud.Provider "aws" }}
+echo "☁️  Setting up AWS credentials..."
+if [ -d /tmp/host/.aws ]; then
+    mkdir -p /home/vscode/.aws
+    cp -r /tmp/host/.aws/* /home/vscode/.aws/ 2>/dev/null || true
+fi
+{{ end }}
+{{ end }}
+# ---------------------------------------------------------------------------
+# k3d cluster
+# ---------------------------------------------------------------------------
+CLUSTER_NAME="{{ .Project.Metadata.Name }}-cluster"
+echo "🔧 Checking k3d cluster: ${CLUSTER_NAME}..."
+
+if ! k3d cluster list | grep -q "${CLUSTER_NAME}"; then
+    echo "🔧 Creating k3d cluster..."
+    k3d cluster create --config .devcontainer/k3s/{{ .Project.Metadata.Name }}-cluster.config.yaml
+else
+    echo "✅ k3d cluster already exists"
+fi
+
+# Switch kubectl context
+kubectl config use-context "k3d-${CLUSTER_NAME}" 2>/dev/null || true
+
+# Create project namespace
+kubectl create namespace {{ .Project.Metadata.Name }} --dry-run=client -o yaml | kubectl apply -f -
+kubectl config set-context --current --namespace={{ .Project.Metadata.Name }}
+{{ if .Computed.HasNode }}
+# ---------------------------------------------------------------------------
+# Node.js dependencies
+# ---------------------------------------------------------------------------
+echo "📦 Installing Node.js dependencies..."
+{{ if eq .Project.Spec.Monorepo.PackageManager "yarn" }}
+yarn install
+{{ else }}
+pnpm install
+{{ end }}
+{{ end }}
+{{ if .Computed.HasGo }}
+# ---------------------------------------------------------------------------
+# Go workspace
+# ---------------------------------------------------------------------------
+echo "📦 Syncing Go workspace..."
+go work sync
+{{ end }}
+
+echo ""
+echo "✅ {{ .Project.Metadata.Name }} development environment is ready!"
+echo ""
+echo "Next steps:"
+echo "  • Run 'tilt up' to start the development environment"
+echo "  • Visit http://localhost:10350 for the Tilt dashboard"
+echo ""

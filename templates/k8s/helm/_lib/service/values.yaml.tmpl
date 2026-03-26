@@ -1,0 +1,66 @@
+global:
+  environment: staging
+  namespace: {{ .Project.Metadata.Name }}
+  domain: staging.{{ .Project.Metadata.Domain }}
+  tlsSecretName: {{ .Project.Metadata.Name }}-staging-tls
+  image:
+    pullPolicy: IfNotPresent
+    registry: {{ if eq .Project.Spec.Cloud.Provider "gcp" }}{{ .Project.Spec.Cloud.Region }}-docker.pkg.dev/{{ .Project.Metadata.Name }}-staging/{{ .Project.Metadata.Name }}{{ else }}ghcr.io/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}{{ end }}
+  labels:
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+    app.kubernetes.io/managed-by: helm
+  commonEnv:
+    NODE_ENV: production{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}
+    HASURA_GRAPHQL_URL: http://hasura:8080/v1/graphql{{ end }}
+
+defaults:
+  serviceAccount:
+    create: true
+  replicas: 1
+  port: 3000
+  serviceType: ClusterIP
+  resources: {}
+  healthCheck:
+    enabled: true
+    readinessPath: /healthz
+    livenessPath: /healthz
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 10
+  ingress:
+    enabled: false
+    className: traefik
+    annotations:
+      traefik.ingress.kubernetes.io/router.entrypoints: websecure
+      traefik.ingress.kubernetes.io/router.tls: "true"
+    middlewares:
+      - {{ .Project.Metadata.Name }}-security-headers@kubernetescrd
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  pdb:
+    enabled: false
+    minAvailable: 1
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+    fsGroup: 1001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1001
+    capabilities:
+      drop:
+        - ALL
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+services: {}

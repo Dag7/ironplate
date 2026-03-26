@@ -1,0 +1,107 @@
+# New Service
+
+## Arguments
+- `name`: Service name (kebab-case, e.g., `billing-service`)
+- `type`: `node-api` | `go-api` | `nextjs`
+- `group`: Helm chart group (e.g., `core`, `domain`, `admin`)
+- `features` (optional): Comma-separated features (e.g., `auth,cache,events,metrics`)
+
+## Architecture
+
+```
+{{ if .Computed.HasNode }}Node.js: @ironplate/service builder → Express + plugins → Helm chart → Tilt{{ end }}
+{{ if .Computed.HasGo }}Go: envconfig + graceful + health packages → net/http → Helm chart → Tilt{{ end }}
+```
+
+## Steps
+
+### 1. Create Service Files
+- Create `apps/{name}/` with appropriate template files
+{{ if .Computed.HasNode }}
+**Node.js API** — Use the `@ironplate/service` builder pattern:
+
+```typescript
+import { createService } from '@ironplate/service';
+import { userRoutes } from './routes/users';
+
+const service = await createService('{name}')
+  .port(3001)
+  .routes('/users', userRoutes)
+  .build();
+
+await service.start();
+```
+
+Key dependencies to add:
+- `@ironplate/service` — Service builder framework (includes express, helmet, cors, compression, health checks)
+- `@ironplate/config` — Zod-based environment config
+- `@ironplate/logger` — Structured logging
+- `@ironplate/errors` — Typed error classes
+- `@ironplate/http-client` — Inter-service HTTP calls
+
+Optional based on features:
+- `@ironplate/auth` — JWT auth middleware (if `auth` feature)
+- `@ironplate/cache` — Redis caching (if `cache` feature)
+- `@ironplate/eventbus` — Dapr pub/sub (if `events` feature)
+- `@ironplate/metrics` — Prometheus metrics (if `metrics` feature)
+- `@ironplate/tracing` — OpenTelemetry (if `tracing` feature)
+- `@ironplate/graphql` — Hasura client (if `graphql` feature)
+- `@ironplate/validation` — Zod request validation
+- `@ironplate/jobs` — Async job processing (if `jobs` feature)
+{{ end }}{{ if .Computed.HasGo }}
+**Go API** — Uses ironplate Go packages:
+
+```go
+import (
+    "github.com/ironplate-dev/ironplate/packages/go/envconfig"
+    "github.com/ironplate-dev/ironplate/packages/go/graceful"
+    "github.com/ironplate-dev/ironplate/packages/go/health"
+)
+```
+
+- `envconfig` for typed environment variable loading
+- `graceful` for HTTP server with graceful shutdown
+- `health` for Kubernetes-compatible health check handlers
+{{ end }}
+
+### 2. Create Helm Chart
+- Create `k8s/helm/{{ .Project.Metadata.Name }}/{group}/{name}/`
+- `Chart.yaml` with `_lib/service` dependency
+- `values.yaml` with service config (image, replicas, ports, env vars)
+- `values.staging.yaml` and `values.production.yaml` for environment overrides
+- Run `helm dependency update`
+
+### 3. Update Tiltfile
+- Add service entry in the `IRONPLATE:SERVICES:START/END` section
+{{ if .Computed.HasNode }}- For Node.js: `node_service(name='{name}', target=target)`
+{{ end }}{{ if .Computed.HasGo }}- For Go: `go_service(name='{name}', target='debug', build_args={'TARGET_SRC_FOLDER': 'apps'})`
+{{ end }}- Add `k8s_resource` with port forwards, resource deps, labels
+
+### 4. Allocate Ports
+- HTTP: next available from {{ .Project.Metadata.Name }} port range
+- Debug: next available debug port
+- Update `.ironplate/ports.json`
+
+### 5. Post-Generation
+{{ if .Computed.HasNode }}- Run `{{ .Project.Spec.Monorepo.PackageManager }} install`{{ end }}
+{{ if .Computed.HasGo }}- Update `go.work` and run `go mod tidy`{{ end }}
+- Update `ironplate.yaml` services list
+
+## CRITICAL Rules
+{{ if .Computed.HasNode }}- ALWAYS use `@ironplate/service` builder pattern for new Node.js services — never raw Express setup
+- ALWAYS use `@ironplate/errors` for error types — never throw raw Error objects in API handlers
+- ALWAYS add `@ironplate/health` routes (automatic with service builder)
+- NEVER hardcode ports — use `@ironplate/config` with PORT env var{{ end }}
+{{ if .Computed.HasGo }}- ALWAYS use `envconfig` package for config — never raw `os.Getenv`
+- ALWAYS use `graceful.ListenAndServe` — never manual signal handling
+- ALWAYS use `health.RegisterRoutes` — never inline health handlers{{ end }}
+
+## Checklist
+- [ ] Service source files created in `apps/{name}/`
+- [ ] Uses `@ironplate/service` builder (Node) or ironplate Go packages (Go)
+- [ ] Helm chart created with `_lib/service` dependency
+- [ ] Environment-specific values files created
+- [ ] Tiltfile updated with service entry
+- [ ] Ports allocated and recorded
+- [ ] Health endpoints (`/healthz`, `/readyz`) working
+- [ ] `tilt up` shows the new service

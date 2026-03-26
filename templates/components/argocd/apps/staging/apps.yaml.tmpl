@@ -1,0 +1,56 @@
+# =============================================================================
+# ArgoCD Root Application - {{ .Project.Metadata.Name }} Apps (Staging)
+# =============================================================================
+# App-of-Apps that generates Application resources for each service group.
+# Sync Wave: 2 (after infrastructure, before services)
+# =============================================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ .Project.Metadata.Name }}-apps-staging
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+    app.kubernetes.io/component: app-of-apps
+    environment: staging
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: {{ .Project.Metadata.Name }}-staging
+
+  source:
+    repoURL: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}.git
+    targetRevision: staging
+    path: k8s/argocd/charts/apps
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-staging.yaml
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Application
+      jsonPointers:
+        - /status
+
+  revisionHistoryLimit: 5

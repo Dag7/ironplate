@@ -1,0 +1,21 @@
+## Restrictions
+
+### DO NOT
+- Hardcode secrets, API keys, or credentials
+- Commit `.env` files or secret values
+- Modify shared library chart without understanding all consumers
+- Skip health checks in service configurations
+- Use `latest` tag in production Helm values
+- Disable security contexts or run containers as root
+- Add dependencies without checking license compatibility
+{{ if .Computed.HasNode }}- Use `any` type in TypeScript (use `unknown` + type narrowing)
+- Import from `dist/` paths directly (use package name){{ end }}
+{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}- Modify Hasura migrations in production directly (use migration files){{ end }}
+
+### ALWAYS
+- Use environment variables for configuration
+- Include health check endpoints (`/healthz`, `/readyz`)
+- Add resource requests/limits to Helm values
+- Write tests for new functionality
+- Follow the existing patterns in the codebase
+- Use the shared library chart for new services

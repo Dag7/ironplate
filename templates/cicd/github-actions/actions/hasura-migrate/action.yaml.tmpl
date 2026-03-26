@@ -1,0 +1,157 @@
+{{ if .Computed.HasHasura -}}
+# =============================================================================
+# Hasura Migrations Action
+# =============================================================================
+# Runs Hasura metadata apply, migrations, and optionally seeds.
+#
+# Usage:
+#   - uses: ./.github/actions/hasura-migrate
+#     with:
+#       namespace: {{ .Project.Metadata.Name }}
+#       apply_seeds: "false"
+# =============================================================================
+
+name: "Hasura Migrate"
+description: "Apply Hasura metadata, migrations, and seeds"
+
+inputs:
+  namespace:
+    description: "Kubernetes namespace"
+    required: true
+    default: "{{ .Project.Metadata.Name }}"
+  apply_seeds:
+    description: "Whether to apply seeds (use sparingly in production)"
+    required: false
+    default: "false"
+  hasura_endpoint:
+    description: "Hasura endpoint (if not using port-forward)"
+    required: false
+    default: ""
+  admin_secret:
+    description: "Hasura admin secret (if not reading from K8s secret)"
+    required: false
+    default: ""
+  hasura_secret_name:
+    description: "K8s secret name containing Hasura admin secret"
+    required: false
+    default: "hasura-credentials"
+  hasura_secret_key:
+    description: "Key in the K8s secret for admin secret"
+    required: false
+    default: "HASURA_GRAPHQL_ADMIN_SECRET"
+
+runs:
+  using: "composite"
+  steps:
+    # =========================================================================
+    # Install Hasura CLI
+    # =========================================================================
+    - name: Install Hasura CLI
+      shell: bash
+      run: |
+        curl -fsSL https://github.com/hasura/graphql-engine/raw/stable/cli/get.sh | bash
+{{ if .Computed.HasExternalSecrets }}
+    # =========================================================================
+    # Wait for External Secrets to sync
+    # =========================================================================
+    - name: Wait for External Secrets
+      shell: bash
+      run: |
+        echo "Waiting for External Secrets to sync..."
+        kubectl wait --for=condition=Ready externalsecret/${{ "{{" }} inputs.hasura_secret_name {{ "}}" }} \
+          -n ${{ "{{" }} inputs.namespace {{ "}}" }} --timeout=120s 2>/dev/null || echo "External Secret not found or not ready, continuing..."
+{{ end }}
+    # =========================================================================
+    # Wait for Hasura pod
+    # =========================================================================
+    - name: Wait for Hasura to be ready
+      shell: bash
+      run: |
+        echo "Waiting for Hasura pod to be ready..."
+        kubectl wait --for=condition=ready pod -l app=hasura \
+          -n ${{ "{{" }} inputs.namespace {{ "}}" }} --timeout=300s
+
+    # =========================================================================
+    # Run Hasura migrations
+    # =========================================================================
+    - name: Run Hasura migrations
+      shell: bash
+      env:
+        NAMESPACE: ${{ "{{" }} inputs.namespace {{ "}}" }}
+        SECRET_NAME: ${{ "{{" }} inputs.hasura_secret_name {{ "}}" }}
+        SECRET_KEY: ${{ "{{" }} inputs.hasura_secret_key {{ "}}" }}
+        APPLY_SEEDS: ${{ "{{" }} inputs.apply_seeds {{ "}}" }}
+        HASURA_ENDPOINT: ${{ "{{" }} inputs.hasura_endpoint {{ "}}" }}
+        ADMIN_SECRET: ${{ "{{" }} inputs.admin_secret {{ "}}" }}
+      run: |
+        set -e
+
+        # Determine admin secret: use input or read from K8s
+        if [ -n "$ADMIN_SECRET" ]; then
+          HASURA_SECRET="$ADMIN_SECRET"
+        else
+          echo "Loading Hasura admin secret from K8s..."
+          HASURA_SECRET=$(kubectl get secret ${SECRET_NAME} \
+            -n ${NAMESPACE} \
+            -o jsonpath="{.data.${SECRET_KEY}}" | base64 -d)
+        fi
+
+        if [ -z "$HASURA_SECRET" ]; then
+          echo "Hasura admin secret not found"
+          exit 1
+        fi
+
+        # Determine endpoint: use input or port-forward
+        if [ -n "$HASURA_ENDPOINT" ]; then
+          ENDPOINT="$HASURA_ENDPOINT"
+        else
+          echo "Setting up port-forward to Hasura..."
+          kubectl port-forward svc/hasura 18080:8080 -n ${NAMESPACE} &
+          PF_PID=$!
+          trap "kill $PF_PID 2>/dev/null || true" EXIT
+          ENDPOINT="http://localhost:18080"
+
+          # Wait for port-forward to be ready
+          for i in $(seq 1 30); do
+            if curl -sf ${ENDPOINT}/healthz > /dev/null 2>&1; then
+              echo "Port-forward ready"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "Port-forward failed to connect"
+              exit 1
+            fi
+            sleep 1
+          done
+        fi
+
+        cd hasura
+
+        echo "Applying Hasura metadata..."
+        hasura metadata apply \
+          --endpoint "$ENDPOINT" \
+          --admin-secret "$HASURA_SECRET"
+
+        echo "Applying Hasura migrations..."
+        hasura migrate apply \
+          --all-databases \
+          --endpoint "$ENDPOINT" \
+          --admin-secret "$HASURA_SECRET"
+
+        echo "Reloading Hasura metadata..."
+        hasura metadata reload \
+          --endpoint "$ENDPOINT" \
+          --admin-secret "$HASURA_SECRET"
+
+        if [ "$APPLY_SEEDS" = "true" ]; then
+          echo "Applying Hasura seeds..."
+          hasura seed apply \
+            --database-name default \
+            --endpoint "$ENDPOINT" \
+            --admin-secret "$HASURA_SECRET"
+        else
+          echo "Skipping seeds (apply_seeds=false)"
+        fi
+
+        echo "Hasura migrations completed successfully"
+{{- end }}

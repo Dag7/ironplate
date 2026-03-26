@@ -1,0 +1,102 @@
+# Set Up Caching for a Service
+
+## Arguments
+- `service`: Service name that needs caching
+- `patterns` (optional): Cache patterns to implement (`get-set`, `session`, `invalidation`)
+
+## Architecture
+
+```
+Service → @ironplate/cache → Redis (ioredis) → redis-master:6379
+```
+
+## Steps
+
+### 1. Add Dependencies
+{{ if .Computed.HasNode }}- Add `@ironplate/cache` to the service's `package.json`
+- Run `{{ .Project.Spec.Monorepo.PackageManager }} install`{{ end }}
+
+### 2. Create Cache Client
+
+```typescript
+import { createCacheClient } from '@ironplate/cache';
+import { createLogger } from '@ironplate/logger';
+
+const logger = createLogger('{service}');
+
+export const cache = createCacheClient({
+  url: process.env.REDIS_URL ?? 'redis://redis-master:6379',
+  prefix: '{{ .Project.Metadata.Name }}:{service}',
+  defaultTtl: 300,
+  logger,
+});
+```
+
+### 3. Implement Cache Patterns
+
+**Get/Set pattern** — cache database lookups:
+```typescript
+async function getUser(id: string) {
+  const key = `user:${id}`;
+  const cached = await cache.get<User>(key);
+  if (cached) return cached;
+
+  const user = await db.user.findById(id);
+  if (user) await cache.set(key, user, 600); // 10 min TTL
+  return user;
+}
+```
+
+**Invalidation pattern** — clear on mutations:
+```typescript
+async function updateUser(id: string, data: UpdateUserDto) {
+  const user = await db.user.update(id, data);
+  await cache.del(`user:${id}`);
+  return user;
+}
+```
+
+**Flush pattern** — clear by prefix:
+```typescript
+// Flush all user cache entries
+await cache.flush('user:*');
+```
+
+### 4. Add Environment Variables
+- Add `REDIS_URL` to service Helm `values.yaml`:
+  ```yaml
+  env:
+    REDIS_URL: "redis://redis-master.infra.svc.cluster.local:6379"
+  ```
+- Add `REDIS_URL` to `apps/{service}/src/config.ts` environment schema
+
+## API Reference
+
+| Method | Description |
+|--------|-------------|
+| `cache.get<T>(key)` | Get a value (returns `null` if miss) |
+| `cache.set(key, value, ttl?)` | Set a value with optional TTL in seconds |
+| `cache.del(key)` | Delete a key |
+| `cache.exists(key)` | Check if key exists |
+| `cache.flush(pattern?)` | Delete keys matching pattern |
+| `cache.disconnect()` | Close Redis connection |
+
+## Key Naming Convention
+```
+{{ .Project.Metadata.Name }}:<service>:<entity>:<id>
+```
+
+## CRITICAL Rules
+- ALWAYS set a TTL on every cached value — no indefinite caches
+- NEVER cache sensitive data (passwords, tokens, PII) without encryption
+- ALWAYS use the service prefix to avoid key collisions
+- ALWAYS call `cache.disconnect()` during graceful shutdown
+
+## Checklist
+- [ ] `@ironplate/cache` dependency added
+- [ ] Cache client initialized with proper prefix
+- [ ] Cache patterns implemented (get/set, invalidation)
+- [ ] REDIS_URL added to Helm values and service config
+- [ ] All cached keys have TTL set
+- [ ] No sensitive data cached without encryption
+- [ ] Cache disconnect registered on shutdown

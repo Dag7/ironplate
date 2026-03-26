@@ -1,0 +1,24 @@
+## Security
+
+### Container Security
+- Production images: non-root user (UID 1001)
+- Shell and package managers removed in production (prevents RCE)
+- Read-only root filesystem in Kubernetes
+- Security contexts enforced (no privilege escalation, drop ALL capabilities)
+{{ if .Computed.HasNode }}
+### Node.js Security
+- Helmet middleware for security headers
+- CORS properly configured per environment
+- Input validation with zod at API boundaries
+- No `eval()`, `new Function()`, or dynamic requires
+{{ end }}
+### Kubernetes Security
+- Pod security contexts: `runAsNonRoot: true`, `readOnlyRootFilesystem: true`
+- ServiceAccount per service (least privilege)
+- Network policies for service-to-service communication
+{{ if hasItem .Project.Spec.Infrastructure.Components "external-secrets" }}
+### Secrets Management
+- External Secrets Operator syncs from cloud provider secret manager
+- Never commit secrets to git
+- Use `secretRef` in Helm values for sensitive configuration
+{{ end }}

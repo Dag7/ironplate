@@ -1,0 +1,110 @@
+# Set Up Prometheus Metrics
+
+## Arguments
+- `service`: Service name to instrument
+
+## Architecture
+
+```
+Request → httpMetrics middleware → handler → response
+                                    ↓
+                              Prometheus counters/histograms
+                                    ↓
+                             GET /metrics → prom-client → scrape
+```
+
+## Steps
+
+### 1. Add Dependencies
+- Add `@ironplate/metrics` to `apps/{service}/package.json`
+- Run `{{ .Project.Spec.Monorepo.PackageManager }} install`
+
+### 2. Create Metrics Plugin
+
+```typescript
+import type { IPlugin, PluginContext } from '@ironplate/service';
+import { createMetricsRegistry, createHttpMetrics, createMetricsEndpoint } from '@ironplate/metrics';
+
+export const metricsPlugin: IPlugin = {
+  name: 'metrics',
+  order: 10,
+  async initialize(ctx: PluginContext) {
+    const registry = createMetricsRegistry({
+      serviceName: ctx.config.name,
+      defaultMetrics: true,
+    });
+
+    // RED metrics middleware
+    const { middleware } = createHttpMetrics(registry, {
+      serviceName: ctx.config.name,
+      excludePaths: ['/healthz', '/readyz', '/metrics'],
+    });
+    ctx.addMiddleware({ handler: middleware, order: 10 });
+
+    // Expose /metrics endpoint (no auth)
+    ctx.addRoutes({
+      path: '/',
+      router: createMetricsEndpoint(registry),
+      skipAuth: true,
+    });
+
+    // Share registry with other plugins
+    ctx.registerService('metricsRegistry', registry);
+  },
+};
+```
+
+### 3. Register Plugin
+
+```typescript
+import { createService } from '@ironplate/service';
+import { metricsPlugin } from './plugins/metrics';
+
+const service = await createService('{service}')
+  .use(metricsPlugin)
+  .routes('/api', apiRouter)
+  .build();
+```
+
+### 4. Add Custom Metrics
+
+```typescript
+import client from 'prom-client';
+
+// Get shared registry from plugin context
+const registry = service.getService<client.Registry>('metricsRegistry')!;
+
+const ordersProcessed = new client.Counter({
+  name: 'orders_processed_total',
+  help: 'Total number of orders processed',
+  labelNames: ['status'],
+  registers: [registry],
+});
+
+// In handler:
+ordersProcessed.inc({ status: 'success' });
+```
+
+## Default Metrics Exposed
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `http_request_duration_seconds` | Histogram | Request latency |
+| `http_requests_total` | Counter | Total request count |
+| `http_request_errors_total` | Counter | Requests with status >= 400 |
+| `nodejs_*` | Various | Node.js runtime metrics (GC, event loop, memory) |
+
+## CRITICAL Rules
+- ALWAYS exclude `/healthz`, `/readyz`, `/metrics` from HTTP metrics
+- ALWAYS register the metrics plugin with `order: 10` (before auth)
+- ALWAYS expose `/metrics` without authentication (Prometheus needs to scrape it)
+- Use labels sparingly — high cardinality labels cause memory issues
+- NEVER use user IDs, request IDs, or unbounded values as labels
+
+## Checklist
+- [ ] `@ironplate/metrics` dependency added
+- [ ] Metrics plugin created and registered
+- [ ] `/metrics` endpoint exposed without auth
+- [ ] RED metrics recording request rate, errors, duration
+- [ ] Custom business metrics added if needed
+- [ ] Prometheus ServiceMonitor configured in Helm values

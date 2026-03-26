@@ -1,0 +1,133 @@
+{{ if eq .Project.Spec.Cloud.Provider "gcp" -}}
+# =============================================================================
+# GKE Setup Action
+# =============================================================================
+# Authenticates to GCP via Workload Identity, configures gcloud, gets GKE
+# credentials, and sets up Docker for Artifact Registry.
+#
+# Usage:
+#   - uses: ./.github/actions/gke-setup
+#     with:
+#       project_id: my-project-staging
+#       cluster: my-cluster
+#       zone: {{ .Project.Spec.Cloud.Region }}
+#       namespace: {{ .Project.Metadata.Name }}
+# =============================================================================
+
+name: "GKE Setup"
+description: "Set up GCP authentication and Kubernetes connection to GKE cluster"
+
+inputs:
+  project_id:
+    description: "GCP Project ID"
+    required: true
+  cluster:
+    description: "GKE Cluster name"
+    required: true
+  zone:
+    description: "GKE Zone/Region"
+    required: true
+    default: "{{ .Project.Spec.Cloud.Region }}"
+  namespace:
+    description: "Kubernetes namespace"
+    required: true
+    default: "{{ .Project.Metadata.Name }}"
+  registry:
+    description: "Artifact Registry URL (e.g., us-central1-docker.pkg.dev)"
+    required: false
+    default: "{{ .Project.Spec.Cloud.Region }}-docker.pkg.dev"
+  service_account:
+    description: "GCP Service Account email"
+    required: true
+  workload_identity_provider:
+    description: "GCP Workload Identity Provider (e.g., projects/123/locations/global/workloadIdentityPools/pool/providers/provider)"
+    required: true
+
+outputs:
+  registry:
+    description: "Artifact Registry URL"
+    value: ${{ "{{" }} steps.config.outputs.registry {{ "}}" }}
+  k8s_context:
+    description: "Kubernetes context name"
+    value: ${{ "{{" }} steps.config.outputs.k8s_context {{ "}}" }}
+
+runs:
+  using: "composite"
+  steps:
+    # =========================================================================
+    # Authenticate to GCP via Workload Identity
+    # =========================================================================
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v2
+      with:
+        workload_identity_provider: ${{ "{{" }} inputs.workload_identity_provider {{ "}}" }}
+        service_account: ${{ "{{" }} inputs.service_account {{ "}}" }}
+
+    - name: Set up Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Install GKE gcloud auth plugin
+      shell: bash
+      run: |
+        gcloud components install gke-gcloud-auth-plugin
+        echo "USE_GKE_GCLOUD_AUTH_PLUGIN=True" >> $GITHUB_ENV
+
+    # =========================================================================
+    # Get GKE Credentials
+    # =========================================================================
+    - name: Get GKE Credentials
+      shell: bash
+      run: |
+        gcloud container clusters get-credentials ${{ "{{" }} inputs.cluster {{ "}}" }} \
+          --zone ${{ "{{" }} inputs.zone {{ "}}" }} --project ${{ "{{" }} inputs.project_id {{ "}}" }}
+
+    # =========================================================================
+    # Configure Docker for Artifact Registry
+    # =========================================================================
+    - name: Configure Docker for Artifact Registry
+      shell: bash
+      run: |
+        gcloud auth configure-docker ${{ "{{" }} inputs.registry {{ "}}" }} --quiet
+        echo "DOCKER_BUILDKIT=1" >> $GITHUB_ENV
+
+    # =========================================================================
+    # Export Configuration
+    # =========================================================================
+    - name: Export GCP configuration
+      id: config
+      shell: bash
+      run: |
+        REGISTRY="${{ "{{" }} inputs.registry {{ "}}" }}/${{ "{{" }} inputs.project_id {{ "}}" }}/{{ .Project.Metadata.Name }}"
+        K8S_CONTEXT="gke_${{ "{{" }} inputs.project_id {{ "}}" }}_${{ "{{" }} inputs.zone {{ "}}" }}_${{ "{{" }} inputs.cluster {{ "}}" }}"
+
+        echo "registry=${REGISTRY}" >> $GITHUB_OUTPUT
+        echo "k8s_context=${K8S_CONTEXT}" >> $GITHUB_OUTPUT
+
+        # Export as env vars for subsequent steps in the job
+        echo "GCP_PROJECT_ID=${{ "{{" }} inputs.project_id {{ "}}" }}" >> $GITHUB_ENV
+        echo "GKE_CLUSTER=${{ "{{" }} inputs.cluster {{ "}}" }}" >> $GITHUB_ENV
+        echo "GKE_ZONE=${{ "{{" }} inputs.zone {{ "}}" }}" >> $GITHUB_ENV
+        echo "NAMESPACE=${{ "{{" }} inputs.namespace {{ "}}" }}" >> $GITHUB_ENV
+        echo "REGISTRY=${REGISTRY}" >> $GITHUB_ENV
+
+    # =========================================================================
+    # Set Kubernetes Namespace
+    # =========================================================================
+    - name: Set Kubernetes Namespace
+      shell: bash
+      run: |
+        kubectl config set-context --current --namespace=${{ "{{" }} inputs.namespace {{ "}}" }}
+
+    - name: Verify Kubernetes connection
+      shell: bash
+      run: |
+        echo "Verifying Kubernetes connection..."
+        kubectl cluster-info
+        kubectl get nodes
+        echo ""
+        echo "Successfully connected to GKE cluster"
+        echo "  Cluster:   ${{ "{{" }} inputs.cluster {{ "}}" }}"
+        echo "  Zone:      ${{ "{{" }} inputs.zone {{ "}}" }}"
+        echo "  Namespace: ${{ "{{" }} inputs.namespace {{ "}}" }}"
+        echo "  Registry:  ${{ "{{" }} steps.config.outputs.registry {{ "}}" }}"
+{{- end }}

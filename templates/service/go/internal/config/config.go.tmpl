@@ -1,0 +1,25 @@
+package config
+
+import (
+	"github.com/ironplate-dev/ironplate/packages/go/envconfig"
+)
+
+// Config holds the service configuration.
+type Config struct {
+	Port     int
+	LogLevel string
+	Env      string{{ if hasItem .Service.Features "dapr" }}
+	DaprHTTPPort int
+	DaprGRPCPort int{{ end }}
+}
+
+// Load reads configuration from environment variables with defaults.
+func Load() *Config {
+	return &Config{
+		Port:     envconfig.GetInt("PORT", 3000),
+		LogLevel: envconfig.GetString("LOG_LEVEL", "info"),
+		Env:      envconfig.GetString("APP_ENV", "development"),{{ if hasItem .Service.Features "dapr" }}
+		DaprHTTPPort: envconfig.GetInt("DAPR_HTTP_PORT", 3500),
+		DaprGRPCPort: envconfig.GetInt("DAPR_GRPC_PORT", 50001),{{ end }}
+	}
+}

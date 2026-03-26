@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Service Chart Values",
+  "description": "Schema for the service library Helm chart values",
+  "type": "object",
+  "properties": {
+    "global": {
+      "type": "object",
+      "properties": {
+        "environment": { "type": "string", "enum": ["staging", "production", "development"] },
+        "namespace": { "type": "string" },
+        "domain": { "type": "string" },
+        "tlsSecretName": { "type": "string" },
+        "image": {
+          "type": "object",
+          "properties": {
+            "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+            "registry": { "type": "string" }
+          }
+        },
+        "labels": { "type": "object" },
+        "commonEnv": { "type": "object" }
+      },
+      "required": ["environment", "namespace", "domain"]
+    },
+    "defaults": {
+      "type": "object",
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 0 },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "serviceType": { "type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"] },
+        "resources": { "type": "object" },
+        "healthCheck": { "type": "object" },
+        "ingress": { "type": "object" },
+        "autoscaling": { "type": "object" },
+        "pdb": { "type": "object" }
+      }
+    },
+    "services": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "replicas": { "type": "integer" },
+          "port": { "type": "integer" },
+          "image": { "type": "object" },
+          "env": { "type": "object" },
+          "secrets": { "type": "array", "items": { "type": "string" } },
+          "secretEnv": { "type": "array" },
+          "resources": { "type": "object" },
+          "healthCheck": { "type": "object" },
+          "ingress": { "type": "object" },
+          "autoscaling": { "type": "object" },
+          "pdb": { "type": "object" },
+          "nodeSelector": { "type": "object" },
+          "tolerations": { "type": "array" },
+          "affinity": { "type": "object" },
+          "annotations": { "type": "object" },
+          "podAnnotations": { "type": "object" },
+          "volumes": { "type": "array" },
+          "volumeMounts": { "type": "array" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "{{ .Project.Metadata.Name }}",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "{{ .Project.Spec.Monorepo.PackageManager }}@4.11.0",
+  "engines": {
+    "node": ">={{ .Project.Spec.Monorepo.NodeVersion }}.0.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/node/*"
+  ],
+  "scripts": {
+    "dev": "tilt up",
+    "build:all": "npx nx run-many --target=build --all",
+    "build:packages:tsc": "npx nx run-many --target=build --all --exclude='apps/*'",
+    "test": "npx nx run-many --target=test --all",
+    "test:all": "vitest run --workspace vitest.workspace.ts",
+    "test:watch": "vitest --workspace vitest.workspace.ts",
+    "test:coverage": "vitest run --workspace vitest.workspace.ts --coverage",
+    "lint": "npx nx run-many --target=lint --all",
+    "lint:fix": "npx nx run-many --target=lint --all -- --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,yaml,yml,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,yaml,yml,md}\"",
+    "typecheck": "npx nx run-many --target=typecheck --all",
+    "clean:dist": "find . -name 'dist' -type d -not -path '*/node_modules/*' -exec rm -rf {} +",
+    "clean:node_modules": "find . -name 'node_modules' -type d -exec rm -rf {} +",
+    "nx:graph": "npx nx graph",
+    "nx:cleanup": "npx nx reset",
+{{- if eq .Project.Spec.DevEnvironment.K8sLocal "k3d" }}
+    "k3d:create": "k3d cluster create --config .devcontainer/k3s/cluster-config.yaml",
+    "k3d:delete": "k3d cluster delete {{ .Project.Metadata.Name }}-cluster",
+    "k3d:start": "k3d cluster start {{ .Project.Metadata.Name }}-cluster",
+    "k3d:stop": "k3d cluster stop {{ .Project.Metadata.Name }}-cluster",
+{{- end }}
+    "tilt:up": "tilt up",
+    "tilt:down": "tilt down"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0",
+    "vitest": "^1.6.0",
+    "prettier": "^3.6.0",
+    "eslint": "^9.18.0",
+    "nx": "^22.1.0"
+  }
+}

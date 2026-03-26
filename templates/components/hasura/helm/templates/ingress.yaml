@@ -1,0 +1,39 @@
+{{/*
+=============================================================================
+Hasura GraphQL Engine Ingress
+=============================================================================
+*/}}
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hasura-ingress
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: hasura
+    app.kubernetes.io/name: hasura
+    app.kubernetes.io/instance: hasura
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+    app.kubernetes.io/managed-by: helm
+  annotations:
+    {{- range $key, $value := .Values.ingress.annotations }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.host }}
+      secretName: {{ .Values.ingress.tlsSecretName }}
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hasura
+                port:
+                  number: {{ .Values.service.port }}
+{{- end }}

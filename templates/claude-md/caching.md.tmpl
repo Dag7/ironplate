@@ -1,0 +1,44 @@
+## Caching / Redis
+
+### Architecture
+- Redis serves as both cache and session store
+- All cache access goes through the shared cache client from `{{ .Computed.PrimaryScope }}/cache-client`
+- Local dev: Redis pod in k3d cluster (port 6379)
+
+### Cache Client Usage
+```typescript
+import { createCacheClient } from '{{ .Computed.PrimaryScope }}/cache-client';
+
+const cache = createCacheClient({ url: config.REDIS_URL });
+
+// Get with automatic deserialization
+const user = await cache.get<User>('user:123');
+
+// Set with TTL (seconds)
+await cache.set('user:123', userData, { ttl: 3600 });
+
+// Delete
+await cache.del('user:123');
+
+// Get-or-set pattern (recommended)
+const data = await cache.getOrSet('key', async () => {
+  return await fetchExpensiveData();
+}, { ttl: 300 });
+```
+
+### Key Naming Convention
+```
+{{ .Project.Metadata.Name }}:<service>:<entity>:<id>
+```
+Examples:
+- `{{ .Project.Metadata.Name }}:auth:session:abc123`
+- `{{ .Project.Metadata.Name }}:catalog:product:456`
+
+### Critical Rules
+1. Always use the shared cache client — never import `ioredis` directly
+2. Always set a TTL — never cache without expiration
+3. Key prefix must include service name to avoid collisions
+4. Use `getOrSet` pattern to prevent cache stampede
+5. Cache invalidation: prefer TTL expiry over manual invalidation
+6. Never cache sensitive data (tokens, passwords, PII)
+7. For session data, use `session:` prefix with short TTL (15-30 min)

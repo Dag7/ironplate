@@ -1,0 +1,120 @@
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import { projectId, stackName } from "../../config/loader";
+
+export interface SecurityPolicyOutputs {
+  /** Cloud Armor security policy */
+  securityPolicy: gcp.compute.SecurityPolicy;
+}
+
+/**
+ * Creates Cloud Armor WAF security policies for the
+ * {{ .Project.Metadata.Name }} project.
+ *
+ * Includes:
+ * - OWASP Top 10 protection rules
+ * - Rate limiting
+ * - Configurable geo-restriction
+ */
+export function createSecurityPolicies(
+  dependsOn: pulumi.Resource[] = [],
+): SecurityPolicyOutputs {
+  const config = new pulumi.Config();
+  const allowedCountries = config.getObject<string[]>("allowedCountries");
+
+  const rules: gcp.types.input.compute.SecurityPolicyRule[] = [];
+  let priority = 1000;
+
+  // ── OWASP Top 10 Rules ────────────────────────────────────────────
+
+  const owaspRules: { id: string; description: string }[] = [
+    { id: "sqli-v33-stable", description: "SQL Injection" },
+    { id: "xss-v33-stable", description: "Cross-Site Scripting" },
+    { id: "lfi-v33-stable", description: "Local File Inclusion" },
+    { id: "rfi-v33-stable", description: "Remote File Inclusion" },
+    { id: "rce-v33-stable", description: "Remote Code Execution" },
+    { id: "methodenforcement-v33-stable", description: "Method Enforcement" },
+    { id: "scannerdetection-v33-stable", description: "Scanner Detection" },
+    { id: "protocolattack-v33-stable", description: "Protocol Attack" },
+    { id: "sessionfixation-v33-stable", description: "Session Fixation" },
+  ];
+
+  owaspRules.forEach((rule) => {
+    rules.push({
+      action: "deny(403)",
+      priority,
+      description: `OWASP: ${rule.description}`,
+      match: {
+        expr: {
+          expression: `evaluatePreconfiguredWaf('${rule.id}', {'sensitivity': 1})`,
+        },
+      },
+    });
+    priority += 100;
+  });
+
+  // ── Rate Limiting Rule ────────────────────────────────────────────
+  rules.push({
+    action: "throttle",
+    priority: priority,
+    description: "Rate limiting: max 100 requests per minute per IP",
+    match: {
+      versionedExpr: "SRC_IPS_V1",
+      config: {
+        srcIpRanges: ["*"],
+      },
+    },
+    rateLimitOptions: {
+      rateLimitThreshold: {
+        count: 100,
+        intervalSec: 60,
+      },
+      conformAction: "allow",
+      exceedAction: "deny(429)",
+      enforceOnKey: "IP",
+    },
+  });
+  priority += 100;
+
+  // ── Geo-Restriction Rule (if configured) ──────────────────────────
+  if (allowedCountries && allowedCountries.length > 0) {
+    const countryExpr = allowedCountries
+      .map((c) => `'${c}'`)
+      .join(", ");
+
+    rules.push({
+      action: "deny(403)",
+      priority,
+      description: "Geo-restriction: block requests from disallowed regions",
+      match: {
+        expr: {
+          expression: `!origin.region_code.matches('[${allowedCountries.join("|")}]')`,
+        },
+      },
+    });
+    priority += 100;
+  }
+
+  // ── Default Allow Rule ────────────────────────────────────────────
+  rules.push({
+    action: "allow",
+    priority: 2147483647,
+    description: "Default rule: allow all other traffic",
+    match: {
+      versionedExpr: "SRC_IPS_V1",
+      config: {
+        srcIpRanges: ["*"],
+      },
+    },
+  });
+
+  // ── Security Policy ───────────────────────────────────────────────
+  const securityPolicy = new gcp.compute.SecurityPolicy("cloud-armor-policy", {
+    name: `{{ .Project.Metadata.Name }}-${stackName}-waf-policy`,
+    project: projectId,
+    description: `Cloud Armor WAF policy for {{ .Project.Metadata.Name }} (${stackName})`,
+    rules,
+  }, { dependsOn });
+
+  return { securityPolicy };
+}

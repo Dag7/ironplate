@@ -1,0 +1,54 @@
+## Event System / Kafka
+
+### Architecture
+- Apache Kafka (via Strimzi) handles all async messaging
+- Topic naming convention: `{{ .Project.Metadata.Name }}.<domain>.<event-name>`
+- All events use JSON with a standard envelope
+
+### Event Envelope
+```typescript
+interface EventEnvelope<T> {
+  id: string;           // UUID v4
+  type: string;         // e.g., "user.created"
+  source: string;       // Service name
+  timestamp: string;    // ISO 8601
+  correlationId: string;
+  data: T;
+}
+```
+
+### Publishing Events
+{{ if .Computed.HasDapr }}- Use Dapr pub/sub binding (preferred):
+```typescript
+await daprClient.pubsub.publish('pubsub', 'topic-name', eventData);
+```{{ else }}- Use the shared Kafka producer from `{{ .Computed.PrimaryScope }}/kafka-client`:
+```typescript
+import { createProducer } from '{{ .Computed.PrimaryScope }}/kafka-client';
+
+const producer = createProducer({ brokers: config.KAFKA_BROKERS });
+await producer.send('{{ .Project.Metadata.Name }}.domain.event-name', envelope);
+```{{ end }}
+
+### Consuming Events
+{{ if .Computed.HasDapr }}- Subscribe via Dapr subscription component in Helm values
+- Handler receives deserialized data at the configured route{{ else }}- Use the shared Kafka consumer:
+```typescript
+import { createConsumer } from '{{ .Computed.PrimaryScope }}/kafka-client';
+
+const consumer = createConsumer({
+  brokers: config.KAFKA_BROKERS,
+  groupId: 'my-service',
+});
+
+consumer.subscribe('{{ .Project.Metadata.Name }}.domain.event-name', async (event) => {
+  // Process event
+});
+```{{ end }}
+
+### Critical Rules
+1. Events must be **idempotent** — consumers may receive duplicates
+2. Always include `correlationId` for distributed tracing
+3. Never put sensitive data (passwords, tokens) in event payloads
+4. Consumer group ID must match the service name
+5. New topics require a Strimzi KafkaTopic CR in the Kafka Helm chart
+6. Failed events go to `<topic>.dlq` (dead letter queue) — monitor these

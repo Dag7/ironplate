@@ -1,0 +1,15 @@
+mirrors:
+  "docker.io":
+    endpoint:
+      - "http://k3d-{{ .Project.Metadata.Name }}-registry:5000"
+  "ghcr.io":
+    endpoint:
+      - "http://k3d-{{ .Project.Metadata.Name }}-registry:5000"
+  "registry.k8s.io":
+    endpoint:
+      - "http://k3d-{{ .Project.Metadata.Name }}-registry:5000"
+
+configs:
+  "k3d-{{ .Project.Metadata.Name }}-registry:5000":
+    tls:
+      insecure_skip_verify: true

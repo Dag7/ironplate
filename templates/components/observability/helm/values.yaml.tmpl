@@ -1,0 +1,109 @@
+# =============================================================================
+# {{ .Project.Metadata.Name }} Observability Stack - Default Values
+# =============================================================================
+# Configuration for the observability stack:
+#   - OpenTelemetry Collector (trace/metric ingestion)
+#   - Grafana Tempo (distributed tracing backend)
+#   - Prometheus (metrics storage and querying)
+#   - Grafana (dashboards and visualization)
+# =============================================================================
+
+global:
+  namespace: {{ .Project.Metadata.Name }}
+  labels:
+    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
+    app.kubernetes.io/managed-by: helm
+
+# -----------------------------------------------------------------------------
+# Project identity (injected by ironplate at scaffold time)
+# -----------------------------------------------------------------------------
+projectName: {{ .Project.Metadata.Name }}
+domain: {{ .Project.Metadata.Domain }}
+
+# -----------------------------------------------------------------------------
+# Conditional scrape targets (based on installed components)
+# -----------------------------------------------------------------------------
+scrapeTargets:
+  kafka:
+    enabled: {{ .Computed.HasKafka }}
+  hasura:
+    enabled: {{ .Computed.HasHasura }}
+  dapr:
+    enabled: {{ .Computed.HasDapr }}
+
+# -----------------------------------------------------------------------------
+# OpenTelemetry Collector
+# -----------------------------------------------------------------------------
+otelCollector:
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.96.0"
+    pullPolicy: IfNotPresent
+  ports:
+    grpc: 4317
+    http: 4318
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# -----------------------------------------------------------------------------
+# Grafana Tempo (Traces)
+# -----------------------------------------------------------------------------
+tempo:
+  image:
+    repository: grafana/tempo
+    tag: "2.4.1"
+    pullPolicy: IfNotPresent
+  port: 3200
+  jaeger:
+    port: 14268
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# -----------------------------------------------------------------------------
+# Prometheus (Metrics)
+# -----------------------------------------------------------------------------
+prometheus:
+  image:
+    repository: prom/prometheus
+    tag: "v2.51.0"
+    pullPolicy: IfNotPresent
+  port: 9090
+  scrapeInterval: 15s
+  storage:
+    size: 1Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+
+# -----------------------------------------------------------------------------
+# Grafana (Dashboards)
+# -----------------------------------------------------------------------------
+grafana:
+  image:
+    repository: grafana/grafana
+    tag: "10.4.1"
+    pullPolicy: IfNotPresent
+  port: 3000
+  adminUser: admin
+  adminPassword: admin
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi

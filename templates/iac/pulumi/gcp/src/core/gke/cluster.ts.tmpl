@@ -1,0 +1,187 @@
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import { projectId, region, stackName } from "../../config/loader";
+import { GkeConfig } from "../../config/types";
+
+export interface ClusterOutputs {
+  /** GKE cluster */
+  cluster: gcp.container.Cluster;
+  /** Default node pool */
+  nodePool: gcp.container.NodePool;
+}
+
+/**
+ * Creates a GKE cluster with a managed node pool for the
+ * {{ .Project.Metadata.Name }} project.
+ *
+ * Features:
+ * - Private cluster with master authorized networks
+ * - Workload Identity enabled
+ * - Release channel: REGULAR
+ * - Network policy enabled
+ * - Configurable autoscaling
+ * - Logging and monitoring
+ */
+export function createCluster(
+  gkeConfig: GkeConfig,
+  network: gcp.compute.Network,
+  subnet: gcp.compute.Subnetwork,
+  nodeServiceAccountEmail: pulumi.Output<string>,
+  dependsOn: pulumi.Resource[] = [],
+): ClusterOutputs {
+  const config = new pulumi.Config();
+  const useAutopilot = config.getBoolean("gkeAutopilot") ?? false;
+
+  // ── GKE Cluster ───────────────────────────────────────────────────
+  const cluster = new gcp.container.Cluster("gke-cluster", {
+    name: gkeConfig.clusterName,
+    project: projectId,
+    location: region,
+    network: network.id,
+    subnetwork: subnet.id,
+
+    // Use Autopilot if configured, otherwise Standard mode
+    enableAutopilot: useAutopilot,
+
+    // Remove default node pool for Standard mode (we manage our own)
+    ...(!useAutopilot && {
+      removeDefaultNodePool: true,
+      initialNodeCount: 1,
+    }),
+
+    // Private cluster configuration
+    privateClusterConfig: {
+      enablePrivateNodes: true,
+      enablePrivateEndpoint: false,
+      masterIpv4CidrBlock: "172.16.0.0/28",
+    },
+
+    // Master authorized networks
+    masterAuthorizedNetworksConfig: {
+      cidrBlocks: [
+        {
+          cidrBlock: "0.0.0.0/0",
+          displayName: "All networks (restrict in production)",
+        },
+      ],
+    },
+
+    // Workload Identity
+    workloadIdentityConfig: {
+      workloadPool: pulumi.interpolate`${projectId}.svc.id.goog`,
+    },
+
+    // Release channel
+    releaseChannel: {
+      channel: "REGULAR",
+    },
+
+    // IP allocation policy (use secondary ranges from subnet)
+    ipAllocationPolicy: {
+      clusterSecondaryRangeName: "pods",
+      servicesSecondaryRangeName: "services",
+    },
+
+    // Network policy
+    networkPolicy: {
+      enabled: true,
+      provider: "CALICO",
+    },
+
+    // Addons
+    addonsConfig: {
+      httpLoadBalancing: { disabled: false },
+      horizontalPodAutoscaling: { disabled: false },
+      networkPolicyConfig: { disabled: false },
+      dnsCacheConfig: { enabled: true },
+    },
+
+    // Logging and monitoring
+    loggingConfig: {
+      enableComponents: [
+        "SYSTEM_COMPONENTS",
+        "WORKLOADS",
+      ],
+    },
+    monitoringConfig: {
+      enableComponents: [
+        "SYSTEM_COMPONENTS",
+      ],
+      managedPrometheus: {
+        enabled: true,
+      },
+    },
+
+    // Maintenance window (2 AM - 6 AM UTC on weekends)
+    maintenancePolicy: {
+      recurringWindow: {
+        startTime: "2024-01-01T02:00:00Z",
+        endTime: "2024-01-01T06:00:00Z",
+        recurrence: "FREQ=WEEKLY;BYDAY=SA,SU",
+      },
+    },
+
+    // Resource labels
+    resourceLabels: {
+      project: "{{ .Project.Metadata.Name }}",
+      environment: stackName,
+      "managed-by": "pulumi",
+    },
+  }, { dependsOn });
+
+  // ── Default Node Pool (Standard mode only) ────────────────────────
+  const nodePool = new gcp.container.NodePool("default-node-pool", {
+    name: gkeConfig.nodePoolName,
+    project: projectId,
+    location: region,
+    cluster: cluster.name,
+
+    // Autoscaling
+    autoscaling: {
+      minNodeCount: gkeConfig.minNodes,
+      maxNodeCount: gkeConfig.maxNodes,
+    },
+
+    // Node configuration
+    nodeConfig: {
+      machineType: gkeConfig.machineType,
+      diskSizeGb: gkeConfig.diskSizeGb,
+      diskType: "pd-standard",
+      imageType: "COS_CONTAINERD",
+
+      // Use the dedicated GKE node service account
+      serviceAccount: nodeServiceAccountEmail,
+      oauthScopes: [
+        "https://www.googleapis.com/auth/cloud-platform",
+      ],
+
+      // Workload Identity on nodes
+      workloadMetadataConfig: {
+        mode: "GKE_METADATA",
+      },
+
+      // Shielded instance
+      shieldedInstanceConfig: {
+        enableSecureBoot: true,
+        enableIntegrityMonitoring: true,
+      },
+
+      labels: {
+        project: "{{ .Project.Metadata.Name }}",
+        environment: stackName,
+      },
+
+      tags: [
+        `{{ .Project.Metadata.Name }}-${stackName}-gke-node`,
+      ],
+    },
+
+    // Management
+    management: {
+      autoRepair: true,
+      autoUpgrade: true,
+    },
+  });
+
+  return { cluster, nodePool };
+}

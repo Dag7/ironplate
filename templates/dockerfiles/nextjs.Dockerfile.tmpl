@@ -1,0 +1,121 @@
+# syntax=docker/dockerfile:1.4
+# =============================================================================
+# Next.js Standalone Dockerfile
+# =============================================================================
+# For UI apps with SSR, API rewrites, and runtime environment variables.
+# NEXT_PUBLIC_* vars are served dynamically via /api/__env route.
+# =============================================================================
+
+ARG NODE_VERSION=node:{{ .Project.Spec.Monorepo.NodeVersion }}-alpine
+
+# =============================================================================
+# Stage: base
+# =============================================================================
+FROM ${NODE_VERSION} AS base
+ARG TARGET_NAME
+ARG TARGET_SRC=apps
+ARG WORKSPACE_NAME
+ENV TARGET_NAME=${TARGET_NAME}
+ENV TARGET_SRC=${TARGET_SRC}
+ENV WORKSPACE_NAME=${WORKSPACE_NAME:-{{ .Computed.PrimaryScope }}/${TARGET_NAME}}
+WORKDIR /app
+
+RUN apk add --no-cache python3 make g++ libc6-compat
+RUN corepack enable && corepack prepare {{ .Project.Spec.Monorepo.PackageManager }}@stable --activate
+
+COPY package.json {{ .Project.Spec.Monorepo.PackageManager }}.lock{{ if eq .Project.Spec.Monorepo.PackageManager "yarn" }} .yarnrc.yml{{ end }} ./
+{{ if eq .Project.Spec.Monorepo.PackageManager "yarn" }}COPY .yarn/ .yarn/{{ end }}
+COPY nx.json tsconfig.json tsconfig.base.json ./
+COPY apps ./apps
+COPY packages ./packages
+
+# =============================================================================
+# Stage: install-dev
+# =============================================================================
+FROM base AS install-dev
+ENV NODE_ENV=development
+{{ if eq .Project.Spec.Monorepo.PackageManager "yarn" }}RUN --mount=type=cache,id=yarn-cache,target=/app/.yarn/cache \
+    yarn workspaces focus ${WORKSPACE_NAME}{{ else }}RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+    pnpm install --filter ${WORKSPACE_NAME}{{ end }}
+
+# =============================================================================
+# Stage: install-build
+# =============================================================================
+FROM base AS install-build
+ENV NODE_ENV=development
+{{ if eq .Project.Spec.Monorepo.PackageManager "yarn" }}RUN --mount=type=cache,id=yarn-cache,target=/app/.yarn/cache \
+    yarn install{{ else }}RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+    pnpm install{{ end }}
+
+# =============================================================================
+# Stage: build
+# =============================================================================
+FROM install-build AS build
+ARG TARGET_NAME
+ARG TARGET_SRC=apps
+ARG WORKSPACE_NAME
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+RUN --mount=type=cache,id=nx-cache,target=/app/.nx/cache \
+    {{ if eq .Project.Spec.Monorepo.PackageManager "yarn" }}yarn{{ else }}pnpm{{ end }} nx build ${WORKSPACE_NAME}
+
+# Ensure public folder exists
+RUN mkdir -p /app/${TARGET_SRC}/${TARGET_NAME}/public
+
+# =============================================================================
+# Stage: debug
+# =============================================================================
+FROM build AS debug
+CMD ["tail", "-f", "/dev/null"]
+
+# =============================================================================
+# Stage: development
+# =============================================================================
+FROM install-dev AS development
+ARG TARGET_NAME
+ARG TARGET_SRC=apps
+ENV NODE_ENV=development
+ENV NEXT_TELEMETRY_DISABLED=1
+WORKDIR /app/${TARGET_SRC}/${TARGET_NAME}
+CMD ["npm", "run", "dev"]
+
+# =============================================================================
+# Stage: production - Hardened Standalone Node.js server
+# =============================================================================
+FROM ${NODE_VERSION} AS production
+ARG TARGET_NAME
+ARG TARGET_SRC=apps
+
+LABEL org.opencontainers.image.source="https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}"
+LABEL org.opencontainers.image.vendor="{{ .Project.Metadata.Organization }}"
+
+WORKDIR /app
+
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 nextjs
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+# Copy standalone build output (preserves monorepo structure)
+COPY --from=build --chown=nextjs:nodejs /app/${TARGET_SRC}/${TARGET_NAME}/.next/standalone ./
+COPY --from=build --chown=nextjs:nodejs /app/${TARGET_SRC}/${TARGET_NAME}/.next/static ./${TARGET_SRC}/${TARGET_NAME}/.next/static
+COPY --from=build --chown=nextjs:nodejs /app/${TARGET_SRC}/${TARGET_NAME}/public ./${TARGET_SRC}/${TARGET_NAME}/public
+
+# Security Hardening
+RUN rm -f /bin/sh /bin/ash /bin/bash /sbin/apk \
+    /usr/bin/wget /usr/bin/curl \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/yarn /usr/local/bin/corepack \
+    2>/dev/null || true
+
+USER nextjs
+
+EXPOSE 3000
+
+WORKDIR /app/${TARGET_SRC}/${TARGET_NAME}
+
+ENTRYPOINT ["node"]
+CMD ["server.js"]

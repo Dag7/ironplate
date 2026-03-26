@@ -1,0 +1,14 @@
+apiVersion: v2
+name: {{ .Project.Metadata.Name }}-service
+description: Base Helm chart template for {{ .Project.Metadata.Name }} microservices
+type: library
+version: 1.0.0
+appVersion: "1.0.0"
+
+keywords:
+  - {{ .Project.Metadata.Name }}
+  - microservice
+  - template
+
+maintainers:
+  - name: {{ .Project.Metadata.Organization }}

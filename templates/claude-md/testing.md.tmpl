@@ -1,0 +1,21 @@
+## Testing
+{{ if .Computed.HasNode }}
+### Node.js
+- Framework: Vitest
+- Run all: `{{ .Project.Spec.Monorepo.PackageManager }} nx run-many --target=test`
+- Run one: `{{ .Project.Spec.Monorepo.PackageManager }} nx test SERVICE_NAME`
+- Watch: `{{ .Project.Spec.Monorepo.PackageManager }} nx test SERVICE_NAME --watch`
+- Coverage: `{{ .Project.Spec.Monorepo.PackageManager }} nx test SERVICE_NAME --coverage`
+{{ end }}
+{{ if .Computed.HasGo }}
+### Go
+- Run all: `go test ./...`
+- Run one: `go test ./apps/SERVICE_NAME/...`
+- Race detection: `go test -race ./...`
+- Coverage: `go test -coverprofile=coverage.out ./...`
+{{ end }}
+### Testing Rules
+- Unit tests live next to the code they test (`*.test.ts` / `*_test.go`)
+- Integration tests hit real services (database, Redis) in the k3d cluster
+- No mocking of infrastructure - test against real dependencies
+- Every PR must pass CI tests before merge

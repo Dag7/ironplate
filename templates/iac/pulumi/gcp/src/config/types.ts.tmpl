@@ -1,0 +1,87 @@
+/**
+ * Infrastructure configuration types for {{ .Project.Metadata.Name }}.
+ *
+ * These interfaces define the shape of all infrastructure configuration
+ * used across the Pulumi GCP stack.
+ */
+
+export interface EnvironmentConfig {
+  /** Environment name (e.g. "staging", "production") */
+  name: string;
+  /** Short environment name (e.g. "stg", "prod") */
+  shortName: string;
+  /** Domain for this environment (e.g. "staging.{{ .Domain }}") */
+  domain: string;
+  /** Default node count for GKE node pools */
+  nodeCount: number;
+  /** Default machine type for GKE nodes */
+  machineType: string;
+}
+
+export interface NetworkConfig {
+  /** Name of the VPC network */
+  vpcName: string;
+  /** Primary subnet CIDR range */
+  subnetCidr: string;
+  /** Secondary range CIDR for GKE pods */
+  podCidr: string;
+  /** Secondary range CIDR for GKE services */
+  serviceCidr: string;
+}
+
+export interface GkeConfig {
+  /** Name of the GKE cluster */
+  clusterName: string;
+  /** Name of the default node pool */
+  nodePoolName: string;
+  /** Minimum number of nodes for autoscaling */
+  minNodes: number;
+  /** Maximum number of nodes for autoscaling */
+  maxNodes: number;
+  /** Machine type for cluster nodes */
+  machineType: string;
+  /** Disk size in GB for each node */
+  diskSizeGb: number;
+}
+
+export interface DatabaseConfig {
+  /** Cloud SQL instance tier (e.g. "db-custom-2-8192") */
+  tier: string;
+  /** Storage size in GB */
+  storageGb: number;
+  /** Whether to enable high availability (regional) */
+  highAvailability: boolean;
+  /** List of database names to create */
+  databases: string[];
+}
+
+export interface InfraOutputs {
+  /** GCP project ID */
+  projectId: string;
+  /** GCP region */
+  region: string;
+  /** VPC network self-link */
+  networkSelfLink: string;
+  /** Subnet self-link */
+  subnetSelfLink: string;
+  /** GKE cluster name */
+  clusterName: string;
+  /** GKE cluster endpoint */
+  clusterEndpoint: string;
+  /** GKE cluster CA certificate */
+  clusterCaCertificate: string;
+  /** GKE node service account email */
+  nodeServiceAccountEmail: string;
+  /** Application service account email */
+  appServiceAccountEmail: string;
+  /** CI/CD service account email */
+  cicdServiceAccountEmail: string;
+  /** Static IP address for the load balancer */
+  staticIpAddress: string;
+  /** Cloud DNS managed zone name */
+  dnsZoneName: string;
+  /** Cloud DNS name servers */
+  dnsNameServers: string[];{{ if hasItem .Project.Spec.Infrastructure.Components "observability" }}
+  /** Whether observability APIs are enabled */
+  observabilityEnabled: boolean;{{ end }}
+}

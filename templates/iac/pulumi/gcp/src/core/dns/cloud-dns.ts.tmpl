@@ -1,0 +1,53 @@
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import { projectId, stackName } from "../../config/loader";
+import { EnvironmentConfig } from "../../config/types";
+
+export interface DnsOutputs {
+  /** Cloud DNS managed zone */
+  managedZone: gcp.dns.ManagedZone;
+}
+
+/**
+ * Creates a Cloud DNS managed zone for the {{ .Project.Metadata.Name }} project domain.
+ */
+export function createDns(
+  envConfig: EnvironmentConfig,
+  dependsOn: pulumi.Resource[] = [],
+): DnsOutputs {
+  // Derive the DNS zone name from the domain (replace dots with dashes)
+  const zoneName = `{{ .Project.Metadata.Name }}-${stackName}-zone`;
+  const dnsName = envConfig.domain.endsWith(".")
+    ? envConfig.domain
+    : `${envConfig.domain}.`;
+
+  const managedZone = new gcp.dns.ManagedZone("dns-zone", {
+    name: zoneName,
+    project: projectId,
+    dnsName,
+    description: `DNS zone for {{ .Project.Metadata.Name }} (${stackName}) - ${envConfig.domain}`,
+    visibility: "public",
+    dnssecConfig: {
+      state: "on",
+      defaultKeySpecs: [
+        {
+          algorithm: "rsasha256",
+          keyLength: 2048,
+          keyType: "keySigning",
+        },
+        {
+          algorithm: "rsasha256",
+          keyLength: 1024,
+          keyType: "zoneSigning",
+        },
+      ],
+    },
+    labels: {
+      project: "{{ .Project.Metadata.Name }}",
+      environment: stackName,
+      "managed-by": "pulumi",
+    },
+  }, { dependsOn });
+
+  return { managedZone };
+}

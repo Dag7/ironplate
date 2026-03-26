@@ -1,0 +1,49 @@
+# Set Up GraphQL / Hasura for a Service
+
+## Arguments
+- `service`: Service name that needs Hasura integration
+- `tables` (optional): Comma-separated table names to track
+
+## Steps
+
+### 1. Add Hasura SDK Dependency
+{{ if .Computed.HasNode }}- Add `{{ .Computed.PrimaryScope }}/hasura-sdk` to the service's `package.json`
+- Run `{{ .Project.Spec.Monorepo.PackageManager }} install`{{ end }}
+
+### 2. Create GraphQL Schema Files
+- Create `apps/{service}/src/graphql/` directory
+- Add `.graphql` query/mutation files for required operations
+- Add `codegen.ts` configuration pointing to Hasura endpoint
+
+### 3. Configure Codegen
+- Add codegen script to service `package.json`: `"codegen": "graphql-codegen --config codegen.ts"`
+- Generated types output to `src/generated/graphql.ts`
+
+### 4. Create Hasura Client
+- Create `apps/{service}/src/clients/hasura.ts`
+- Initialize with `HASURA_GRAPHQL_URL` and `HASURA_ADMIN_SECRET` from service config
+- Export typed client instance
+
+### 5. Track Tables (if specified)
+- Run `hasura metadata add-source` if not already configured
+- For each table: `hasura metadata track-table <table> --database-name default`
+- Set up relationships between tables
+- Configure permissions (admin, user roles)
+
+### 6. Add Environment Variables
+- Add to service Helm `values.yaml`:
+  - `HASURA_GRAPHQL_URL`: `http://hasura.infra.svc.cluster.local:8080/v1/graphql`
+  - `HASURA_ADMIN_SECRET`: from external secret or config
+
+### 7. Run Codegen
+- Run `{{ .Project.Spec.Monorepo.PackageManager }} nx codegen {service}`
+- Verify generated types compile
+
+## Checklist
+- [ ] Hasura SDK dependency added
+- [ ] GraphQL schema files created
+- [ ] Codegen configured and types generated
+- [ ] Hasura client initialized in service
+- [ ] Tables tracked in Hasura metadata
+- [ ] Permissions configured for each table
+- [ ] Environment variables set in Helm values

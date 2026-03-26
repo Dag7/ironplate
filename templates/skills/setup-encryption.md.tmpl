@@ -1,0 +1,99 @@
+# Set Up Encryption
+
+## Arguments
+- `service`: Service name that needs field-level encryption
+- `fields`: Comma-separated field names to encrypt (e.g., `ssn,apiKey,credentials`)
+
+## Architecture
+
+```
+plaintext → EncryptionService.encrypt() → { kid, iv, data, tag, v } → database
+database → { kid, iv, data, tag, v } → EncryptionService.decrypt() → plaintext
+```
+
+## Steps
+
+### 1. Add Dependencies
+- Add `@ironplate/encryption` to `apps/{service}/package.json`
+- Run `{{ .Project.Spec.Monorepo.PackageManager }} install`
+
+### 2. Initialize Encryption Service
+
+```typescript
+import { EncryptionService } from '@ironplate/encryption';
+
+export const encryption = new EncryptionService({
+  currentKeyId: process.env.ENCRYPTION_KEY_ID!,
+  keys: {
+    [process.env.ENCRYPTION_KEY_ID!]: process.env.ENCRYPTION_KEY!,
+    // Previous keys for decryption during rotation:
+    ...(process.env.ENCRYPTION_KEY_PREV_ID
+      ? { [process.env.ENCRYPTION_KEY_PREV_ID]: process.env.ENCRYPTION_KEY_PREV! }
+      : {}),
+  },
+});
+```
+
+### 3. Encrypt Fields Before Storage
+
+```typescript
+// Encrypt sensitive data before saving
+const encrypted = encryption.encryptToString(user.ssn);
+await db.user.update(id, { ssnEncrypted: encrypted });
+```
+
+### 4. Decrypt Fields After Retrieval
+
+```typescript
+// Decrypt when reading
+const user = await db.user.findById(id);
+const ssn = encryption.decryptFromString(user.ssnEncrypted);
+```
+
+### 5. Key Rotation
+
+```typescript
+// Re-encrypt records using old key to use new key
+const records = await db.user.findAll();
+for (const record of records) {
+  const payload = JSON.parse(record.ssnEncrypted);
+  if (!encryption.isCurrentKey(payload)) {
+    const rotated = encryption.rotate(payload);
+    await db.user.update(record.id, {
+      ssnEncrypted: JSON.stringify(rotated),
+    });
+  }
+}
+```
+
+### 6. Generate New Keys
+
+```bash
+# Generate a new 256-bit key
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+### 7. Add Environment Variables
+- Add to Helm `values.yaml`:
+  ```yaml
+  env:
+    ENCRYPTION_KEY_ID: "key-2024"
+    ENCRYPTION_KEY: "from-external-secrets"
+  ```
+
+## CRITICAL Rules
+- NEVER commit encryption keys to git — always use external secrets
+- NEVER log decrypted values — log encrypted payload metadata only
+- ALWAYS keep old keys in the key set during rotation (for decrypting existing data)
+- ALWAYS store encrypted payloads as JSON strings in the database
+- Use `EncryptionService.generateKey()` to create proper 256-bit keys
+- The `kid` (key ID) in each payload identifies which key encrypted it
+
+## Checklist
+- [ ] `@ironplate/encryption` dependency added
+- [ ] EncryptionService initialized with key config
+- [ ] Sensitive fields encrypted before storage
+- [ ] Decryption working for retrieval
+- [ ] Encryption keys in external secrets (not in code)
+- [ ] Key rotation plan documented
+- [ ] Old keys retained for backward compatibility

@@ -1,0 +1,41 @@
+{{- range $name, $ingress := .Values.infraIngresses }}
+{{- if $ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingress-{{ $name }}
+  namespace: {{ default $.Values.global.namespace $ingress.namespace }}
+  labels:
+    {{- include "ingress.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: infra-ingress
+  annotations:
+    {{- range $key, $value := $.Values.defaults.annotations }}
+    {{ $key }}: {{ $value | quote }}
+    {{- end }}
+    {{- if $ingress.iapProtected }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ $.Values.global.namespace }}-iap-errors@kubernetescrd,{{ $.Values.global.namespace }}-iap-auth@kubernetescrd
+    {{- end }}
+spec:
+  ingressClassName: {{ $.Values.defaults.className }}
+  {{- if $.Values.global.tlsSecretName }}
+  tls:
+    - hosts:
+        - {{ $ingress.host }}
+      secretName: {{ $.Values.global.tlsSecretName }}
+  {{- end }}
+  rules:
+    - host: {{ $ingress.host }}
+      http:
+        paths:
+          {{- range $ingress.routes }}
+          - path: {{ .path }}
+            pathType: {{ default "Prefix" .pathType }}
+            backend:
+              service:
+                name: {{ .service }}
+                port:
+                  number: {{ .port }}
+          {{- end }}
+{{- end }}
+{{- end }}

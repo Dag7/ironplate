@@ -1,0 +1,108 @@
+{{/*
+=============================================================================
+Hasura GraphQL Engine Deployment
+=============================================================================
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hasura
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: hasura
+    app.kubernetes.io/name: hasura
+    app.kubernetes.io/instance: hasura
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+    app.kubernetes.io/managed-by: helm
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: hasura
+  template:
+    metadata:
+      labels:
+        app: hasura
+        app.kubernetes.io/name: hasura
+        app.kubernetes.io/instance: hasura
+        app.kubernetes.io/part-of: {{ .Values.projectName }}
+    spec:
+      containers:
+        - name: graphql-engine
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # -- Database connection
+            - name: HASURA_GRAPHQL_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: {{ .Values.database.secretKey }}
+            # -- Admin secret
+            - name: HASURA_GRAPHQL_ADMIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.adminSecret.secretName }}
+                  key: {{ .Values.adminSecret.secretKey }}
+            # -- Console
+            - name: HASURA_GRAPHQL_ENABLE_CONSOLE
+              value: {{ .Values.console.enabled | quote }}
+            # -- Dev mode
+            - name: HASURA_GRAPHQL_DEV_MODE
+              value: {{ .Values.devMode.enabled | quote }}
+            # -- CORS
+            - name: HASURA_GRAPHQL_CORS_DOMAIN
+              value: {{ .Values.cors.domain | quote }}
+            # -- Metadata database (same as primary by default)
+            - name: HASURA_GRAPHQL_METADATA_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: {{ .Values.database.secretKey }}
+            # -- Enable telemetry
+            - name: HASURA_GRAPHQL_ENABLED_APIS
+              value: "metadata,graphql,config"
+            {{- if .Values.kafka.enabled }}
+            # -- Event triggers via Kafka
+            - name: HASURA_GRAPHQL_EVENTS_FETCH_INTERVAL
+              value: "100"
+            {{- if .Values.eventTriggers.kafka }}
+            - name: HASURA_GRAPHQL_EVENTS_HTTP_POOL_SIZE
+              value: "100"
+            {{- end }}
+            {{- end }}
+            {{- if .Values.observability.enabled }}
+            # -- OpenTelemetry
+            - name: HASURA_GRAPHQL_ENABLED_LOG_TYPES
+              value: "startup,http-log,webhook-log,websocket-log,query-log"
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otlp.endpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: "hasura"
+            - name: HASURA_GRAPHQL_ENABLE_TELEMETRY
+              value: "true"
+            {{- end }}
+          # -- Health checks
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: 8080
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: 8080
+            initialDelaySeconds: {{ mul .Values.healthCheck.initialDelaySeconds 2 }}
+            periodSeconds: {{ mul .Values.healthCheck.periodSeconds 2 }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+          # -- Resource limits
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

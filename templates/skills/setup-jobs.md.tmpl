@@ -1,0 +1,151 @@
+# Set Up Async Job Processing
+
+## Arguments
+- `service`: Service name
+- `jobs`: Comma-separated job names to create (e.g., `send-email,generate-report`)
+
+## Architecture
+
+```
+API Handler → worker.enqueue('send-email', payload)
+                           ↓
+                    JobStore (queue)
+                           ↓
+              JobWorker poll loop (1s interval)
+                           ↓
+               JobDefinition.handler(payload, ctx)
+                   ↓ success           ↓ failure
+              status: completed    retry with backoff
+                                   (up to maxRetries)
+```
+
+## Steps
+
+### 1. Add Dependencies
+- Add `@ironplate/jobs` to `apps/{service}/package.json`
+- Run `{{ .Project.Spec.Monorepo.PackageManager }} install`
+
+### 2. Define Jobs
+
+```typescript
+import type { JobDefinition } from '@ironplate/jobs';
+
+export const sendEmailJob: JobDefinition<{ to: string; subject: string; body: string }> = {
+  name: 'send-email',
+  maxRetries: 3,
+  retryDelayMs: 2000,
+  timeoutMs: 30_000,
+  handler: async (payload, ctx) => {
+    ctx.logger.info({ to: payload.to }, 'Sending email');
+
+    // Check if job was cancelled
+    if (ctx.signal.aborted) return;
+
+    await emailService.send(payload);
+    ctx.logger.info({ to: payload.to }, 'Email sent');
+  },
+};
+
+export const generateReportJob: JobDefinition<{ reportId: string; format: string }> = {
+  name: 'generate-report',
+  maxRetries: 2,
+  timeoutMs: 120_000, // 2 minutes
+  handler: async (payload, ctx) => {
+    ctx.logger.info({ reportId: payload.reportId }, 'Generating report');
+    const report = await reportService.generate(payload.reportId, payload.format);
+    return { url: report.url };
+  },
+};
+```
+
+### 3. Create Worker
+
+```typescript
+import { JobWorker, MemoryJobStore } from '@ironplate/jobs';
+import { sendEmailJob, generateReportJob } from './jobs';
+
+// Use MemoryJobStore for development (swap for Redis/DB store in production)
+const store = new MemoryJobStore();
+
+export const worker = new JobWorker(store, {
+  pollIntervalMs: 1000,
+});
+
+worker
+  .register(sendEmailJob)
+  .register(generateReportJob);
+```
+
+### 4. Enqueue Jobs from API Routes
+
+```typescript
+import { worker } from '../worker';
+import { Router } from 'express';
+
+const router = Router();
+
+router.post('/users/:id/welcome-email', async (req, res) => {
+  const jobId = await worker.enqueue('send-email', {
+    to: user.email,
+    subject: 'Welcome!',
+    body: 'Welcome to {{ .Project.Metadata.Name }}',
+  });
+
+  res.status(202).json({ jobId, status: 'queued' });
+});
+
+// Delayed job
+router.post('/reports', async (req, res) => {
+  const jobId = await worker.enqueue(
+    'generate-report',
+    { reportId: req.body.id, format: 'pdf' },
+    { delayMs: 5000, priority: 1 },
+  );
+
+  res.status(202).json({ jobId });
+});
+```
+
+### 5. Start/Stop Worker with Service
+
+```typescript
+import { createService } from '@ironplate/service';
+import { worker } from './worker';
+
+const service = await createService('{service}')
+  .routes('/api', apiRouter)
+  .build();
+
+await service.start();
+worker.start();
+
+// On shutdown:
+process.on('SIGTERM', () => {
+  worker.stop();
+});
+```
+
+## Job Lifecycle
+
+```
+pending → running → completed
+                  → failed (after maxRetries exhausted)
+         → retrying → running → ...
+```
+
+## CRITICAL Rules
+- `MemoryJobStore` is for development only — no persistence across restarts
+- For production, implement `IJobStore` backed by Redis or PostgreSQL
+- ALWAYS set `timeoutMs` on long-running jobs to prevent stuck workers
+- ALWAYS check `ctx.signal.aborted` in long loops for graceful cancellation
+- Use `priority` (lower = higher priority) for ordering
+- ALWAYS stop the worker during graceful shutdown
+
+## Checklist
+- [ ] `@ironplate/jobs` dependency added
+- [ ] Job definitions created with proper retry/timeout config
+- [ ] JobWorker initialized with store and registered jobs
+- [ ] API routes enqueue jobs (return 202 Accepted)
+- [ ] Worker started after service starts
+- [ ] Worker stopped during graceful shutdown
+- [ ] Production job store planned (Redis/PostgreSQL)

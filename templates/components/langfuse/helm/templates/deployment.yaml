@@ -1,0 +1,88 @@
+{{/*
+=============================================================================
+Langfuse LLM Observability Deployment
+=============================================================================
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langfuse
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: langfuse
+    app.kubernetes.io/name: langfuse
+    app.kubernetes.io/instance: langfuse
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+    app.kubernetes.io/managed-by: helm
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: langfuse
+  template:
+    metadata:
+      labels:
+        app: langfuse
+        app.kubernetes.io/name: langfuse
+        app.kubernetes.io/instance: langfuse
+        app.kubernetes.io/part-of: {{ .Values.projectName }}
+    spec:
+      containers:
+        - name: langfuse
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            # -- Database connection
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: {{ .Values.database.secretKey }}
+            {{- if .Values.redis.enabled }}
+            # -- Redis connection
+            - name: REDIS_HOST
+              value: {{ .Values.redis.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.redis.port | quote }}
+            {{- end }}
+            # -- NextAuth
+            - name: NEXTAUTH_URL
+              value: {{ .Values.nextAuth.url | quote }}
+            - name: NEXTAUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.nextAuth.secretName }}
+                  key: {{ .Values.nextAuth.secretKey }}
+            # -- Salt for API key hashing
+            - name: SALT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.salt.secretName }}
+                  key: {{ .Values.salt.secretKey }}
+            # -- CORS
+            - name: LANGFUSE_ALLOWED_ORIGINS
+              value: {{ .Values.cors.allowedOrigins | quote }}
+          # -- Health checks
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: 3000
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: 3000
+            initialDelaySeconds: {{ mul .Values.healthCheck.initialDelaySeconds 2 }}
+            periodSeconds: {{ mul .Values.healthCheck.periodSeconds 2 }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+          # -- Resource limits
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}

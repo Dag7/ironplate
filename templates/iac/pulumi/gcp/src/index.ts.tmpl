@@ -1,0 +1,205 @@
+import * as pulumi from "@pulumi/pulumi";
+import * as gcp from "@pulumi/gcp";
+import * as k8s from "@pulumi/kubernetes";
+
+import { enableApis } from "./core/project";
+import { createServiceAccounts } from "./core/project/iam";
+import { createNetwork } from "./core/networking";
+import { createGkeCluster } from "./core/gke";
+import { createSecurityPolicies } from "./core/security";
+import { createCertificates } from "./core/certificates";
+import { createDnsZone } from "./core/dns";
+import { createLoadBalancer } from "./core/load-balancer";
+import { createDataLayer } from "./data";
+import { setupKubernetes } from "./kubernetes";
+{{- if .Computed.HasArgoCD }}
+import { setupArgoCD } from "./kubernetes/argocd";
+{{- end }}
+
+const config = new pulumi.Config();
+const gcpConfig = new pulumi.Config("gcp");
+
+const projectName = "{{ .Project.Metadata.Name }}";
+const environment = config.require("environment");
+const shortName = config.require("shortName");
+const domain = config.require("domain");
+const nodeCount = config.requireNumber("nodeCount");
+const machineType = config.require("machineType");
+const dbTier = config.require("dbTier");
+const region = gcpConfig.require("region");
+const gcpProject = gcpConfig.require("project");
+
+async function main(): Promise<Record<string, pulumi.Output<string>>> {
+    // -------------------------------------------------------------------------
+    // Phase 1: Enable required GCP APIs
+    // -------------------------------------------------------------------------
+    const apis = enableApis(gcpProject, [
+        "container.googleapis.com",
+        "compute.googleapis.com",
+        "dns.googleapis.com",
+        "sqladmin.googleapis.com",
+        "redis.googleapis.com",
+        "secretmanager.googleapis.com",
+        "artifactregistry.googleapis.com",
+        "cloudresourcemanager.googleapis.com",
+        "iam.googleapis.com",
+        "certificatemanager.googleapis.com",
+{{- if .Computed.HasKafka }}
+        "managedkafka.googleapis.com",
+{{- end }}
+    ]);
+
+    // -------------------------------------------------------------------------
+    // Phase 2: IAM - Service accounts and role bindings
+    // -------------------------------------------------------------------------
+    const iam = createServiceAccounts({
+        projectName,
+        environment,
+        shortName,
+        gcpProject,
+    }, { dependsOn: apis });
+
+    // -------------------------------------------------------------------------
+    // Phase 3: Networking - VPC, subnets, Cloud NAT, firewall rules
+    // -------------------------------------------------------------------------
+    const network = createNetwork({
+        projectName,
+        environment,
+        shortName,
+        region,
+    }, { dependsOn: apis });
+
+    // -------------------------------------------------------------------------
+    // Phase 4: GKE cluster
+    // -------------------------------------------------------------------------
+    const cluster = createGkeCluster({
+        projectName,
+        environment,
+        shortName,
+        region,
+        nodeCount,
+        machineType,
+        network: network.vpc,
+        subnet: network.subnet,
+        serviceAccount: iam.gkeServiceAccount,
+    }, { dependsOn: [network, iam] });
+
+    // Build a Kubernetes provider from the GKE cluster kubeconfig
+    const k8sProvider = new k8s.Provider(`${projectName}-${shortName}-k8s`, {
+        kubeconfig: cluster.kubeconfig,
+    });
+
+    // -------------------------------------------------------------------------
+    // Phase 5: Security - Cloud Armor policies
+    // -------------------------------------------------------------------------
+    const security = createSecurityPolicies({
+        projectName,
+        environment,
+        shortName,
+    }, { dependsOn: apis });
+
+    // -------------------------------------------------------------------------
+    // Phase 6: Certificates - cert-manager and TLS certificates
+    // -------------------------------------------------------------------------
+    const certificates = createCertificates({
+        projectName,
+        environment,
+        shortName,
+        domain,
+        k8sProvider,
+    }, { dependsOn: [cluster] });
+
+    // -------------------------------------------------------------------------
+    // Phase 7: DNS - Cloud DNS managed zone and records
+    // -------------------------------------------------------------------------
+    const dns = createDnsZone({
+        projectName,
+        environment,
+        shortName,
+        domain,
+    }, { dependsOn: apis });
+
+    // -------------------------------------------------------------------------
+    // Phase 8: Load Balancer - Static IP and forwarding rules
+    // -------------------------------------------------------------------------
+    const loadBalancer = createLoadBalancer({
+        projectName,
+        environment,
+        shortName,
+        region,
+        securityPolicy: security.policy,
+    }, { dependsOn: [security, dns] });
+
+    // -------------------------------------------------------------------------
+    // Phase 9: Data layer - Cloud SQL, Memorystore, GCS, Artifact Registry
+    // -------------------------------------------------------------------------
+    const data = createDataLayer({
+        projectName,
+        environment,
+        shortName,
+        region,
+        dbTier,
+        network: network.vpc,
+{{- if .Computed.HasRedis }}
+        redisEnabled: true,
+{{- end }}
+{{- if .Computed.HasKafka }}
+        kafkaEnabled: true,
+{{- end }}
+    }, { dependsOn: [network, apis] });
+
+    // -------------------------------------------------------------------------
+    // Phase 10: Kubernetes setup - namespaces, secrets, ingress controller
+    // -------------------------------------------------------------------------
+    const kubernetes = setupKubernetes({
+        projectName,
+        environment,
+        shortName,
+        domain,
+        staticIp: loadBalancer.staticIp,
+        k8sProvider,
+{{- if .Computed.HasExternalSecrets }}
+        externalSecretsEnabled: true,
+{{- end }}
+{{- if .Computed.HasObservability }}
+        observabilityEnabled: true,
+{{- end }}
+{{- if .Computed.HasDapr }}
+        daprEnabled: true,
+{{- end }}
+    }, { dependsOn: [cluster, data, loadBalancer] });
+
+    // -------------------------------------------------------------------------
+    // Phase 11: Conditional components
+    // -------------------------------------------------------------------------
+{{- if .Computed.HasArgoCD }}
+    const argocd = setupArgoCD({
+        projectName,
+        environment,
+        shortName,
+        domain,
+        k8sProvider,
+    }, { dependsOn: [kubernetes] });
+{{- end }}
+
+    // -------------------------------------------------------------------------
+    // Phase 12: Export stack outputs
+    // -------------------------------------------------------------------------
+    return {
+        clusterName: cluster.name,
+        kubeconfig: cluster.kubeconfig,
+        registryUrl: data.registryUrl,
+        staticIpAddress: loadBalancer.staticIpAddress,
+        databaseConnectionName: data.databaseConnectionName,
+        dnsNameServers: dns.nameServers,
+    };
+}
+
+const outputs = main();
+
+export const clusterName = outputs.then(o => o.clusterName);
+export const kubeconfig = pulumi.secret(outputs.then(o => o.kubeconfig));
+export const registryUrl = outputs.then(o => o.registryUrl);
+export const staticIpAddress = outputs.then(o => o.staticIpAddress);
+export const databaseConnectionName = outputs.then(o => o.databaseConnectionName);
+export const dnsNameServers = outputs.then(o => o.dnsNameServers);

@@ -1,0 +1,73 @@
+# New Realtime Event
+
+## Arguments
+- `name`: Event name (kebab-case, e.g., `order-placed`)
+- `domain`: Domain context (e.g., `billing`, `auth`, `catalog`)
+- `producer`: Service that publishes the event
+- `consumers` (optional): Comma-separated services that consume the event
+
+## Steps
+
+### 1. Define Event Schema
+- Create shared type in `packages/node/shared-types/src/events/{domain}.ts` (or add to existing):
+```typescript
+export interface {{ toPascalCase .name }}Event {
+  // Define event payload fields
+}
+```
+- Export from package barrel file
+
+### 2. Create Kafka Topic
+- Add KafkaTopic CR to `k8s/helm/{{ .Project.Metadata.Name }}/infra/kafka/templates/`:
+```yaml
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: {{ .Project.Metadata.Name }}.{domain}.{name}
+  labels:
+    strimzi.io/cluster: {{ .Project.Metadata.Name }}-kafka
+spec:
+  partitions: 3
+  replicas: 1
+  config:
+    retention.ms: "604800000"  # 7 days
+```
+
+### 3. Add Producer Code
+- In `apps/{producer}/src/events/`:
+  - Create `publish-{name}.ts` with typed publish function
+  - Use standard event envelope with correlationId
+{{ if .Computed.HasDapr }}- Publish via Dapr: `daprClient.pubsub.publish('pubsub', topic, envelope)`{{ else }}- Publish via Kafka producer: `producer.send(topic, envelope)`{{ end }}
+
+### 4. Add Consumer Code (for each consumer)
+- In `apps/{consumer}/src/events/`:
+  - Create `handle-{name}.ts` with typed handler
+  - Ensure handler is **idempotent** (check for duplicate eventId)
+{{ if .Computed.HasDapr }}- Register subscription in Helm values:
+```yaml
+dapr:
+  subscriptions:
+    - topic: {{ .Project.Metadata.Name }}.{domain}.{name}
+      route: /events/{name}
+```{{ else }}- Register consumer in service startup:
+```typescript
+consumer.subscribe('{{ .Project.Metadata.Name }}.{domain}.{name}', handler);
+```{{ end }}
+
+### 5. Dead Letter Queue
+- Add DLQ topic: `{{ .Project.Metadata.Name }}.{domain}.{name}.dlq`
+- Configure retry policy (3 retries, exponential backoff)
+- Failed messages go to DLQ after retries exhausted
+
+## Topic Naming
+```
+{{ .Project.Metadata.Name }}.<domain>.<event-name>
+```
+
+## Checklist
+- [ ] Event schema defined in shared-types package
+- [ ] Kafka topic CR created
+- [ ] Producer publishes with standard envelope
+- [ ] Consumer handles idempotently
+- [ ] DLQ topic configured
+- [ ] correlationId propagated for tracing

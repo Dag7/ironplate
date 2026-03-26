@@ -1,0 +1,31 @@
+## Helm Charts
+
+### Library Chart (_lib/service)
+All services use the shared library chart at `k8s/helm/{{ .Project.Metadata.Name }}/_lib/service/`.
+It provides:
+- Deployment (with security contexts, health checks, resource limits)
+- Service (ClusterIP)
+- ServiceAccount
+- Ingress (optional, Traefik)
+- HPA (optional)
+- PDB (optional)
+- RBAC (optional){{ if hasItem .Project.Spec.Infrastructure.Components "dapr" }}
+- Dapr Subscriptions (optional){{ end }}
+
+### Adding Values
+```yaml
+services:
+  my-service:
+    enabled: true
+    replicas: 2
+    env:
+      CUSTOM_VAR: value
+    secrets:
+      - my-secret
+```
+
+### Image Registry
+- Local (k3d): `{{ .Project.Metadata.Name }}/SERVICE_NAME:latest`
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}- Staging: `{{ .Project.Spec.Cloud.Region }}-docker.pkg.dev/{{ .Project.Metadata.Name }}-staging/{{ .Project.Metadata.Name }}/SERVICE_NAME:TAG`
+- Production: `{{ .Project.Spec.Cloud.Region }}-docker.pkg.dev/{{ .Project.Metadata.Name }}-production/{{ .Project.Metadata.Name }}/SERVICE_NAME:TAG`{{ end }}
+{{ if eq .Project.Spec.Cloud.Provider "aws" }}- ECR: `ACCOUNT.dkr.ecr.{{ .Project.Spec.Cloud.Region }}.amazonaws.com/{{ .Project.Metadata.Name }}/SERVICE_NAME:TAG`{{ end }}

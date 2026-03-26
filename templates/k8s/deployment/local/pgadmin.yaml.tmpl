@@ -1,0 +1,136 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pgadmin-data-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Mi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgadmin-servers-config
+data:
+  servers.json: |
+    {
+      "Servers": {
+        "1": {
+          "Name": "{{ .Project.Metadata.Name }} Database",
+          "Group": "Development",
+          "Host": "postgresql",
+          "Port": 5432,
+          "MaintenanceDB": "{{ .Project.Metadata.Name }}",
+          "Username": "postgres",
+          "PassFile": "/pgpass",
+          "SSLMode": "prefer"
+        }
+      }
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgadmin-pgpass-config
+data:
+  pgpass: |
+    postgresql:5432:{{ .Project.Metadata.Name }}:postgres:postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgadmin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pgadmin
+  template:
+    metadata:
+      labels:
+        app: pgadmin
+    spec:
+      containers:
+        - name: pgadmin
+          image: dpage/pgadmin4
+          env:
+            - name: PGADMIN_DEFAULT_EMAIL
+              value: admin@{{ .Project.Metadata.Domain }}
+            - name: PGADMIN_DEFAULT_PASSWORD
+              value: admin
+            - name: PGADMIN_LISTEN_ADDRESS
+              value: "0.0.0.0"
+            - name: PGADMIN_LISTEN_PORT
+              value: "80"
+            - name: PGADMIN_CONFIG_SERVER_MODE
+              value: "False"
+            - name: PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED
+              value: "False"
+            - name: PGADMIN_DISABLE_POSTFIX
+              value: "True"
+            - name: PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION
+              value: "False"
+            - name: PGADMIN_CONFIG_WTF_CSRF_CHECK_DEFAULT
+              value: "False"
+            - name: PGADMIN_CONFIG_WTF_CSRF_TIME_LIMIT
+              value: "None"
+            - name: PGADMIN_SERVER_JSON_FILE
+              value: "/pgadmin4/servers.json"
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - mountPath: /var/lib/pgadmin
+              name: pgadmin-data
+            - mountPath: /pgadmin4/servers.json
+              name: servers-config
+              subPath: servers.json
+              readOnly: true
+            - mountPath: /pgpass
+              name: pgpass-shared
+              subPath: pgpass
+              readOnly: true
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      initContainers:
+        - name: fix-pgpass-permissions
+          image: busybox
+          command: ["sh", "-c", "cp /tmp/pgpass /shared/pgpass && chmod 600 /shared/pgpass"]
+          volumeMounts:
+            - mountPath: /tmp/pgpass
+              name: pgpass-config
+              subPath: pgpass
+              readOnly: true
+            - mountPath: /shared
+              name: pgpass-shared
+      volumes:
+        - name: pgadmin-data
+          persistentVolumeClaim:
+            claimName: pgadmin-data-claim
+        - name: servers-config
+          configMap:
+            name: pgadmin-servers-config
+        - name: pgpass-config
+          configMap:
+            name: pgadmin-pgpass-config
+        - name: pgpass-shared
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgadmin
+spec:
+  selector:
+    app: pgadmin
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: ClusterIP

@@ -1,0 +1,123 @@
+# Set Up Authentication
+
+## Arguments
+- `service`: Service name to add auth to
+- `type`: `jwt` | `s2s` | `both` (JWT for user auth, S2S for service-to-service)
+
+## Architecture
+
+```
+Request → Bearer token → @ironplate/auth middleware → verify JWT → req.auth
+                                                   ↓ fail
+                                              401 Unauthorized
+```
+
+## Steps
+
+### 1. Add Dependencies
+- Add `@ironplate/auth` to `apps/{service}/package.json`
+- Run `{{ .Project.Spec.Monorepo.PackageManager }} install`
+
+### 2. Configure Auth Middleware
+
+```typescript
+import { createService } from '@ironplate/service';
+import { createAuthMiddleware } from '@ironplate/auth';
+import type { IPlugin, PluginContext } from '@ironplate/service';
+
+const authPlugin: IPlugin = {
+  name: 'auth',
+  order: 30,
+  async initialize(ctx: PluginContext) {
+    const middleware = createAuthMiddleware({
+      jwt: {
+        secret: process.env.JWT_SECRET!,
+        issuer: '{{ .Project.Metadata.Name }}',
+        audience: '{{ .Project.Metadata.Name }}',
+      },
+      excludePaths: ['/healthz', '/readyz', '/metrics', ...ctx.getAuthExcludePaths()],
+    });
+    ctx.addMiddleware({ handler: middleware, order: 30 });
+  },
+};
+```
+
+### 3. Access Auth Context in Routes
+
+```typescript
+import type { AuthenticatedRequest } from '@ironplate/auth';
+import { Router } from 'express';
+
+const router = Router();
+
+router.get('/me', (req, res) => {
+  const authReq = req as AuthenticatedRequest;
+  const userId = authReq.auth?.userId;
+  // ...
+});
+```
+
+### 4. Protect Specific Routes
+
+```typescript
+import { requireClaim, requireServiceAuth } from '@ironplate/auth';
+
+// Require admin role
+router.delete('/users/:id', requireClaim('role', 'admin'), deleteUser);
+
+// Require service-to-service auth (internal APIs only)
+router.post('/internal/sync', requireServiceAuth(), syncHandler);
+```
+
+### 5. Set Up Service-to-Service Auth
+
+```typescript
+import { ServiceTokenProvider } from '@ironplate/auth';
+import { createHttpClient } from '@ironplate/http-client';
+
+const tokenProvider = new ServiceTokenProvider({
+  serviceName: '{service}',
+  secret: process.env.S2S_SECRET!,
+});
+
+// Auto-attach S2S token to outbound requests
+const internalClient = createHttpClient({
+  baseURL: 'http://other-service:3000',
+  headers: {
+    Authorization: await tokenProvider.getAuthHeader(),
+  },
+});
+```
+
+### 6. Add Environment Variables
+- Add to Helm `values.yaml`:
+  ```yaml
+  env:
+    JWT_SECRET: "from-external-secrets"
+    S2S_SECRET: "from-external-secrets"
+  ```
+
+## Token Types
+
+| Type | Payload | Expiry | Use |
+|------|---------|--------|-----|
+| Access | `{ sub: userId }` | 15m | User API calls |
+| Refresh | `{ sub: userId, type: 'refresh' }` | 7d | Token renewal |
+| Service | `{ sub: 'service:name', type: 'service' }` | 1h (auto-refreshed) | S2S calls |
+
+## CRITICAL Rules
+- NEVER log JWT tokens — use structured logging with token metadata only
+- NEVER store JWT secrets in code — always use environment variables / external secrets
+- ALWAYS validate token expiry — the library does this automatically
+- ALWAYS set `excludePaths` for health checks and metrics endpoints
+- ALWAYS use `requireServiceAuth()` for internal-only endpoints
+- Service tokens are auto-cached and refreshed 5 minutes before expiry
+
+## Checklist
+- [ ] `@ironplate/auth` dependency added
+- [ ] Auth middleware registered as plugin with order 30
+- [ ] Health/metrics paths excluded from auth
+- [ ] Routes access `req.auth` for user context
+- [ ] Sensitive routes use `requireClaim` or `requireServiceAuth`
+- [ ] JWT_SECRET configured via external secrets
+- [ ] S2S token provider set up for internal calls

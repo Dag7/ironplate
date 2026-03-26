@@ -1,0 +1,10 @@
+# =============================================================================
+# Dictionary Utilities
+# =============================================================================
+
+def dict_union(x, y):
+    """Merge two dictionaries, with y taking precedence."""
+    z = {}
+    z.update(x)
+    z.update(y)
+    return z

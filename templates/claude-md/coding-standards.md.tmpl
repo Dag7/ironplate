@@ -1,0 +1,29 @@
+## Coding Standards
+
+### Architecture Principles
+- **SOLID**: Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, Dependency Inversion
+- **Design Patterns**: Strategy, Registry, Template Method, Factory, Observer as appropriate
+- **Clean Architecture**: Domain logic separated from infrastructure concerns
+
+### General Rules
+- All services expose `/healthz` and `/readyz` endpoints
+- Configuration via environment variables with validation (zod for Node.js, envconfig for Go)
+- Structured logging (pino for Node.js, slog for Go)
+- No hardcoded secrets or URLs - use environment variables and secrets
+{{ if .Computed.HasNode }}
+### Node.js Standards
+- TypeScript strict mode enabled
+- Use `zod` for runtime validation at service boundaries
+- Express or Fastify for HTTP services
+- Vitest for testing
+- ESLint + Prettier for code formatting
+- Workspace packages use `workspace:*` protocol
+{{ end }}
+{{ if .Computed.HasGo }}
+### Go Standards
+- Follow standard Go project layout
+- Use `net/http` ServeMux (Go 1.22+ routing) or chi
+- Table-driven tests
+- `golangci-lint` for linting
+- `go vet` and `staticcheck` in CI
+{{ end }}

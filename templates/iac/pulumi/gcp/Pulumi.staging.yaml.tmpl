@@ -1,0 +1,27 @@
+config:
+  gcp:project: {{ .Project.Metadata.Organization }}-{{ .Project.Metadata.Name }}-stg
+  gcp:region: {{ .Project.Spec.Cloud.Region }}
+  {{ .Project.Metadata.Name }}-infra:environment: staging
+  {{ .Project.Metadata.Name }}-infra:shortName: stg
+  {{ .Project.Metadata.Name }}-infra:domain: stg.{{ .Project.Metadata.Domain }}
+  {{ .Project.Metadata.Name }}-infra:nodeCount: "1"
+  {{ .Project.Metadata.Name }}-infra:machineType: e2-standard-4
+  {{ .Project.Metadata.Name }}-infra:dbTier: db-custom-2-8192
+{{- if .Computed.HasArgoCD }}
+  {{ .Project.Metadata.Name }}-infra:argoCDEnabled: "true"
+{{- end }}
+{{- if .Computed.HasObservability }}
+  {{ .Project.Metadata.Name }}-infra:observabilityEnabled: "true"
+{{- end }}
+{{- if .Computed.HasRedis }}
+  {{ .Project.Metadata.Name }}-infra:redisEnabled: "true"
+{{- end }}
+{{- if .Computed.HasKafka }}
+  {{ .Project.Metadata.Name }}-infra:kafkaEnabled: "true"
+{{- end }}
+{{- if .Computed.HasHasura }}
+  {{ .Project.Metadata.Name }}-infra:hasuraEnabled: "true"
+{{- end }}
+{{- if .Computed.HasExternalSecrets }}
+  {{ .Project.Metadata.Name }}-infra:externalSecretsEnabled: "true"
+{{- end }}

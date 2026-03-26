@@ -1,0 +1,109 @@
+{{/*
+=============================================================================
+Hasura Event Relay Deployment
+=============================================================================
+Receives Hasura event triggers and publishes to Kafka via Dapr pub/sub.
+*/}}
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.serviceAccount.name | default "hasura-event-relay" }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: hasura-event-relay
+    app.kubernetes.io/name: hasura-event-relay
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+    app.kubernetes.io/managed-by: helm
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hasura-event-relay
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: hasura-event-relay
+    app.kubernetes.io/name: hasura-event-relay
+    app.kubernetes.io/instance: hasura-event-relay
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+    app.kubernetes.io/managed-by: helm
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    matchLabels:
+      app: hasura-event-relay
+  template:
+    metadata:
+      labels:
+        app: hasura-event-relay
+        app.kubernetes.io/name: hasura-event-relay
+        app.kubernetes.io/instance: hasura-event-relay
+        app.kubernetes.io/part-of: {{ .Values.projectName }}
+      annotations:
+        {{- if .Values.dapr.enabled }}
+        dapr.io/enabled: "true"
+        dapr.io/app-id: {{ .Values.dapr.appId | quote }}
+        dapr.io/app-port: {{ .Values.dapr.appPort | quote }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name | default "hasura-event-relay" }}
+      containers:
+        - name: hasura-event-relay
+          image: "{{ .Values.image.registry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: {{ .Values.service.port }}
+              name: http
+          {{- if .Values.secrets }}
+          envFrom:
+            {{- range .Values.secrets }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
+          {{- end }}
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.healthCheck.enabled }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hasura-event-relay
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: hasura-event-relay
+    app.kubernetes.io/name: hasura-event-relay
+    app.kubernetes.io/part-of: {{ .Values.projectName }}
+    app.kubernetes.io/managed-by: helm
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: hasura-event-relay

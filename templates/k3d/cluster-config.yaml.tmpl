@@ -1,0 +1,77 @@
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: {{ .Project.Metadata.Name }}-cluster
+
+servers: 1
+agents: 0
+
+# Registry configuration
+registries:
+  create:
+    name: k3d-{{ .Project.Metadata.Name }}-registry
+    host: "0.0.0.0"
+    hostPort: "5005"
+
+# Port mappings for the loadbalancer
+ports:
+  - port: "8081:80"
+    nodeFilters:
+      - loadbalancer
+  - port: "8043:443"
+    nodeFilters:
+      - loadbalancer
+{{ if eq .Project.Spec.Cloud.Provider "gcp" }}
+# Shared gcloud config volume
+volumes:
+  - volume: {{ .Project.Metadata.Name }}-gcloud-config:/gcloud-config
+    nodeFilters:
+      - server:*
+      - agent:*
+{{ end }}
+options:
+  k3d:
+    wait: true
+    timeout: "120s"
+    disableLoadbalancer: false
+    disableImageVolume: false
+    disableRollback: false
+    loadbalancer:
+      configOverrides:
+        - settings.workerConnections=2048
+  k3s:
+    extraArgs:
+      - arg: "--with-node-id"
+        nodeFilters:
+          - server:*
+          - agent:*
+      # Aggressive image garbage collection
+      - arg: "--kubelet-arg=image-gc-high-threshold=75"
+        nodeFilters:
+          - server:*
+          - agent:*
+      - arg: "--kubelet-arg=image-gc-low-threshold=50"
+        nodeFilters:
+          - server:*
+          - agent:*
+      # Eviction thresholds
+      - arg: "--kubelet-arg=eviction-hard=imagefs.available<10%,nodefs.available<10%"
+        nodeFilters:
+          - server:*
+          - agent:*
+      # Log rotation
+      - arg: "--kubelet-arg=container-log-max-size=20Mi"
+        nodeFilters:
+          - server:*
+          - agent:*
+      - arg: "--kubelet-arg=container-log-max-files=3"
+        nodeFilters:
+          - server:*
+          - agent:*
+    nodeLabels:
+      - label: cluster={{ .Project.Metadata.Name }}-cluster
+        nodeFilters:
+          - agent:*
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true

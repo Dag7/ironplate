@@ -1,0 +1,27 @@
+config:
+  gcp:project: {{ .Project.Metadata.Organization }}-{{ .Project.Metadata.Name }}-prod
+  gcp:region: {{ .Project.Spec.Cloud.Region }}
+  {{ .Project.Metadata.Name }}-infra:environment: production
+  {{ .Project.Metadata.Name }}-infra:shortName: prod
+  {{ .Project.Metadata.Name }}-infra:domain: {{ .Project.Metadata.Domain }}
+  {{ .Project.Metadata.Name }}-infra:nodeCount: "3"
+  {{ .Project.Metadata.Name }}-infra:machineType: e2-standard-8
+  {{ .Project.Metadata.Name }}-infra:dbTier: db-custom-4-16384
+{{- if .Computed.HasArgoCD }}
+  {{ .Project.Metadata.Name }}-infra:argoCDEnabled: "true"
+{{- end }}
+{{- if .Computed.HasObservability }}
+  {{ .Project.Metadata.Name }}-infra:observabilityEnabled: "true"
+{{- end }}
+{{- if .Computed.HasRedis }}
+  {{ .Project.Metadata.Name }}-infra:redisEnabled: "true"
+{{- end }}
+{{- if .Computed.HasKafka }}
+  {{ .Project.Metadata.Name }}-infra:kafkaEnabled: "true"
+{{- end }}
+{{- if .Computed.HasHasura }}
+  {{ .Project.Metadata.Name }}-infra:hasuraEnabled: "true"
+{{- end }}
+{{- if .Computed.HasExternalSecrets }}
+  {{ .Project.Metadata.Name }}-infra:externalSecretsEnabled: "true"
+{{- end }}

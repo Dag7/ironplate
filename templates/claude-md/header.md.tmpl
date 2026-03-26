@@ -1,0 +1,27 @@
+# {{ .Computed.NamePascal }} - CLAUDE.md
+
+## Project Overview
+{{ .Computed.NamePascal }} is a {{ if and .Computed.HasNode .Computed.HasGo }}polyglot (Node.js + Go){{ else if .Computed.HasNode }}Node.js{{ else }}Go{{ end }} monorepo platform.
+
+## Package Manager
+{{ if .Computed.HasNode }}- **Node.js**: {{ .Project.Spec.Monorepo.PackageManager }} ({{ .Project.Spec.Monorepo.NodeVersion }})
+- **Build System**: {{ .Project.Spec.Monorepo.BuildSystem }}{{ end }}
+{{ if .Computed.HasGo }}- **Go**: {{ .Project.Spec.Monorepo.GoVersion }}{{ end }}
+
+## Project Structure
+```
+{{ .Project.Metadata.Name }}/
+  apps/                    # Microservices
+  packages/{{ if .Computed.HasNode }}
+    node/                  # Shared TypeScript packages{{ end }}{{ if .Computed.HasGo }}
+    go/                    # Shared Go packages{{ end }}
+  k8s/
+    helm/
+      {{ .Project.Metadata.Name }}/          # Service Helm charts
+        _lib/service/      # Shared library chart
+      infra/               # Infrastructure charts
+  .devcontainer/           # Development container
+  dockerfiles/             # Multi-stage Dockerfiles
+  utils/tilt/              # Tilt build utilities{{ if ne .Project.Spec.Cloud.Provider "none" }}
+  iac/                     # Infrastructure as Code{{ end }}
+```

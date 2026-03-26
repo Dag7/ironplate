@@ -1,0 +1,200 @@
+# =============================================================================
+# Build & Push Docker Image Action
+# =============================================================================
+# Builds a Docker image and pushes to the container registry.
+# Supports both Node.js and Go services with proper caching.
+#
+# Usage:
+#   - uses: ./.github/actions/build-push-image
+#     with:
+#       service: auth-service
+#       image_tag: sha-abc1234
+# =============================================================================
+
+name: "Build & Push Image"
+description: "Build Docker image and push to container registry"
+
+inputs:
+  service:
+    description: "Service name (e.g., auth-service)"
+    required: true
+  image_tag:
+    description: "Image tag (e.g., sha-abc1234, v1.0.0)"
+    required: true
+  registry:
+    description: "Container registry URL"
+    required: false
+    default: "{{ .Project.Spec.CICD.Registry.URL }}"
+  additional_tags:
+    description: "Additional image tags (comma-separated)"
+    required: false
+    default: "latest"
+  dockerfile:
+    description: "Dockerfile path (auto-detected if not provided)"
+    required: false
+    default: ""
+  build_target:
+    description: "Docker build target stage"
+    required: false
+    default: "production"
+  push:
+    description: "Whether to push the image"
+    required: false
+    default: "true"
+
+outputs:
+  image:
+    description: "Full image path with tag"
+    value: ${{ "{{" }} steps.build.outputs.image {{ "}}" }}
+  digest:
+    description: "Image digest"
+    value: ${{ "{{" }} steps.build.outputs.digest {{ "}}" }}
+
+runs:
+  using: "composite"
+  steps:
+    # =========================================================================
+    # Detect Service Type & Dockerfile
+    # =========================================================================
+    - name: Detect service configuration
+      id: detect
+      shell: bash
+      run: |
+        SERVICE="${{ "{{" }} inputs.service {{ "}}" }}"
+
+        # Determine Dockerfile and service type
+        # Shared Dockerfiles are preferred over per-app custom ones for consistency
+        # Custom Dockerfiles are only used if explicitly provided via input
+        if [ -n "${{ "{{" }} inputs.dockerfile {{ "}}" }}" ]; then
+          DOCKERFILE="${{ "{{" }} inputs.dockerfile {{ "}}" }}"
+          SERVICE_TYPE="custom"
+        elif [ -f "apps/$SERVICE/go.mod" ]; then
+          DOCKERFILE="dockerfiles/go.Dockerfile"
+          SERVICE_TYPE="go"
+        elif [ -f "apps/$SERVICE/package.json" ]; then
+          # Check if it's a Next.js app
+          if grep -q '"next"' "apps/$SERVICE/package.json" 2>/dev/null; then
+            DOCKERFILE="dockerfiles/nextjs.node.Dockerfile"
+            SERVICE_TYPE="nextjs"
+          else
+            DOCKERFILE="dockerfiles/node.Dockerfile"
+            SERVICE_TYPE="node"
+          fi
+        else
+          echo "Could not detect Dockerfile for $SERVICE"
+          exit 1
+        fi
+
+        echo "dockerfile=$DOCKERFILE" >> $GITHUB_OUTPUT
+        echo "service_type=$SERVICE_TYPE" >> $GITHUB_OUTPUT
+        echo "Using Dockerfile: $DOCKERFILE (type: $SERVICE_TYPE)"
+
+        # Detect workspace name for Node.js services
+        if [ -f "apps/$SERVICE/package.json" ]; then
+          WORKSPACE_NAME=$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "apps/$SERVICE/package.json" | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || echo "{{ .Computed.PrimaryScope }}/$SERVICE")
+          echo "workspace_name=$WORKSPACE_NAME" >> $GITHUB_OUTPUT
+          echo "Workspace name: $WORKSPACE_NAME"
+        fi
+
+    # =========================================================================
+    # Build & Push Image
+    # =========================================================================
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and push image
+      id: build
+      shell: bash
+      env:
+        SERVICE: ${{ "{{" }} inputs.service {{ "}}" }}
+        REGISTRY: ${{ "{{" }} inputs.registry {{ "}}" }}
+        IMAGE_TAG: ${{ "{{" }} inputs.image_tag {{ "}}" }}
+        ADDITIONAL_TAGS: ${{ "{{" }} inputs.additional_tags {{ "}}" }}
+        DOCKERFILE: ${{ "{{" }} steps.detect.outputs.dockerfile {{ "}}" }}
+        SERVICE_TYPE: ${{ "{{" }} steps.detect.outputs.service_type {{ "}}" }}
+        BUILD_TARGET: ${{ "{{" }} inputs.build_target {{ "}}" }}
+        WORKSPACE_NAME: ${{ "{{" }} steps.detect.outputs.workspace_name {{ "}}" }}
+        PUSH: ${{ "{{" }} inputs.push {{ "}}" }}
+      run: |
+        set -e
+
+        # Build full image path
+        IMAGE="${REGISTRY}/{{ .Project.Metadata.Name }}/${SERVICE}"
+        FULL_IMAGE="${IMAGE}:${IMAGE_TAG}"
+
+        echo "Building image: ${FULL_IMAGE}"
+        echo "  Dockerfile: ${DOCKERFILE}"
+        echo "  Service type: ${SERVICE_TYPE}"
+        echo "  Target: ${BUILD_TARGET}"
+
+        # Build arguments - base args for all types
+        BUILD_ARGS=(
+          --file "${DOCKERFILE}"
+          --target "${BUILD_TARGET}"
+          --build-arg "BUILDKIT_INLINE_CACHE=1"
+          --build-arg "TARGET_NAME=${SERVICE}"
+          --cache-from "type=registry,ref=${IMAGE}:cache"
+        )
+
+        # Add service-type specific build args
+        case "${SERVICE_TYPE}" in
+          go)
+            BUILD_ARGS+=(
+              --platform "linux/amd64"
+              --build-arg "TARGET_SRC_FOLDER=apps"
+              --build-arg "GOARCH=amd64"
+            )
+            ;;
+          node|nextjs)
+            BUILD_ARGS+=(
+              --build-arg "TARGET_SRC=apps"
+              --build-arg "NODE_VERSION=node:{{ .Project.Spec.Monorepo.NodeVersion }}-alpine"
+            )
+            # Add workspace name for Node.js services
+            if [ -n "${WORKSPACE_NAME}" ]; then
+              BUILD_ARGS+=(--build-arg "WORKSPACE_NAME=${WORKSPACE_NAME}")
+            fi
+            ;;
+          *)
+            # Custom/unknown - use generic
+            BUILD_ARGS+=(--build-arg "TARGET_SRC=apps")
+            ;;
+        esac
+
+        # Add primary tag
+        BUILD_ARGS+=(--tag "${FULL_IMAGE}")
+
+        # Add additional tags
+        IFS=',' read -ra EXTRA_TAGS <<< "${ADDITIONAL_TAGS}"
+        for tag in "${EXTRA_TAGS[@]}"; do
+          tag=$(echo "$tag" | xargs) # trim whitespace
+          if [ -n "$tag" ]; then
+            BUILD_ARGS+=(--tag "${IMAGE}:${tag}")
+          fi
+        done
+
+        # Add push if enabled
+        if [ "${PUSH}" = "true" ]; then
+          BUILD_ARGS+=(
+            --push
+            --cache-to "type=registry,ref=${IMAGE}:cache,mode=max"
+          )
+        else
+          BUILD_ARGS+=(--load)
+        fi
+
+        # Run docker buildx build and capture metadata
+        docker buildx build "${BUILD_ARGS[@]}" --metadata-file /tmp/build-metadata.json .
+
+        # Get digest from build metadata
+        DIGEST=""
+        if [ "${PUSH}" = "true" ] && [ -f /tmp/build-metadata.json ]; then
+          DIGEST=$(jq -r '.["containerimage.digest"] // empty' /tmp/build-metadata.json 2>/dev/null || echo "")
+        fi
+
+        # Write outputs
+        echo "image=${FULL_IMAGE}" >> $GITHUB_OUTPUT
+        echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+
+        echo "Image built: ${FULL_IMAGE}"
+        [ -n "${DIGEST}" ] && echo "  Digest: ${DIGEST}"
