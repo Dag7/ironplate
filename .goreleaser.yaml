@@ -26,19 +26,17 @@ archives:
     name_template: "iron_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
 
-brews:
+homebrew_casks:
   - repository:
       owner: dag7
       name: homebrew-tap
     homepage: "https://github.com/dag7/ironplate"
     description: "Scaffold production-grade Kubernetes development environments"
-    license: "Apache-2.0"
-    install: |
-      bin.install "iron"
-    test: |
-      system "#{bin}/iron", "version"
+    binaries:
+      - iron
 
 checksum:
   name_template: "checksums.txt"

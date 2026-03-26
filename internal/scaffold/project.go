@@ -4,11 +4,14 @@ package scaffold
 import (
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/dag7/ironplate/internal/components"
 	"github.com/dag7/ironplate/internal/config"
 	"github.com/dag7/ironplate/internal/engine"
+	"github.com/dag7/ironplate/internal/manifest"
 	"github.com/dag7/ironplate/internal/tui"
 	"github.com/dag7/ironplate/pkg/fsutil"
 )
@@ -49,9 +52,64 @@ func (s *Scaffolder) Scaffold() error {
 		}
 	}
 
+	// Write manifest with checksums of all generated files
+	if err := s.writeManifest(); err != nil {
+		s.printer.Warning("Could not write manifest: " + err.Error())
+	}
+
 	fmt.Println()
 	s.printer.Success("Project scaffolded successfully!")
 	return nil
+}
+
+// writeManifest walks the output directory and records checksums of all generated files.
+func (s *Scaffolder) writeManifest() error {
+	m := manifest.New()
+
+	err := filepath.WalkDir(s.outputDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			// Skip the .ironplate directory itself and .git
+			if d.Name() == ".ironplate" || d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		relPath, err := filepath.Rel(s.outputDir, path)
+		if err != nil {
+			return err
+		}
+
+		// Skip ironplate.yaml — it's the user's config, not a generated template output
+		if relPath == "ironplate.yaml" {
+			return nil
+		}
+		// Skip paths that will be user-generated content
+		if strings.HasPrefix(relPath, "apps/") || strings.HasPrefix(relPath, "packages/") {
+			return nil
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		m.RecordFile(relPath, content)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("walk output dir: %w", err)
+	}
+
+	return m.Save(s.outputDir)
+}
+
+// WriteManifestOnly regenerates the manifest without re-scaffolding.
+// Used by iron update after applying changes.
+func (s *Scaffolder) WriteManifestOnly() error {
+	return s.writeManifest()
 }
 
 type scaffoldStep struct {
