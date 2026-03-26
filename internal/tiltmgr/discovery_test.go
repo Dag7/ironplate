@@ -74,13 +74,8 @@ func TestParseTiltfile_HelmPathGrouping(t *testing.T) {
 	dir := t.TempDir()
 	tiltfile := filepath.Join(dir, "Tiltfile")
 
+	// Tiltfile with helm path reference
 	content := `
-docker_build('registry/user-service', '.')
-# Reference to k8s/helm/apps/identity/user-service
-k8s_resource('user-service')
-`
-	// Add helm path reference
-	content = `
 load('./k8s/helm/apps/identity/user-service/Tiltfile', 'setup')
 k8s_resource('user-service')
 `

@@ -759,12 +759,12 @@ func printDBCredentials(projectName string) error {
 
 	var content strings.Builder
 	content.WriteString(tui.BoldStyle.Render("PostgreSQL") + "\n\n")
-	content.WriteString(fmt.Sprintf("  Database: %s\n", projectName))
+	fmt.Fprintf(&content, "  Database: %s\n", projectName)
 	content.WriteString("  Host:     postgresql\n")
 	content.WriteString("  Port:     5432\n")
 	content.WriteString("  User:     postgres\n")
 	content.WriteString("  Password: postgres\n")
-	content.WriteString(fmt.Sprintf("  URL:      postgresql://postgres:postgres@postgresql:5432/%s\n", projectName))
+	fmt.Fprintf(&content, "  URL:      postgresql://postgres:postgres@postgresql:5432/%s\n", projectName)
 
 	fmt.Println()
 	fmt.Println(boxStyle.Render(content.String()))
@@ -1031,10 +1031,10 @@ func showArgoAppStatus(appName string) error {
 
 	var content strings.Builder
 	content.WriteString(tui.BoldStyle.Render(detail.Name) + "\n\n")
-	content.WriteString(fmt.Sprintf("  Project:    %s\n", detail.Project))
-	content.WriteString(fmt.Sprintf("  Repo:       %s\n", detail.RepoURL))
-	content.WriteString(fmt.Sprintf("  Path:       %s\n", detail.Path))
-	content.WriteString(fmt.Sprintf("  Revision:   %s\n", detail.Revision))
+	fmt.Fprintf(&content, "  Project:    %s\n", detail.Project)
+	fmt.Fprintf(&content, "  Repo:       %s\n", detail.RepoURL)
+	fmt.Fprintf(&content, "  Path:       %s\n", detail.Path)
+	fmt.Fprintf(&content, "  Revision:   %s\n", detail.Revision)
 
 	syncStyle := tui.SuccessStyle
 	if detail.SyncStatus == "OutOfSync" {
@@ -1048,15 +1048,15 @@ func showArgoAppStatus(appName string) error {
 		healthStyle = tui.ErrorStyle
 	}
 
-	content.WriteString(fmt.Sprintf("  Sync:       %s %s\n",
+	fmt.Fprintf(&content, "  Sync:       %s %s\n",
 		devtools.SyncIcon(detail.SyncStatus),
-		syncStyle.Render(detail.SyncStatus)))
-	content.WriteString(fmt.Sprintf("  Health:     %s %s\n",
+		syncStyle.Render(detail.SyncStatus))
+	fmt.Fprintf(&content, "  Health:     %s %s\n",
 		devtools.HealthIcon(detail.HealthStatus),
-		healthStyle.Render(detail.HealthStatus)))
+		healthStyle.Render(detail.HealthStatus))
 
 	if detail.LastSyncTime != "" {
-		content.WriteString(fmt.Sprintf("  Last sync:  %s\n", detail.LastSyncTime))
+		fmt.Fprintf(&content, "  Last sync:  %s\n", detail.LastSyncTime)
 	}
 
 	fmt.Println()

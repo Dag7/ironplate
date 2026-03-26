@@ -26,8 +26,7 @@ var (
 	infraLoadPattern     = regexp.MustCompile(`(?:load|include)\(\s*['"]\.\/k8s\/(?:helm|deployment)\/infra\/([^/'"]+)`)
 	localResourcePattern = regexp.MustCompile(`local_resource\(\s*\n?\s*['"]([^'"]+)['"]`)
 	loadTiltfilePattern  = regexp.MustCompile(`load\(\s*['"]([^'"]+Tiltfile)['"]`)
-	helmPathPattern      = regexp.MustCompile(`k8s/helm/(?:apps|services)/([^/'"]+)`)
-	labelsPattern        = regexp.MustCompile(`labels\s*=\s*\[['"]([^'"]+)['"]`)
+	labelsPattern = regexp.MustCompile(`labels\s*=\s*\[['"]([^'"]+)['"]`)
 )
 
 // ParseTiltfile discovers services and infrastructure from a Tiltfile.
