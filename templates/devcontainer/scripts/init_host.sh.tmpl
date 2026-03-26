@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# This script runs on the HOST before the devcontainer is created.
+# It ensures all bind-mount source paths exist so Docker doesn't fail.
+
+echo "🔧 Initializing host paths for devcontainer mounts..."
+
+# Directories that must exist on the host for bind mounts
+ensure_dir() {
+    if [ ! -d "$1" ]; then
+        echo "  📁 Creating missing directory: $1"
+        mkdir -p "$1"
+    fi
+}
+
+# Files that must exist on the host for bind mounts
+ensure_file() {
+    if [ ! -f "$1" ]; then
+        echo "  📄 Creating missing file: $1"
+        mkdir -p "$(dirname "$1")"
+        touch "$1"
+    fi
+}
+
+# Host paths referenced in devcontainer.json mounts
+ensure_dir "$HOME/.kube"
+ensure_file "$HOME/.gitconfig"
+{{ if ne .Project.Spec.Cloud.Provider "none" -}}
+ensure_dir "$HOME/.pulumi"
+{{ end -}}
+
+echo "✅ Host paths ready."

@@ -24,7 +24,10 @@
     "source=/var/run/docker.sock,target=/var/run/docker.sock,type=bind",
     "source=${localEnv:HOME}/.kube,target=/tmp/host/.kube,type=bind,readonly",
     "source=${localEnv:HOME}/.gitconfig,target=/tmp/host/.gitconfig,type=bind,readonly",
-    "source=/etc/localtime,target=/etc/localtime,type=bind"{{ if eq .Project.Spec.Cloud.Provider "gcp" }},
+    "source=/etc/localtime,target=/etc/localtime,type=bind",
+    // Persist Claude Code conversations and memory across rebuilds
+    "source={{ .Project.Metadata.Name }}-claude-config,target=/home/vscode/.claude,type=volume"{{ if eq .Project.Spec.Cloud.Provider "gcp" }},
+    // Shared volume for gcloud ADC - accessible by both devcontainer and k3d nodes
     "source={{ .Project.Metadata.Name }}-gcloud-config,target=/home/vscode/.config/gcloud,type=volume"{{ end }}{{ if ne .Project.Spec.Cloud.Provider "none" }},
     "source=${localEnv:HOME}/.pulumi,target=/tmp/host/.pulumi,type=bind,readonly"{{ end }}
   ],
@@ -81,7 +84,8 @@
     5432{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }},
     8080{{ end }}
   ],
-  "initializeCommand": "mkdir -p ${HOME}/.kube ${HOME}/.pulumi && [ -f ${HOME}/.gitconfig ] || touch ${HOME}/.gitconfig",
+  // Runs on the HOST before container creation - ensures bind-mount source paths exist
+  "initializeCommand": "chmod +x .devcontainer/scripts/init_host.sh && .devcontainer/scripts/init_host.sh",
   "postCreateCommand": "chmod +x .devcontainer/scripts/post_cmd.sh && .devcontainer/scripts/post_cmd.sh",
   "remoteUser": "vscode"
 }

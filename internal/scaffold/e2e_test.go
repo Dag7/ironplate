@@ -266,6 +266,15 @@ func TestE2E_ScaffoldFullStack(t *testing.T) {
 	// --- DevContainer ---
 	assertFileExists(t, out, ".devcontainer/devcontainer.json")
 	assertFileExists(t, out, ".devcontainer/Dockerfile")
+	assertFileExists(t, out, ".devcontainer/scripts/init_host.sh")
+	assertFileExists(t, out, ".devcontainer/scripts/post_cmd.sh")
+	assertFileExists(t, out, ".devcontainer/scripts/copy_configs.sh")
+	assertFileExists(t, out, ".devcontainer/scripts/set-docker-permissions.sh")
+
+	// Verify .claude volume mount
+	assertFileContains(t, out, ".devcontainer/devcontainer.json", "claude-config")
+	// Verify init script is used instead of inline command
+	assertFileContains(t, out, ".devcontainer/devcontainer.json", "init_host.sh")
 
 	// --- k3d ---
 	assertFileExists(t, out, ".devcontainer/k3s/cluster-config.yaml")
