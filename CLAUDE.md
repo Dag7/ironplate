@@ -89,6 +89,13 @@ testdata/              Test fixtures and golden files
 | `/add-component-template` | Add templates for a new infrastructure component |
 | `/new-test` | Generate test scaffolding |
 
+## Identity
+
+- **GitHub org/user**: `dag7` -- never use `ironplate-dev` or any other org name
+- **Go module**: `github.com/dag7/ironplate`
+- **Release URLs**: `github.com/dag7/ironplate/releases/...`
+- **Homebrew tap**: `dag7/homebrew-tap`
+
 ## Restrictions
 
 - Do not modify generated template output manually -- edit templates instead

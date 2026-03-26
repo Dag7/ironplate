@@ -8,7 +8,7 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.Commit=$(COMMIT) \
 	-X $(MODULE)/internal/version.Date=$(DATE)
 
-.PHONY: build install test test-golden test-integration lint fmt vet clean help
+.PHONY: build install install-local completion test test-golden test-integration lint fmt vet clean help
 
 ## Build
 
@@ -17,6 +17,18 @@ build: ## Build the iron binary
 
 install: ## Install iron to GOPATH/bin
 	go install -ldflags "$(LDFLAGS)" ./cmd/iron
+
+install-local: build ## Install iron to /usr/local/bin (for devcontainers)
+	sudo cp bin/$(BINARY_NAME) /usr/local/bin/$(BINARY_NAME)
+
+## Completion
+
+completion: install ## Generate shell completions to /usr/local/share
+	@mkdir -p /usr/local/share/zsh/site-functions
+	@iron completion zsh > /usr/local/share/zsh/site-functions/_iron
+	@mkdir -p /etc/bash_completion.d
+	@iron completion bash > /etc/bash_completion.d/iron
+	@echo "Shell completions installed"
 
 ## Test
 

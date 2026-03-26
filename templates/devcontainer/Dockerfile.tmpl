@@ -162,6 +162,16 @@ RUN ARCH="$(dpkg --print-architecture)" && \
     mv kompose /usr/local/bin/kompose
 {{ end }}
 # =============================================================================
+# Ironplate CLI
+# =============================================================================
+
+# Install iron CLI (project management, tilt profiles, dev tools)
+RUN ARCH="$(dpkg --print-architecture)" && \
+    curl -sSL "https://github.com/dag7/ironplate/releases/latest/download/iron_linux_${ARCH}.tar.gz" | \
+    tar xz -C /usr/local/bin iron && \
+    chmod +x /usr/local/bin/iron
+
+# =============================================================================
 # krew (kubectl plugin manager)
 # =============================================================================
 RUN set -x; cd "$(mktemp -d)" && \
@@ -196,6 +206,9 @@ RUN helm completion zsh > ${COMPLETION_FOLDER}/_helm
 
 # Tilt completion
 RUN tilt completion zsh > ${COMPLETION_FOLDER}/_tilt
+
+# iron completion
+RUN iron completion zsh > ${COMPLETION_FOLDER}/_iron
 {{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}
 # Hasura completion
 RUN hasura completion zsh --file=${COMPLETION_FOLDER}/_hasura
@@ -245,4 +258,6 @@ RUN echo 'ORIG_PROMPT="${PROMPT}"' >> /home/vscode/.zshrc && \
 
 # Aliases
 RUN echo "alias k=kubectl" >> /home/vscode/.zshrc && \
-    echo "alias kn='kubectl config set-context --current --namespace'" >> /home/vscode/.zshrc
+    echo "alias kn='kubectl config set-context --current --namespace'" >> /home/vscode/.zshrc && \
+    echo "alias it='iron tilt'" >> /home/vscode/.zshrc && \
+    echo "alias id='iron dev'" >> /home/vscode/.zshrc
