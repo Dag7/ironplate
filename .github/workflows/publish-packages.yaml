@@ -1,10 +1,6 @@
 name: Publish Packages
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "packages/**"
   workflow_dispatch:
     inputs:
       scope:
@@ -15,8 +11,21 @@ on:
           - all
           - node
           - go
-      force:
-        description: "Force publish even if version unchanged"
+      version_bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      package:
+        description: "Specific package name (empty = all in scope)"
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Dry run (bump & build but don't publish)"
         required: false
         type: boolean
         default: false
@@ -25,54 +34,10 @@ permissions:
   contents: write
 
 jobs:
-  # ── Detect which packages changed ──────────────────────────────────
-  detect-changes:
-    name: Detect Changes
-    runs-on: ubuntu-latest
-    outputs:
-      node-changed: ${{ steps.changes.outputs.node-changed }}
-      go-changed: ${{ steps.changes.outputs.go-changed }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 2
-      - name: Detect changed packages
-        id: changes
-        run: |
-          # Manual dispatch with scope overrides detection
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            scope="${{ github.event.inputs.scope }}"
-            if [ "$scope" = "all" ] || [ "$scope" = "node" ]; then
-              echo "node-changed=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "node-changed=false" >> "$GITHUB_OUTPUT"
-            fi
-            if [ "$scope" = "all" ] || [ "$scope" = "go" ]; then
-              echo "go-changed=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "go-changed=false" >> "$GITHUB_OUTPUT"
-            fi
-            exit 0
-          fi
-
-          # Auto-detect from git diff
-          node_changed="false"
-          if git diff --name-only HEAD~1 HEAD -- packages/node/ | grep -q .; then
-            node_changed="true"
-          fi
-          echo "node-changed=$node_changed" >> "$GITHUB_OUTPUT"
-
-          go_changed="false"
-          if git diff --name-only HEAD~1 HEAD -- packages/go/ | grep -q .; then
-            go_changed="true"
-          fi
-          echo "go-changed=$go_changed" >> "$GITHUB_OUTPUT"
-
   # ── Publish Node packages to npm ───────────────────────────────────
   publish-node:
     name: Publish Node Packages
-    needs: detect-changes
-    if: needs.detect-changes.outputs.node-changed == 'true'
+    if: inputs.scope == 'all' || inputs.scope == 'node'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -98,57 +63,93 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Publish changed packages
+      - name: Bump versions and publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          FORCE_PUBLISH: ${{ github.event.inputs.force }}
+          VERSION_BUMP: ${{ inputs.version_bump }}
+          TARGET_PACKAGE: ${{ inputs.package }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           published=0
+          bumped_files=""
 
           for dir in packages/node/*/; do
             [ -f "$dir/package.json" ] || continue
 
             pkg_name=$(node -p "require('./$dir/package.json').name")
-            local_version=$(node -p "require('./$dir/package.json').version")
 
-            # Check what's currently published on npm
-            published_version=$(npm view "$pkg_name" version 2>/dev/null || echo "")
-
-            if [ "$local_version" = "$published_version" ] && [ "$FORCE_PUBLISH" != "true" ]; then
-              echo "⏭️  $pkg_name@$local_version — already published, skipping"
+            # Skip if a specific package was requested and this isn't it
+            if [ -n "$TARGET_PACKAGE" ] && [ "$pkg_name" != "$TARGET_PACKAGE" ] && [ "$(basename "$dir")" != "$TARGET_PACKAGE" ]; then
               continue
             fi
 
-            echo "📦 Publishing $pkg_name@$local_version (npm has: ${published_version:-none})"
+            # Bump version in package.json
+            new_version=$(node -e "
+              const fs = require('fs');
+              const pkgPath = './$dir/package.json';
+              const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+              const [major, minor, patch] = pkg.version.split('.').map(Number);
+              switch ('$VERSION_BUMP') {
+                case 'major': pkg.version = (major+1) + '.0.0'; break;
+                case 'minor': pkg.version = major + '.' + (minor+1) + '.0'; break;
+                case 'patch': pkg.version = major + '.' + minor + '.' + (patch+1); break;
+              }
+              fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+              console.log(pkg.version);
+            ")
 
-            # Publish (already built from root)
-            cd "$dir"
-            npm publish --access public
-            cd -
+            echo "📦 $pkg_name: bumped to $new_version ($VERSION_BUMP)"
+            bumped_files="$bumped_files $dir/package.json"
 
-            # Create git tag
-            tag="${pkg_name}@${local_version}"
-            if ! git rev-parse "$tag" >/dev/null 2>&1; then
-              git tag -a "$tag" -m "Release $pkg_name v$local_version"
-              echo "🏷️  Created tag: $tag"
+            if [ "$DRY_RUN" != "true" ]; then
+              # Publish from package directory
+              cd "$dir"
+              npm publish --access public
+              cd - > /dev/null
+
+              # Create git tag
+              tag="${pkg_name}@${new_version}"
+              if ! git rev-parse "$tag" >/dev/null 2>&1; then
+                git tag -a "$tag" -m "Release $pkg_name v$new_version"
+                echo "🏷️  Created tag: $tag"
+              fi
+            else
+              echo "  (dry run — skipping publish)"
             fi
 
             published=$((published + 1))
           done
 
-          # Push all new tags at once
-          if [ $published -gt 0 ]; then
-            git push origin --tags
-            echo "✅ Published $published package(s)"
-          else
-            echo "ℹ️  No packages needed publishing"
+          if [ $published -eq 0 ]; then
+            echo "ℹ️  No packages matched"
+            exit 0
           fi
 
-  # ── Tag Go packages ────────────────────────────────────────────────
+          # Commit version bumps
+          git add $bumped_files
+          git commit -m "chore: bump node package versions ($VERSION_BUMP)
+
+          Bumped $published package(s)" || true
+
+          if [ "$DRY_RUN" != "true" ]; then
+            git push origin HEAD --tags
+            echo "✅ Published $published package(s)"
+          else
+            echo "✅ Would publish $published package(s) (dry run)"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Node Package Publish" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Bump:** ${{ inputs.version_bump }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Scope:** ${{ inputs.package || 'all node packages' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry run:** ${{ inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
+
+  # ── Publish Go packages (via git tags) ───────────────────────────────
   publish-go:
-    name: Tag Go Packages
-    needs: detect-changes
-    if: needs.detect-changes.outputs.go-changed == 'true'
+    name: Publish Go Packages
+    if: inputs.scope == 'all' || inputs.scope == 'go'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -156,52 +157,107 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.24"
+
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Tag changed Go packages
+      - name: Bump versions and tag
         env:
-          FORCE_PUBLISH: ${{ github.event.inputs.force }}
+          VERSION_BUMP: ${{ inputs.version_bump }}
+          TARGET_PACKAGE: ${{ inputs.package }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           tagged=0
+          bumped_files=""
 
           for dir in packages/go/*/; do
             [ -f "$dir/go.mod" ] || continue
             [ -f "$dir/VERSION" ] || continue
 
             pkg=$(basename "$dir")
-            version=$(cat "$dir/VERSION" | tr -d '[:space:]')
 
-            # Go module tag convention for nested modules
-            tag="packages/go/${pkg}/v${version}"
-
-            if git rev-parse "$tag" >/dev/null 2>&1; then
-              echo "⏭️  $tag — already exists, skipping"
+            # Skip if a specific package was requested and this isn't it
+            if [ -n "$TARGET_PACKAGE" ] && [ "$pkg" != "$TARGET_PACKAGE" ]; then
               continue
             fi
 
-            # Check if files actually changed since last tag for this package
-            if [ "$FORCE_PUBLISH" != "true" ]; then
-              last_tag=$(git tag -l "packages/go/${pkg}/v*" --sort=-version:refname | head -n1)
-              if [ -n "$last_tag" ]; then
-                changes=$(git diff --name-only "$last_tag" HEAD -- "$dir" | wc -l)
-                if [ "$changes" -eq 0 ]; then
-                  echo "⏭️  $pkg — no changes since $last_tag, skipping"
-                  continue
-                fi
-              fi
-            fi
+            # Read current version and bump
+            current=$(cat "$dir/VERSION" | tr -d '[:space:]')
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$current"
 
-            echo "🏷️  Creating tag: $tag"
-            git tag -a "$tag" -m "Release $pkg v$version"
+            case "$VERSION_BUMP" in
+              major) new_version="$((MAJOR + 1)).0.0" ;;
+              minor) new_version="${MAJOR}.$((MINOR + 1)).0" ;;
+              patch) new_version="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+            esac
+
+            echo "$new_version" > "$dir/VERSION"
+            bumped_files="$bumped_files $dir/VERSION"
+
+            echo "📦 $pkg: $current → $new_version ($VERSION_BUMP)"
+
             tagged=$((tagged + 1))
           done
 
-          if [ $tagged -gt 0 ]; then
-            git push origin --tags
+          if [ $tagged -eq 0 ]; then
+            echo "ℹ️  No packages matched"
+            exit 0
+          fi
+
+          # Commit version bumps first (tags must point to the bump commit)
+          git add $bumped_files
+          git commit -m "chore: bump go package versions ($VERSION_BUMP)
+
+          Bumped $tagged package(s)"
+
+          # Now create tags pointing to the bump commit
+          for dir in packages/go/*/; do
+            [ -f "$dir/go.mod" ] || continue
+            [ -f "$dir/VERSION" ] || continue
+
+            pkg=$(basename "$dir")
+
+            if [ -n "$TARGET_PACKAGE" ] && [ "$pkg" != "$TARGET_PACKAGE" ]; then
+              continue
+            fi
+
+            version=$(cat "$dir/VERSION" | tr -d '[:space:]')
+            tag="packages/go/${pkg}/v${version}"
+
+            if [ "$DRY_RUN" != "true" ]; then
+              git tag -a "$tag" -m "Release $pkg v$version"
+              echo "🏷️  Created tag: $tag"
+            else
+              echo "🏷️  Would create tag: $tag (dry run)"
+            fi
+          done
+
+          if [ "$DRY_RUN" != "true" ]; then
+            git push origin HEAD --tags
             echo "✅ Tagged $tagged package(s)"
           else
-            echo "ℹ️  No Go packages needed tagging"
+            echo "✅ Would tag $tagged package(s) (dry run)"
           fi
+
+      - name: Run tests
+        run: |
+          for dir in packages/go/*/; do
+            [ -f "$dir/go.mod" ] || continue
+            echo "Testing $(basename "$dir")..."
+            cd "$dir"
+            go test -race -count=1 ./...
+            cd - > /dev/null
+          done
+
+      - name: Summary
+        run: |
+          echo "## Go Package Publish" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Bump:** ${{ inputs.version_bump }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Scope:** ${{ inputs.package || 'all go packages' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry run:** ${{ inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY

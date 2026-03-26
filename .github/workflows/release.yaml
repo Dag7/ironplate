@@ -6,11 +6,15 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version (e.g., 0.2.0). A 'v' prefix will be added automatically."
+      version_bump:
+        description: "Version bump type"
         required: true
-        type: string
-      dry-run:
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
         description: "Dry run (skip actual release)"
         required: false
         type: boolean
@@ -28,16 +32,43 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-go@v6
         with:
           go-version: "1.24"
 
-      # For manual dispatch: create and push the tag
+      # For manual dispatch: calculate version, create and push tag
+      - name: Calculate next version
+        if: github.event_name == 'workflow_dispatch'
+        id: version
+        run: |
+          BUMP="${{ github.event.inputs.version_bump }}"
+
+          # Get latest release tag
+          CURRENT=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo "v0.0.0")
+          echo "Current version: $CURRENT"
+
+          # Parse semver
+          VERSION=${CURRENT#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          # Bump
+          case "$BUMP" in
+            major) NEW_VERSION="$((MAJOR + 1)).0.0" ;;
+            minor) NEW_VERSION="${MAJOR}.$((MINOR + 1)).0" ;;
+            patch) NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+          esac
+
+          TAG="v${NEW_VERSION}"
+          echo "new_version=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Version bump ($BUMP): $CURRENT → $TAG"
+
       - name: Create release tag
         if: github.event_name == 'workflow_dispatch'
         run: |
-          TAG="v${{ github.event.inputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
             echo "::error::Tag $TAG already exists"
             exit 1
@@ -52,7 +83,7 @@ jobs:
         run: go test -race -count=1 ./...
 
       - name: Release
-        if: "!(github.event.inputs.dry-run == 'true')"
+        if: "!(github.event.inputs.dry_run == 'true')"
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -62,7 +93,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Dry run
-        if: github.event.inputs.dry-run == 'true'
+        if: github.event.inputs.dry_run == 'true'
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -70,3 +101,12 @@ jobs:
           args: release --clean --snapshot
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "## Release ${{ steps.version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Bump:** ${{ github.event.inputs.version_bump }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Tag:** \`${{ steps.version.outputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Dry run:** ${{ github.event.inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
