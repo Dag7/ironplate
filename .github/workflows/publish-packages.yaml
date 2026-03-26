@@ -5,6 +5,21 @@ on:
     branches: [main]
     paths:
       - "packages/**"
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "Which packages to publish"
+        required: true
+        type: choice
+        options:
+          - all
+          - node
+          - go
+      force:
+        description: "Force publish even if version unchanged"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -18,20 +33,35 @@ jobs:
       node-changed: ${{ steps.changes.outputs.node-changed }}
       go-changed: ${{ steps.changes.outputs.go-changed }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 2
       - name: Detect changed packages
         id: changes
         run: |
-          # Node packages that have changes
+          # Manual dispatch with scope overrides detection
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            scope="${{ github.event.inputs.scope }}"
+            if [ "$scope" = "all" ] || [ "$scope" = "node" ]; then
+              echo "node-changed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "node-changed=false" >> "$GITHUB_OUTPUT"
+            fi
+            if [ "$scope" = "all" ] || [ "$scope" = "go" ]; then
+              echo "go-changed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "go-changed=false" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+          # Auto-detect from git diff
           node_changed="false"
           if git diff --name-only HEAD~1 HEAD -- packages/node/ | grep -q .; then
             node_changed="true"
           fi
           echo "node-changed=$node_changed" >> "$GITHUB_OUTPUT"
 
-          # Go packages that have changes
           go_changed="false"
           if git diff --name-only HEAD~1 HEAD -- packages/go/ | grep -q .; then
             go_changed="true"
@@ -45,15 +75,18 @@ jobs:
     if: needs.detect-changes.outputs.node-changed == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Enable Corepack
+        run: corepack enable
 
       - name: Configure git
         run: |
@@ -63,6 +96,7 @@ jobs:
       - name: Publish changed packages
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          FORCE_PUBLISH: ${{ github.event.inputs.force }}
         run: |
           published=0
 
@@ -75,7 +109,7 @@ jobs:
             # Check what's currently published on npm
             published_version=$(npm view "$pkg_name" version 2>/dev/null || echo "")
 
-            if [ "$local_version" = "$published_version" ]; then
+            if [ "$local_version" = "$published_version" ] && [ "$FORCE_PUBLISH" != "true" ]; then
               echo "⏭️  $pkg_name@$local_version — already published, skipping"
               continue
             fi
@@ -114,7 +148,7 @@ jobs:
     if: needs.detect-changes.outputs.go-changed == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -125,6 +159,8 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Tag changed Go packages
+        env:
+          FORCE_PUBLISH: ${{ github.event.inputs.force }}
         run: |
           tagged=0
 
@@ -144,12 +180,14 @@ jobs:
             fi
 
             # Check if files actually changed since last tag for this package
-            last_tag=$(git tag -l "packages/go/${pkg}/v*" --sort=-version:refname | head -n1)
-            if [ -n "$last_tag" ]; then
-              changes=$(git diff --name-only "$last_tag" HEAD -- "$dir" | wc -l)
-              if [ "$changes" -eq 0 ]; then
-                echo "⏭️  $pkg — no changes since $last_tag, skipping"
-                continue
+            if [ "$FORCE_PUBLISH" != "true" ]; then
+              last_tag=$(git tag -l "packages/go/${pkg}/v*" --sort=-version:refname | head -n1)
+              if [ -n "$last_tag" ]; then
+                changes=$(git diff --name-only "$last_tag" HEAD -- "$dir" | wc -l)
+                if [ "$changes" -eq 0 ]; then
+                  echo "⏭️  $pkg — no changes since $last_tag, skipping"
+                  continue
+                fi
               fi
             fi
 

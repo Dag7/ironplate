@@ -4,33 +4,69 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g., 0.2.0). A 'v' prefix will be added automatically."
+        required: true
+        type: string
+      dry-run:
+        description: "Dry run (skip actual release)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
   packages: write
 
 jobs:
-  # NOTE: This workflow is for the CLI binary only.
-  # Node and Go packages are published separately via publish-packages.yaml.
-  goreleaser:
+  release:
     name: Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.24"
+
+      # For manual dispatch: create and push the tag
+      - name: Create release tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          TAG="v${{ github.event.inputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          echo "GORELEASER_CURRENT_TAG=$TAG" >> "$GITHUB_ENV"
 
       - name: Run tests
         run: go test -race -count=1 ./...
 
-      - uses: goreleaser/goreleaser-action@v6
+      - name: Release
+        if: "!(github.event.inputs.dry-run == 'true')"
+        uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: latest
           args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dry run
+        if: github.event.inputs.dry-run == 'true'
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean --snapshot
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

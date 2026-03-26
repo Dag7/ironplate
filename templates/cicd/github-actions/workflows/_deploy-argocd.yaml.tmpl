@@ -132,7 +132,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ "{{" }} inputs.branch {{ "}}" }}
 {{ if eq .Project.Spec.Cloud.Provider "gcp" }}
@@ -210,7 +210,7 @@ jobs:
     outputs:
       skipped: ${{ "{{" }} steps.check-hasura.outputs.skipped {{ "}}" }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ "{{" }} inputs.branch {{ "}}" }}
 {{ if eq .Project.Spec.Cloud.Provider "gcp" }}

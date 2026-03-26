@@ -80,7 +80,7 @@ jobs:
       services_to_build: ${{ "{{" }} steps.determine.outputs.services {{ "}}" }}
       has_services: ${{ "{{" }} steps.determine.outputs.has_services {{ "}}" }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -99,10 +99,12 @@ jobs:
           echo "Image tag: ${TAG}"
 {{ if .Computed.HasNode }}
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: "{{ .Project.Spec.Monorepo.NodeVersion }}"
-          cache: "{{ .Project.Spec.Monorepo.PackageManager }}"
+
+      - name: Enable Corepack
+        run: corepack enable
 
       - name: Install dependencies
         run: {{ .Project.Spec.Monorepo.PackageManager }} install --frozen-lockfile
@@ -169,7 +171,7 @@ jobs:
       matrix:
         service: ${{ "{{" }} fromJson(needs.build-setup.outputs.services_to_build) {{ "}}" }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build and push image
         uses: ./.github/actions/build-push-image
@@ -192,7 +194,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Check for Hasura changes
         id: hasura-changes
@@ -237,7 +239,7 @@ jobs:
 {{ end }}
       - name: Set up Docker Buildx
         if: steps.hasura-changes.outputs.should_build == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build and push hasura-migrations image
         if: steps.hasura-changes.outputs.should_build == 'true'
@@ -278,7 +280,7 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 {{ if eq .Project.Spec.Cloud.Provider "gcp" }}
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2

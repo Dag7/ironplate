@@ -14,11 +14,11 @@ jobs:
     name: Lint (Node.js)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "{{ .Project.Spec.Monorepo.NodeVersion }}"
-          cache: "{{ .Project.Spec.Monorepo.PackageManager }}"
+      - run: corepack enable
       - run: {{ .Project.Spec.Monorepo.PackageManager }} install
       - run: {{ .Project.Spec.Monorepo.PackageManager }} nx run-many --target=lint
 
@@ -26,11 +26,11 @@ jobs:
     name: Test (Node.js)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "{{ .Project.Spec.Monorepo.NodeVersion }}"
-          cache: "{{ .Project.Spec.Monorepo.PackageManager }}"
+      - run: corepack enable
       - run: {{ .Project.Spec.Monorepo.PackageManager }} install
       - run: {{ .Project.Spec.Monorepo.PackageManager }} nx run-many --target=test
 
@@ -38,11 +38,11 @@ jobs:
     name: TypeCheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "{{ .Project.Spec.Monorepo.NodeVersion }}"
-          cache: "{{ .Project.Spec.Monorepo.PackageManager }}"
+      - run: corepack enable
       - run: {{ .Project.Spec.Monorepo.PackageManager }} install
       - run: {{ .Project.Spec.Monorepo.PackageManager }} nx run-many --target=typecheck
 {{ end }}
@@ -50,11 +50,11 @@ jobs:
     name: Lint (Go)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: "{{ .Project.Spec.Monorepo.GoVersion }}"
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v7
         with:
           version: latest
 
@@ -62,8 +62,8 @@ jobs:
     name: Test (Go)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
         with:
           go-version: "{{ .Project.Spec.Monorepo.GoVersion }}"
       - run: go test -race -count=1 -coverprofile=coverage.out ./...
@@ -73,15 +73,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: [{{ if .Computed.HasNode }}lint-node, test-node, typecheck{{ end }}{{ if and .Computed.HasNode .Computed.HasGo }}, {{ end }}{{ if .Computed.HasGo }}lint-go, test-go{{ end }}]
     steps:
-      - uses: actions/checkout@v4
-{{ if .Computed.HasNode }}      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+{{ if .Computed.HasNode }}      - uses: actions/setup-node@v6
         with:
           node-version: "{{ .Project.Spec.Monorepo.NodeVersion }}"
-          cache: "{{ .Project.Spec.Monorepo.PackageManager }}"
+      - run: corepack enable
       - run: {{ .Project.Spec.Monorepo.PackageManager }} install
       - run: {{ .Project.Spec.Monorepo.PackageManager }} nx run-many --target=build
 {{ end }}
-{{ if .Computed.HasGo }}      - uses: actions/setup-go@v5
+{{ if .Computed.HasGo }}      - uses: actions/setup-go@v6
         with:
           go-version: "{{ .Project.Spec.Monorepo.GoVersion }}"
       - run: go build ./...
