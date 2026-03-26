@@ -88,6 +88,11 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
 
+      - name: Install and build all packages
+        run: |
+          yarn install
+          yarn build
+
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
@@ -116,10 +121,8 @@ jobs:
 
             echo "📦 Publishing $pkg_name@$local_version (npm has: ${published_version:-none})"
 
-            # Build the package
+            # Publish (already built from root)
             cd "$dir"
-            yarn install 2>/dev/null || npm install
-            yarn build
             npm publish --access public
             cd -
 

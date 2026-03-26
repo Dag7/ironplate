@@ -50,7 +50,7 @@ func newListComponentsCmd() *cobra.Command {
 			fmt.Println()
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n",
 				tui.BoldStyle.Render("NAME"),
 				tui.BoldStyle.Render("DESCRIPTION"),
 				tui.BoldStyle.Render("TIER"),
@@ -65,14 +65,16 @@ func newListComponentsCmd() *cobra.Command {
 					installed = tui.CheckMark
 				}
 
-				fmt.Fprintf(w, "  %s\t%s\t%d\t%s\n",
+				_, _ = fmt.Fprintf(w, "  %s\t%s\t%d\t%s\n",
 					name,
 					comp.Description,
 					comp.Tier,
 					installed,
 				)
 			}
-			w.Flush()
+			if err := w.Flush(); err != nil {
+				return err
+			}
 			fmt.Println()
 
 			return nil
@@ -106,7 +108,7 @@ func newListServicesCmd() *cobra.Command {
 			}
 
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n",
 				tui.BoldStyle.Render("NAME"),
 				tui.BoldStyle.Render("TYPE"),
 				tui.BoldStyle.Render("GROUP"),
@@ -118,14 +120,16 @@ func newListServicesCmd() *cobra.Command {
 				if group == "" {
 					group = tui.MutedStyle.Render("-")
 				}
-				fmt.Fprintf(w, "  %s\t%s\t%s\t%d\n",
+				_, _ = fmt.Fprintf(w, "  %s\t%s\t%s\t%d\n",
 					svc.Name,
 					svc.Type,
 					group,
 					svc.Port,
 				)
 			}
-			w.Flush()
+			if err := w.Flush(); err != nil {
+				return err
+			}
 			fmt.Println()
 
 			return nil

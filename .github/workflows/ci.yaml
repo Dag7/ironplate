@@ -68,12 +68,11 @@ jobs:
         run: go test -race -count=1 ./...
 
   # ── Node Packages ───────────────────────────────────────────────────
+  # Built from monorepo root to resolve workspace:* cross-dependencies.
+  # Topological build order ensures deps are built before dependents.
   node-packages:
     name: Node Packages
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        package: [errors, health, cache, graphql, testing, logger, config, http-client, eventbus, service, auth, encryption, metrics, tracing, validation, feature-flags, jobs, tilt-manager, dev-cli]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -82,11 +81,8 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
       - name: Install dependencies
-        working-directory: packages/node/${{ matrix.package }}
         run: yarn install
-      - name: Build ${{ matrix.package }}
-        working-directory: packages/node/${{ matrix.package }}
+      - name: Build all packages
         run: yarn build
-      - name: Typecheck ${{ matrix.package }}
-        working-directory: packages/node/${{ matrix.package }}
+      - name: Typecheck all packages
         run: yarn typecheck
