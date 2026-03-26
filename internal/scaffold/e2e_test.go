@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
-	"github.com/ironplate-dev/ironplate/internal/config"
-	"github.com/ironplate-dev/ironplate/templates"
+	"github.com/dag7/ironplate/internal/config"
+	"github.com/dag7/ironplate/templates"
 )
 
 // ============================================================================

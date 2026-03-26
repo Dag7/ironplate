@@ -1,3 +1,3 @@
-module github.com/ironplate-dev/ironplate/packages/go/envconfig
+module github.com/dag7/ironplate/packages/go/envconfig
 
 go 1.24

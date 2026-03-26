@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/ironplate-dev/ironplate/internal/components"
-	"github.com/ironplate-dev/ironplate/internal/config"
-	"github.com/ironplate-dev/ironplate/pkg/fsutil"
+	"github.com/dag7/ironplate/internal/components"
+	"github.com/dag7/ironplate/internal/config"
+	"github.com/dag7/ironplate/pkg/fsutil"
 )
 
 var kebabCaseRegex = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)

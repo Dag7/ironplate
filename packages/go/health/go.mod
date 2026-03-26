@@ -1,3 +1,3 @@
-module github.com/ironplate-dev/ironplate/packages/go/health
+module github.com/dag7/ironplate/packages/go/health
 
 go 1.24

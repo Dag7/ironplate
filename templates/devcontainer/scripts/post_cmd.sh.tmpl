@@ -15,6 +15,12 @@ base_path="${GITHUB_WORKSPACE:-/workspaces/{{ .Project.Metadata.Name }}}"
 source "$base_path/.devcontainer/scripts/copy_configs.sh"
 source "$base_path/.devcontainer/scripts/set-docker-permissions.sh"
 
+{{ if .Computed.HasNode -}}
+# Pre-download package manager so Corepack doesn't prompt on first run (Node 24+ enables Corepack by default)
+corepack enable
+corepack prepare --activate
+{{ end -}}
+
 # Disable global git hooks in dev container
 git config --global core.hooksPath /dev/null
 
@@ -76,6 +82,20 @@ pnpm install
 echo "📦 Syncing Go workspace..."
 go work sync
 {{ end }}
+# ---------------------------------------------------------------------------
+# Install iron CLI + shell completion
+# ---------------------------------------------------------------------------
+if command -v go &> /dev/null; then
+    echo "📦 Installing iron CLI..."
+    go install github.com/dag7/ironplate/cmd/iron@latest
+    if command -v iron &> /dev/null; then
+        COMPLETION_FOLDER="/home/vscode/.oh-my-zsh/completions"
+        mkdir -p "$COMPLETION_FOLDER"
+        iron completion zsh > "$COMPLETION_FOLDER/_iron"
+        echo "✅ iron CLI installed with shell completion"
+    fi
+fi
+
 echo ""
 echo "✅ {{ .Project.Metadata.Name }} development environment is ready!"
 echo ""

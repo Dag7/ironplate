@@ -5,7 +5,7 @@
   "description": "Pluggable developer CLI for Kubernetes-based monorepo projects",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ironplate-dev/ironplate.git",
+    "url": "https://github.com/dag7/ironplate.git",
     "directory": "packages/node/dev-cli"
   },
   "main": "dist/index.js",

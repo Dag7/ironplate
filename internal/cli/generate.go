@@ -10,11 +10,11 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/ironplate-dev/ironplate/internal/config"
-	"github.com/ironplate-dev/ironplate/internal/engine"
-	"github.com/ironplate-dev/ironplate/internal/tui"
-	"github.com/ironplate-dev/ironplate/pkg/fsutil"
-	"github.com/ironplate-dev/ironplate/templates"
+	"github.com/dag7/ironplate/internal/config"
+	"github.com/dag7/ironplate/internal/engine"
+	"github.com/dag7/ironplate/internal/tui"
+	"github.com/dag7/ironplate/pkg/fsutil"
+	"github.com/dag7/ironplate/templates"
 )
 
 // serviceTemplateDirs maps service types to their template directories.

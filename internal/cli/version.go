@@ -3,7 +3,7 @@ package cli
 import (
 	"fmt"
 
-	"github.com/ironplate-dev/ironplate/internal/version"
+	"github.com/dag7/ironplate/internal/version"
 	"github.com/spf13/cobra"
 )
 

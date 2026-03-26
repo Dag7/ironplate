@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ironplate-dev/ironplate/internal/config"
-	"github.com/ironplate-dev/ironplate/internal/tui"
+	"github.com/dag7/ironplate/internal/config"
+	"github.com/dag7/ironplate/internal/tui"
 )
 
 // PrintSummary displays a post-scaffold summary with next steps.

@@ -8,10 +8,10 @@ import (
 	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
-	"github.com/ironplate-dev/ironplate/internal/config"
-	"github.com/ironplate-dev/ironplate/internal/scaffold"
-	"github.com/ironplate-dev/ironplate/internal/tui"
-	"github.com/ironplate-dev/ironplate/templates"
+	"github.com/dag7/ironplate/internal/config"
+	"github.com/dag7/ironplate/internal/scaffold"
+	"github.com/dag7/ironplate/internal/tui"
+	"github.com/dag7/ironplate/templates"
 )
 
 func newInitCmd() *cobra.Command {

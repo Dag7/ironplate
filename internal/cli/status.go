@@ -6,9 +6,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/ironplate-dev/ironplate/internal/config"
-	"github.com/ironplate-dev/ironplate/internal/tui"
-	"github.com/ironplate-dev/ironplate/internal/version"
+	"github.com/dag7/ironplate/internal/config"
+	"github.com/dag7/ironplate/internal/tui"
+	"github.com/dag7/ironplate/internal/version"
 	"github.com/spf13/cobra"
 )
 

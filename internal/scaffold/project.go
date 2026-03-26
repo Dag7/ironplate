@@ -6,11 +6,11 @@ import (
 	"io/fs"
 	"path/filepath"
 
-	"github.com/ironplate-dev/ironplate/internal/components"
-	"github.com/ironplate-dev/ironplate/internal/config"
-	"github.com/ironplate-dev/ironplate/internal/engine"
-	"github.com/ironplate-dev/ironplate/internal/tui"
-	"github.com/ironplate-dev/ironplate/pkg/fsutil"
+	"github.com/dag7/ironplate/internal/components"
+	"github.com/dag7/ironplate/internal/config"
+	"github.com/dag7/ironplate/internal/engine"
+	"github.com/dag7/ironplate/internal/tui"
+	"github.com/dag7/ironplate/pkg/fsutil"
 )
 
 // Scaffolder generates a complete ironplate project from configuration.

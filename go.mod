@@ -1,4 +1,4 @@
-module github.com/ironplate-dev/ironplate
+module github.com/dag7/ironplate
 
 go 1.24
 

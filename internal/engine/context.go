@@ -3,7 +3,7 @@ package engine
 import (
 	"time"
 
-	"github.com/ironplate-dev/ironplate/internal/config"
+	"github.com/dag7/ironplate/internal/config"
 )
 
 // TemplateContext is the root context passed to all templates.

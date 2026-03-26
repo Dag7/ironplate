@@ -1,3 +1,3 @@
-module github.com/ironplate-dev/ironplate/packages/go/graceful
+module github.com/dag7/ironplate/packages/go/graceful
 
 go 1.24

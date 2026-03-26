@@ -5,7 +5,7 @@
   "description": "CLI tool for managing Tilt profiles in monorepo projects",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ironplate-dev/ironplate.git",
+    "url": "https://github.com/dag7/ironplate.git",
     "directory": "packages/node/tilt-manager"
   },
   "main": "dist/index.js",

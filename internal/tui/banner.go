@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/ironplate-dev/ironplate/internal/version"
+	"github.com/dag7/ironplate/internal/version"
 )
 
 const banner = `

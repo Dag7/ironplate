@@ -8,7 +8,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/ironplate-dev/ironplate/pkg/fsutil"
+	"github.com/dag7/ironplate/pkg/fsutil"
 )
 
 // Renderer handles template rendering with custom functions.

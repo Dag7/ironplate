@@ -41,6 +41,7 @@ Pulumi IaC, ArgoCD GitOps, CI/CD pipelines, and multi-language service templates
 	cmd.AddCommand(newListCmd())
 	cmd.AddCommand(newStatusCmd())
 	cmd.AddCommand(newValidateCmd())
+	cmd.AddCommand(newCompletionCmd())
 
 	return cmd
 }

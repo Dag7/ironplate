@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ironplate-dev/ironplate/internal/components"
-	"github.com/ironplate-dev/ironplate/internal/config"
-	"github.com/ironplate-dev/ironplate/internal/tui"
+	"github.com/dag7/ironplate/internal/components"
+	"github.com/dag7/ironplate/internal/config"
+	"github.com/dag7/ironplate/internal/tui"
 	"github.com/spf13/cobra"
 )
 

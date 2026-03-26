@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ironplate-dev/ironplate/internal/config"
+	"github.com/dag7/ironplate/internal/config"
 )
 
 // validConfig returns a minimal valid *config.ProjectConfig suitable for

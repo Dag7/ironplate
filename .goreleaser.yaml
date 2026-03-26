@@ -17,9 +17,9 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X github.com/ironplate-dev/ironplate/internal/version.Version={{.Version}}
-      - -X github.com/ironplate-dev/ironplate/internal/version.Commit={{.ShortCommit}}
-      - -X github.com/ironplate-dev/ironplate/internal/version.Date={{.Date}}
+      - -X github.com/dag7/ironplate/internal/version.Version={{.Version}}
+      - -X github.com/dag7/ironplate/internal/version.Commit={{.ShortCommit}}
+      - -X github.com/dag7/ironplate/internal/version.Date={{.Date}}
 
 archives:
   - id: default
@@ -30,9 +30,9 @@ archives:
 
 brews:
   - repository:
-      owner: ironplate-dev
+      owner: dag7
       name: homebrew-tap
-    homepage: "https://github.com/ironplate-dev/ironplate"
+    homepage: "https://github.com/dag7/ironplate"
     description: "Scaffold production-grade Kubernetes development environments"
     license: "Apache-2.0"
     install: |
@@ -64,7 +64,7 @@ changelog:
 
 release:
   github:
-    owner: ironplate-dev
+    owner: dag7
     name: ironplate
   prerelease: auto
   header: |
@@ -72,7 +72,7 @@ release:
 
     Install or upgrade:
     ```bash
-    brew install ironplate-dev/tap/iron
+    brew install dag7/tap/iron
     # or
-    go install github.com/ironplate-dev/ironplate/cmd/iron@{{ .Tag }}
+    go install github.com/dag7/ironplate/cmd/iron@{{ .Tag }}
     ```

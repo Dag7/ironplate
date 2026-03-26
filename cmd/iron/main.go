@@ -4,7 +4,7 @@ package main
 import (
 	"os"
 
-	"github.com/ironplate-dev/ironplate/internal/cli"
+	"github.com/dag7/ironplate/internal/cli"
 )
 
 func main() {
