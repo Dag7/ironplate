@@ -1,0 +1,31 @@
+#!/bin/bash
+# =============================================================================
+# k3d cluster utility functions
+# =============================================================================
+
+delete_k3s_cluster() {
+    logger_warning "Deleting k8s cluster"
+    delete_k3d_cluster_wait $CLUSTER_NAME
+}
+
+delete_k3d_cluster_wait() {
+    local cluster_name="$1"
+
+    # Delete the k3d cluster
+    k3d cluster delete "$cluster_name"
+
+    # Wait until all k3d cluster resources are fully cleared
+    logger_info "Waiting for k3d cluster resources to be cleared..."
+    while k3d cluster get "$cluster_name" &>/dev/null; do
+        sleep 1
+    done
+
+    logger_success "k3d cluster '$cluster_name' deleted successfully."
+}
+
+show_help() {
+    echo "Usage: $0 [-f] [-h]"
+    echo "Options:"
+    echo "  -f, --force     Force create the k8s cluster by deleting the existing one"
+    echo "  -h, --help      Display this help message"
+}

@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Project.Metadata.Name }}
+  labels:{{ if hasItem .Project.Spec.Infrastructure.Components "dapr" }}
+    # Enable Dapr sidecar injection for all pods in this namespace
+    dapr-injection: enabled{{ end }}
+    app.kubernetes.io/managed-by: ironplate
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:{{ if hasItem .Project.Spec.Infrastructure.Components "dapr" }}
+    dapr-injection: enabled{{ end }}
+    app.kubernetes.io/managed-by: ironplate

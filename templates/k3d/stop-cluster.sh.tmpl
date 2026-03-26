@@ -1,0 +1,15 @@
+#!/bin/bash
+# =============================================================================
+# {{ .Project.Metadata.Name }} - Stop k3d Cluster
+# =============================================================================
+
+base_path="${GITHUB_WORKSPACE:-/workspaces/{{ .Project.Metadata.Name }}}"
+
+# Import dependencies
+source "$base_path/.devcontainer/k3s/scripts/logger.sh"
+
+CLUSTER_NAME={{ .Project.Metadata.Name }}-cluster
+
+logger_warning "Stopping k8s cluster: $CLUSTER_NAME"
+k3d cluster stop $CLUSTER_NAME
+logger_success "Cluster stopped"

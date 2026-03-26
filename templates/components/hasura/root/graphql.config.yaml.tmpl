@@ -1,0 +1,15 @@
+projects:
+  {{ .Project.Metadata.Name }}:
+    schema:
+      - http://localhost:8080/v1/graphql:
+          headers:
+            x-hasura-admin-secret: {{ .Project.Metadata.Name }}
+    documents:
+      - "./apps/**/*.{gql,graphql,ts,js,tsx,jsx}"
+      - "!./apps/**/*/node_modules/**/*"
+      - "!./apps/**/*.test.{js,ts}"
+      - "!./apps/**/mockData.{js,ts}"
+      - "./packages/**/*.{gql,graphql,ts,js,tsx,jsx}"
+      - "!./packages/**/*/node_modules/**/*"
+      - "!./packages/**/*.test.{js,ts}"
+      - "!./packages/**/mockData.{js,ts}"

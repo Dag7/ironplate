@@ -1,0 +1,85 @@
+#!/bin/bash
+# =============================================================================
+# {{ .Project.Metadata.Name }} - Initialize k3d Cluster
+# =============================================================================
+
+base_path="${GITHUB_WORKSPACE:-/workspaces/{{ .Project.Metadata.Name }}}"
+
+# Import dependencies
+source "$base_path/.devcontainer/k3s/scripts/logger.sh"
+source "$base_path/.devcontainer/k3s/scripts/k3d-utils.sh"
+source "$base_path/.devcontainer/k3s/scripts/docker-permissions.sh"
+
+set_docker_permissions
+
+CLUSTER_NAME={{ .Project.Metadata.Name }}-cluster
+
+# Check if cluster exists
+IS_K3S_INIT=$(k3d cluster ls | grep $CLUSTER_NAME | wc -l)
+
+if [[ $IS_K3S_INIT != '0' ]]; then
+    logger_info "using existing k8s cluster: $CLUSTER_NAME"
+    kubectl config use-context k3d-${CLUSTER_NAME} --namespace={{ .Project.Metadata.Name }}
+fi
+
+# Parse command-line options
+while getopts ":fh" opt; do
+    case $opt in
+    f)
+        FORCE_CREATE=true
+        ;;
+    h)
+        show_help
+        exit 0
+        ;;
+    \?)
+        echo "Invalid option: -$OPTARG" >&2
+        show_help
+        exit 1
+        ;;
+    esac
+done
+
+if [[ $IS_K3S_INIT != '0' && $FORCE_CREATE ]]; then
+    delete_k3s_cluster
+fi
+
+if [[ $IS_K3S_INIT == '0' || $FORCE_CREATE ]]; then
+    logger_highlight "creating k8s cluster: $CLUSTER_NAME"
+
+    k3d cluster create \
+        --config ${CLUSTER_NAME}.config.yaml \
+        --registry-config ${CLUSTER_NAME}.registries.yaml \
+        --wait \
+        --verbose
+fi
+
+logger_info "starting cluster: $CLUSTER_NAME"
+k3d cluster start $CLUSTER_NAME
+k3d kubeconfig merge -sd $CLUSTER_NAME
+
+until kubectl get nodes; do
+    sleep 1
+done
+
+# Apply manifests
+logger_info "applying manifests"
+kubectl apply -f ./manifests/setup/namespace.yaml
+
+# Set default namespace
+logger_info "setting k8s context"
+kubectl config set-context --current --namespace={{ .Project.Metadata.Name }}
+logger_success "k8s context ready"
+
+# Apply secrets (if they exist)
+if [ -f ./manifests/_secrets/secrets.yaml ]; then
+    kubectl apply -f ./manifests/_secrets/secrets.yaml
+    logger_success "secrets applied"
+else
+    logger_warning "No secrets.yaml found. Copy secrets.template.yaml to secrets.yaml and fill in values."
+fi
+
+# Setup K8s Integration SA
+kubectl apply -f ./manifests/setup/k8s-integration-sa.yaml
+
+logger_success "cluster initialization complete"

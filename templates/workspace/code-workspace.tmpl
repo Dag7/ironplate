@@ -60,7 +60,7 @@
       "**/.next/**": true,
       "**/.git/**": true
     },{{ if .Computed.HasNode }}
-    "typescript.tsserver.watchOptions": {
+    "js/ts.tsserver.watchOptions": {
       "excludeDirectories": [
         "**/node_modules",
         "**/dist",
@@ -116,16 +116,15 @@
     "[go]": {
       "editor.defaultFormatter": "golang.go"
     },{{ end }}{{ if .Computed.HasNode }}
-    "typescript.enablePromptUseWorkspaceTsdk": true,
-    "typescript.tsdk": "{{ .Project.Metadata.Name }}/node_modules/typescript/lib",
-    "typescript.tsserver.maxTsServerMemory": 4096,
-    "typescript.tsserver.nodePath": "node",
-    "typescript.preferences.importModuleSpecifier": "relative",
-    "typescript.suggest.autoImports": true,
-    "typescript.tsserver.log": "off",
-    "typescript.referencesCodeLens.enabled": false,
-    "typescript.implementationsCodeLens.enabled": false,
-    "typescript.disableAutomaticTypeAcquisition": true,{{ end }}
+    "js/ts.enablePromptUseWorkspaceTsdk": true,
+    "js/ts.tsdk": "{{ .Project.Metadata.Name }}/node_modules/typescript/lib",
+    "js/ts.tsserver.maxTsServerMemory": 4096,
+    "js/ts.tsserver.nodePath": "node",
+    "js/ts.preferences.importModuleSpecifier": "relative",
+    "js/ts.suggest.autoImports": true,
+    "js/ts.tsserver.log": "off",
+    "js/ts.referencesCodeLens.enabled": false,
+    "js/ts.implementationsCodeLens.enabled": false,{{ end }}
     "files.insertFinalNewline": true,
     "files.trimTrailingWhitespace": true,
     "files.eol": "\n",

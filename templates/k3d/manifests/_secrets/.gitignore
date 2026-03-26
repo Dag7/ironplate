@@ -1,0 +1,4 @@
+# Ignore actual secret files (contain real credentials)
+*.yaml
+!*.template.yaml
+!.gitignore

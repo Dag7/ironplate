@@ -1,0 +1,91 @@
+# ServiceAccount for Kubernetes Integration
+# Used by agents to interact with the K8s API
+# Has read-only access to common K8s resources
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-integration-sa
+  namespace: {{ .Project.Metadata.Name }}
+  labels:
+    app.kubernetes.io/name: k8s-integration
+    app.kubernetes.io/component: service-account
+
+---
+# ClusterRole with read-only access to common K8s resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-integration-readonly
+  labels:
+    app.kubernetes.io/name: k8s-integration
+rules:
+  # Core resources (namespaces, pods, services, etc.)
+  - apiGroups: [""]
+    resources:
+      - namespaces
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - configmaps
+      - secrets
+      - persistentvolumeclaims
+      - events
+      - nodes
+    verbs: ["get", "list", "watch"]
+
+  # Workload resources (deployments, statefulsets, etc.)
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - statefulsets
+      - daemonsets
+      - replicasets
+    verbs: ["get", "list", "watch"]
+
+  # Batch resources (jobs, cronjobs)
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch"]
+
+  # Networking resources
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch"]
+
+  # RBAC resources (view only)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - roles
+      - rolebindings
+      - clusterroles
+      - clusterrolebindings
+    verbs: ["get", "list", "watch"]
+
+  # Storage resources
+  - apiGroups: ["storage.k8s.io"]
+    resources:
+      - storageclasses
+    verbs: ["get", "list", "watch"]
+
+---
+# Bind the ClusterRole to the ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-integration-readonly
+  labels:
+    app.kubernetes.io/name: k8s-integration
+subjects:
+  - kind: ServiceAccount
+    name: k8s-integration-sa
+    namespace: {{ .Project.Metadata.Name }}
+roleRef:
+  kind: ClusterRole
+  name: k8s-integration-readonly
+  apiGroup: rbac.authorization.k8s.io

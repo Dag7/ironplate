@@ -45,8 +45,11 @@ var builtinComponents = map[string]*Component{
 		Requires:    []string{},
 		Suggests:    []string{"kafka"},
 		Templates:   []string{"components/hasura/helm"},
-		Skills:      []string{"setup-graphql", "new-migration"},
-		ClaudeMD:    []string{"graphql"},
+		ExtraTemplates: []TemplateMapping{
+			{Source: "components/hasura/root", Output: "."},
+		},
+		Skills:   []string{"setup-graphql", "new-migration"},
+		ClaudeMD: []string{"graphql"},
 	},
 	"dapr": {
 		Name:        "dapr",
