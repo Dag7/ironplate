@@ -4,12 +4,22 @@ import (
 	"bytes"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"text/template"
 
 	"github.com/dag7/ironplate/pkg/fsutil"
 )
+
+// filePermission returns the appropriate file permission for the given path.
+// Shell scripts get executable permission (0o755), all others get 0o644.
+func filePermission(path string) os.FileMode {
+	if strings.HasSuffix(path, ".sh") {
+		return 0o755
+	}
+	return 0o644
+}
 
 // Renderer handles template rendering with custom functions.
 type Renderer struct {
@@ -81,7 +91,7 @@ func (r *Renderer) RenderFile(tmplContent []byte, outputPath string, ctx interfa
 		return nil
 	}
 
-	return fsutil.WriteFile(outputPath, []byte(content), 0o644)
+	return fsutil.WriteFile(outputPath, []byte(content), filePermission(outputPath))
 }
 
 // RenderConcatFS renders all templates in a directory and concatenates them into a single output file.
@@ -198,6 +208,6 @@ func (r *Renderer) RenderFS(templateFS fs.FS, rootDir, outputDir string, ctx int
 			return r.RenderFile(content, outputPath, ctx)
 		}
 
-		return fsutil.WriteFile(outputPath, content, 0o644)
+		return fsutil.WriteFile(outputPath, content, filePermission(outputPath))
 	})
 }

@@ -1,12 +1,14 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # =============================================================================
 # {{ .Project.Metadata.Name }} - Post-create setup script
 # =============================================================================
 # Runs after the dev container is created.
-# Sources helper scripts, fixes permissions, and sets up the dev environment.
+# Sets up host config copying, volume permissions, and docker socket.
+#
+# NOTE: yarn install, go mod tidy, and package builds are handled by Tilt
+# (see utils/tilt/dev.utils.tilt). k3d cluster init is handled by
+# .devcontainer/k3s/init-cluster.sh.
 # =============================================================================
-
-echo "🚀 Setting up {{ .Project.Metadata.Name }} development environment..."
 
 # Set base path
 base_path="${GITHUB_WORKSPACE:-/workspaces/{{ .Project.Metadata.Name }}}"
@@ -19,6 +21,9 @@ source "$base_path/.devcontainer/scripts/set-docker-permissions.sh"
 # Pre-download package manager so Corepack doesn't prompt on first run (Node 24+ enables Corepack by default)
 corepack enable
 corepack prepare --activate
+{{ if eq .Project.Spec.Monorepo.PackageManager "yarn" -}}
+yarn config set --home enableTelemetry 0
+{{ end -}}
 {{ end -}}
 
 # Disable global git hooks in dev container
@@ -29,13 +34,13 @@ git config --global core.hooksPath /dev/null
 # ---------------------------------------------------------------------------
 {{ if eq .Project.Spec.Cloud.Provider "gcp" -}}
 if [ -d "/home/vscode/.config/gcloud" ]; then
-    echo "🔐 Fixing gcloud config volume permissions..."
+    echo "Fixing gcloud config volume permissions..."
     sudo chown -R vscode:vscode /home/vscode/.config/gcloud
 fi
-{{ end -}}
 
+{{ end -}}
 if [ -d "/home/vscode/.claude" ]; then
-    echo "🔐 Fixing Claude config volume permissions..."
+    echo "Fixing Claude config volume permissions..."
     sudo chown -R vscode:vscode /home/vscode/.claude
 fi
 
@@ -44,63 +49,3 @@ fi
 # ---------------------------------------------------------------------------
 set_docker_permissions
 copy_host_configs
-
-# ---------------------------------------------------------------------------
-# k3d cluster
-# ---------------------------------------------------------------------------
-CLUSTER_NAME="{{ .Project.Metadata.Name }}-cluster"
-echo "🔧 Checking k3d cluster: ${CLUSTER_NAME}..."
-
-if ! k3d cluster list | grep -q "${CLUSTER_NAME}"; then
-    echo "🔧 Creating k3d cluster..."
-    k3d cluster create --config .devcontainer/k3s/{{ .Project.Metadata.Name }}-cluster.config.yaml
-else
-    echo "✅ k3d cluster already exists"
-fi
-
-# Switch kubectl context
-kubectl config use-context "k3d-${CLUSTER_NAME}" 2>/dev/null || true
-
-# Create project namespace
-kubectl create namespace {{ .Project.Metadata.Name }} --dry-run=client -o yaml | kubectl apply -f -
-kubectl config set-context --current --namespace={{ .Project.Metadata.Name }}
-{{ if .Computed.HasNode }}
-# ---------------------------------------------------------------------------
-# Node.js dependencies
-# ---------------------------------------------------------------------------
-echo "📦 Installing Node.js dependencies..."
-{{ if eq .Project.Spec.Monorepo.PackageManager "yarn" -}}
-yarn config set --home enableTelemetry 0 2>/dev/null || true
-yarn install
-{{ else -}}
-pnpm install
-{{ end -}}
-{{ end -}}
-{{ if .Computed.HasGo }}
-# ---------------------------------------------------------------------------
-# Go workspace
-# ---------------------------------------------------------------------------
-echo "📦 Syncing Go workspace..."
-go work sync
-{{ end }}
-# ---------------------------------------------------------------------------
-# Install iron CLI + shell completion
-# ---------------------------------------------------------------------------
-if command -v go &> /dev/null; then
-    echo "📦 Installing iron CLI..."
-    go install github.com/dag7/ironplate/cmd/iron@latest
-    if command -v iron &> /dev/null; then
-        COMPLETION_FOLDER="/home/vscode/.oh-my-zsh/completions"
-        mkdir -p "$COMPLETION_FOLDER"
-        iron completion zsh > "$COMPLETION_FOLDER/_iron"
-        echo "✅ iron CLI installed with shell completion"
-    fi
-fi
-
-echo ""
-echo "✅ {{ .Project.Metadata.Name }} development environment is ready!"
-echo ""
-echo "Next steps:"
-echo "  • Run 'tilt up' to start the development environment"
-echo "  • Visit http://localhost:10350 for the Tilt dashboard"
-echo ""
