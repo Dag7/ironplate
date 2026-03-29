@@ -202,9 +202,13 @@ func RegisterServiceInRegistry(projectRoot string, ctx *engine.TemplateContext) 
 		return nil
 	}
 
-	labels := []string{"backend", svc.Group}
+	category := "backend"
 	if svc.Type == "nextjs" {
-		labels = []string{"frontend", svc.Group}
+		category = "frontend"
+	}
+	labels := []string{category}
+	if svc.Group != category {
+		labels = append(labels, svc.Group)
 	}
 
 	infraDepsMap := make(map[string]bool)

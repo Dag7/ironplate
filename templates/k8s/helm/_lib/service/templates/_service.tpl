@@ -122,6 +122,8 @@ spec:
           {{- /* Environment variables */}}
           env:
             {{- include "service.envVars" (list $svcConfig $root $svcName) | nindent 12 }}
+            - name: PORT
+              value: {{ $port | quote }}
 
           {{- /* EnvFrom (secrets + configmaps) */}}
           {{- $envFrom := include "service.secretRefs" $svcConfig }}

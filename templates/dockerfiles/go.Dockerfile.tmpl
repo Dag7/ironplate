@@ -64,7 +64,15 @@ RUN --mount=type=cache,id=${TARGET_NAME}-mod,target=/go/pkg/mod \
     go test ./...
 
 # -----------------------------------------------------------------------------
-# Stage 4: Debug with Delve
+# Stage 4: Development (local with hot reload via Tilt)
+# -----------------------------------------------------------------------------
+FROM alpine:3.19 AS development
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=builder /workspace/app /app
+ENTRYPOINT ["/app"]
+
+# -----------------------------------------------------------------------------
+# Stage 5: Debug with Delve (remote debugging via Delve)
 # -----------------------------------------------------------------------------
 FROM golang:{{ .Project.Spec.Monorepo.GoVersion }} AS delve
 ENV CGO_ENABLED=0
@@ -81,7 +89,7 @@ EXPOSE 40000
 CMD ["/dlv", "--listen=:40000", "--accept-multiclient", "--continue", "--headless=true", "--api-version=2", "exec", "/app"]
 
 # -----------------------------------------------------------------------------
-# Stage 5: Production (distroless)
+# Stage 6: Production (distroless)
 # -----------------------------------------------------------------------------
 FROM --platform=linux/${GOARCH} gcr.io/distroless/static:nonroot AS production
 WORKDIR /

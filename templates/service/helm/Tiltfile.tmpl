@@ -13,16 +13,15 @@ def setup_{{ snakeCase .Service.Group }}():
     Setup {{ .Service.Group }} services.
     Applies the rendered Helm YAML to K8s.
     """
-    chart_path = "k8s/helm/{{ .Project.Metadata.Name }}/{{ .Service.Group }}"
-    ensure_helm_deps(chart_path)
+    # ensure_helm_deps needs path from project root (it joins with config.main_dir)
+    ensure_helm_deps("k8s/helm/{{ .Project.Metadata.Name }}/{{ .Service.Group }}")
 
+    # helm() resolves relative to this Tiltfile's directory (which IS the chart dir)
     k8s_yaml(helm(
-        "./%s" % chart_path,
+        ".",
         name="{{ .Service.Group }}",
         namespace="{{ .Project.Metadata.Name }}",
-        values=[
-            "./%s/values.yaml" % chart_path
-        ]
+        values=["./values.yaml"]
     ))
 
 setup_{{ snakeCase .Service.Group }}()

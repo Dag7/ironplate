@@ -167,14 +167,15 @@ func (s *Scaffolder) buildSteps(ctx *engine.TemplateContext) []scaffoldStep {
 		})
 	}
 
-	// Helm library chart + ingress chart
+	// Helm library chart + ingress chart (under project dir so relative paths work)
+	projectHelmDir := fmt.Sprintf("k8s/helm/%s", s.cfg.Metadata.Name)
 	steps = append(steps, scaffoldStep{
 		"Generating Helm library chart",
-		s.stepRenderDirTo("k8s/helm/_lib", "k8s/helm/_lib", ctx),
+		s.stepRenderDirTo("k8s/helm/_lib", projectHelmDir+"/_lib", ctx),
 	})
 	steps = append(steps, scaffoldStep{
 		"Generating ingress chart",
-		s.stepRenderDirTo("k8s/helm/ingress", "k8s/helm/ingress", ctx),
+		s.stepRenderDirTo("k8s/helm/ingress", projectHelmDir+"/ingress", ctx),
 	})
 
 	// Local development manifests (postgres, redis, pgadmin, traefik)
