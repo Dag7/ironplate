@@ -1,0 +1,311 @@
+/**
+ * Kustomize Overlay Generator
+ *
+ * Generates Kustomize overlays for staging and production environments
+ * that extend the existing base configuration.
+ */
+
+import * as fs from "fs";
+import * as path from "path";
+import * as yaml from "yaml";
+import type { EnvironmentConfig, ServiceConfig } from "../config/types.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+interface KustomizationFile {
+  apiVersion: string;
+  kind: string;
+  metadata?: { name: string };
+  resources?: string[];
+  patches?: Array<{ path: string }>;
+  labels?: Array<{
+    pairs: Record<string, string>;
+    includeSelectors?: boolean;
+  }>;
+  configMapGenerator?: Array<{
+    name: string;
+    literals?: string[];
+  }>;
+}
+
+// =============================================================================
+// Generator Functions
+// =============================================================================
+
+/**
+ * Generate Kustomize overlay for an environment
+ */
+export function generateKustomizeOverlay(
+  config: EnvironmentConfig,
+  outputDir: string
+): void {
+  const overlayDir = path.join(outputDir, config.name);
+
+  // Create directory structure
+  fs.mkdirSync(path.join(overlayDir, "patches"), { recursive: true });
+  fs.mkdirSync(path.join(overlayDir, "config"), { recursive: true });
+
+  // Generate kustomization.yaml
+  generateKustomizationFile(config, overlayDir);
+
+  // Generate resource patches
+  generateResourcePatches(config, overlayDir);
+
+  // Generate HPA patches
+  generateHpaPatches(config, overlayDir);
+
+  // Generate config maps
+  generateConfigMaps(config, overlayDir);
+}
+
+/**
+ * Generate main kustomization.yaml
+ */
+function generateKustomizationFile(
+  config: EnvironmentConfig,
+  overlayDir: string
+): void {
+  const kustomization: KustomizationFile = {
+    apiVersion: "kustomize.config.k8s.io/v1beta1",
+    kind: "Kustomization",
+    metadata: {
+      name: `{{ .Project.Metadata.Name }}-${config.name}`
+    },
+    resources: ["../../_base"],
+    patches: [
+      { path: "patches/resources.yaml" },
+      { path: "patches/replicas.yaml" }
+    ],
+    labels: [
+      {
+        pairs: {
+          environment: config.name,
+          "app.kubernetes.io/managed-by": "pulumi"
+        },
+        includeSelectors: false
+      }
+    ],
+    configMapGenerator: [
+      {
+        name: `{{ .Project.Metadata.Name }}-${config.name}-config`,
+        literals: [
+          `ENVIRONMENT=${config.name}`,
+          `LOG_LEVEL=${config.name === "production" ? "info" : "debug"}`
+        ]
+      }
+    ]
+  };
+
+  // Add HPA patches for production
+  if (config.name === "production") {
+    kustomization.patches?.push({ path: "patches/hpa.yaml" });
+  }
+
+  const filePath = path.join(overlayDir, "kustomization.yaml");
+  fs.writeFileSync(filePath, yaml.stringify(kustomization));
+}
+
+/**
+ * Generate resource patches for service resource limits
+ */
+function generateResourcePatches(
+  config: EnvironmentConfig,
+  overlayDir: string
+): void {
+  const patches: object[] = [];
+
+  for (const service of config.services) {
+    patches.push({
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: {
+        name: service.name
+      },
+      spec: {
+        template: {
+          spec: {
+            containers: [
+              {
+                name: service.name,
+                resources: service.resources
+              }
+            ]
+          }
+        }
+      }
+    });
+  }
+
+  const filePath = path.join(overlayDir, "patches", "resources.yaml");
+  fs.writeFileSync(
+    filePath,
+    patches.map((p) => yaml.stringify(p)).join("---\n")
+  );
+}
+
+/**
+ * Generate replica count patches
+ */
+function generateReplicaPatches(
+  config: EnvironmentConfig,
+  overlayDir: string
+): void {
+  const patches: object[] = [];
+
+  for (const service of config.services) {
+    // Skip if HPA is enabled (HPA manages replicas)
+    if (service.hpa.enabled) {
+      continue;
+    }
+
+    patches.push({
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: {
+        name: service.name
+      },
+      spec: {
+        replicas: service.replicas
+      }
+    });
+  }
+
+  const filePath = path.join(overlayDir, "patches", "replicas.yaml");
+  fs.writeFileSync(
+    filePath,
+    patches.map((p) => yaml.stringify(p)).join("---\n")
+  );
+}
+
+/**
+ * Generate HPA patches
+ */
+function generateHpaPatches(
+  config: EnvironmentConfig,
+  overlayDir: string
+): void {
+  const hpas: object[] = [];
+
+  for (const service of config.services) {
+    if (!service.hpa.enabled) {
+      continue;
+    }
+
+    const metrics: object[] = [];
+
+    if (service.hpa.targetCpuUtilization) {
+      metrics.push({
+        type: "Resource",
+        resource: {
+          name: "cpu",
+          target: {
+            type: "Utilization",
+            averageUtilization: service.hpa.targetCpuUtilization
+          }
+        }
+      });
+    }
+
+    if (service.hpa.targetMemoryUtilization) {
+      metrics.push({
+        type: "Resource",
+        resource: {
+          name: "memory",
+          target: {
+            type: "Utilization",
+            averageUtilization: service.hpa.targetMemoryUtilization
+          }
+        }
+      });
+    }
+
+    hpas.push({
+      apiVersion: "autoscaling/v2",
+      kind: "HorizontalPodAutoscaler",
+      metadata: {
+        name: `${service.name}-hpa`,
+        labels: {
+          app: service.name,
+          environment: config.name
+        }
+      },
+      spec: {
+        scaleTargetRef: {
+          apiVersion: "apps/v1",
+          kind: "Deployment",
+          name: service.name
+        },
+        minReplicas: service.hpa.minReplicas,
+        maxReplicas: service.hpa.maxReplicas,
+        metrics: metrics,
+        behavior: {
+          scaleDown: {
+            stabilizationWindowSeconds:
+              service.hpa.scaleDownStabilizationWindowSeconds ?? 300
+          },
+          scaleUp: {
+            stabilizationWindowSeconds:
+              service.hpa.scaleUpStabilizationWindowSeconds ?? 0
+          }
+        }
+      }
+    });
+  }
+
+  if (hpas.length > 0) {
+    const filePath = path.join(overlayDir, "patches", "hpa.yaml");
+    fs.writeFileSync(
+      filePath,
+      hpas.map((h) => yaml.stringify(h)).join("---\n")
+    );
+  }
+}
+
+/**
+ * Generate ConfigMaps
+ */
+function generateConfigMaps(
+  config: EnvironmentConfig,
+  overlayDir: string
+): void {
+  const configMap = {
+    apiVersion: "v1",
+    kind: "ConfigMap",
+    metadata: {
+      name: `{{ .Project.Metadata.Name }}-${config.name}-env`
+    },
+    data: {
+      NODE_ENV: config.name === "production" ? "production" : "development",
+      LOG_LEVEL: config.name === "production" ? "info" : "debug",
+{{ if .Computed.HasHasura }}      HASURA_GRAPHQL_URL: "http://hasura:8080/v1/graphql",
+{{ end }}      FRONTEND_URL: `https://${config.domain.appSubdomain}.${config.domain.baseDomain}`
+    }
+  };
+
+  const filePath = path.join(overlayDir, "config", "configmap.yaml");
+  fs.writeFileSync(filePath, yaml.stringify(configMap));
+}
+
+// =============================================================================
+// CLI Entry Point
+// =============================================================================
+
+/**
+ * Generate overlays for all environments
+ */
+export function generateAllOverlays(baseOutputDir: string): void {
+  // Import service configs dynamically from the services config module
+  const { getEnvironmentConfigs } = require("../config/services.js");
+  const environments = getEnvironmentConfigs();
+
+  console.log("Generating Kustomize overlays...");
+
+  for (const envConfig of environments) {
+    generateKustomizeOverlay(envConfig, baseOutputDir);
+    console.log(`  ✓ Generated ${envConfig.name} overlay`);
+  }
+
+  console.log("Done!");
+}

@@ -1,0 +1,191 @@
+/**
+ * Service Configurations Factory
+ *
+ * Creates service configurations with environment-specific scaling.
+ * Follows the Factory Pattern for creating service configs.
+ *
+ * IMPORTANT: These configurations are used for:
+ * 1. Generating Kustomize overlays (staging/production)
+ * 2. Documentation and reference
+ *
+ * Pulumi does NOT deploy these services directly.
+ * Workloads are deployed via Tilt (dev/CI) or ArgoCD (production GitOps).
+ *
+ * Services are added here by `iron generate service`. Do not add entries manually.
+ */
+
+import type { Environment, ServiceConfig } from "./types.js";
+
+// =============================================================================
+// Base Service Definitions
+// =============================================================================
+
+interface BaseServiceDefinition {
+  name: string;
+  port: number;
+  targetPort: number;
+  healthCheck: {
+    readinessPath: string;
+    livenessPath: string;
+    initialDelaySeconds: number;
+    periodSeconds: number;
+  };
+  nodeSelector?: Record<string, string>;
+  secretRefs: string[];
+  env?: Record<string, string>;
+}
+
+/**
+ * Base service definitions for {{ .Project.Metadata.Name }}.
+ *
+ * Each entry describes a microservice's static properties (ports, health
+ * checks, secret references). Environment-specific scaling is defined
+ * separately in SERVICE_SCALING below.
+ *
+ * New services are appended by `iron generate service`. Example entry:
+ *
+ *   {
+ *     name: "my-service",
+ *     port: 80,
+ *     targetPort: 3000,
+ *     healthCheck: {
+ *       readinessPath: "/healthz",
+ *       livenessPath: "/healthz",
+ *       initialDelaySeconds: 5,
+ *       periodSeconds: 10
+ *     },
+ *     secretRefs: ["jwt-credentials"]
+ *   },
+ */
+const BASE_SERVICES: BaseServiceDefinition[] = [
+  // Services are added by `iron generate service` -- do not edit manually.
+];
+
+// =============================================================================
+// Environment-Specific Scaling
+// =============================================================================
+
+interface ScalingConfig {
+  replicas: number;
+  resources: {
+    requests: { memory: string; cpu: string };
+    limits: { memory: string; cpu: string };
+  };
+  hpa: {
+    enabled: boolean;
+    minReplicas: number;
+    maxReplicas: number;
+    targetCpuUtilization?: number;
+    targetMemoryUtilization?: number;
+  };
+}
+
+type ServiceScalingMap = Record<string, Record<Environment, ScalingConfig>>;
+
+/**
+ * Per-service, per-environment scaling configuration.
+ *
+ * Each key must match a `name` in BASE_SERVICES. Values define resource
+ * requests/limits, replica counts, and HPA settings for each environment.
+ *
+ * New entries are appended by `iron generate service`. Example:
+ *
+ *   "my-service": {
+ *     staging: {
+ *       replicas: 1,
+ *       resources: {
+ *         requests: { memory: "128Mi", cpu: "50m" },
+ *         limits: { memory: "512Mi", cpu: "500m" }
+ *       },
+ *       hpa: {
+ *         enabled: false,
+ *         minReplicas: 1,
+ *         maxReplicas: 3,
+ *         targetCpuUtilization: 70
+ *       }
+ *     },
+ *     production: {
+ *       replicas: 2,
+ *       resources: {
+ *         requests: { memory: "256Mi", cpu: "100m" },
+ *         limits: { memory: "512Mi", cpu: "500m" }
+ *       },
+ *       hpa: {
+ *         enabled: true,
+ *         minReplicas: 2,
+ *         maxReplicas: 6,
+ *         targetCpuUtilization: 70
+ *       }
+ *     }
+ *   },
+ */
+const SERVICE_SCALING: ServiceScalingMap = {
+  // Scaling configs are added by `iron generate service` -- do not edit manually.
+};
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+/**
+ * Create service configurations for a given environment.
+ *
+ * Merges each base service definition with its environment-specific scaling
+ * to produce a complete ServiceConfig array suitable for Kustomize overlay
+ * generation.
+ *
+ * @param environment - Target environment (e.g. "staging", "production")
+ * @returns Array of fully resolved service configurations
+ * @throws Error if a base service has no matching scaling entry
+ */
+export function createServiceConfigs(
+  environment: Environment
+): ServiceConfig[] {
+  return BASE_SERVICES.map((baseSvc): ServiceConfig => {
+    const scaling = SERVICE_SCALING[baseSvc.name]?.[environment];
+
+    if (!scaling) {
+      throw new Error(
+        `Missing scaling config for service: ${baseSvc.name} in ${environment}`
+      );
+    }
+
+    return {
+      name: baseSvc.name,
+      replicas: scaling.replicas,
+      resources: scaling.resources,
+      hpa: scaling.hpa,
+      nodeSelector: baseSvc.nodeSelector,
+      env: baseSvc.env,
+      secretRefs: baseSvc.secretRefs,
+      serviceType: "ClusterIP",
+      port: baseSvc.port,
+      targetPort: baseSvc.targetPort,
+      healthCheck: baseSvc.healthCheck
+    };
+  });
+}
+
+/**
+ * Get a specific service configuration by name.
+ *
+ * @param serviceName - The service name to look up
+ * @param environment - Target environment
+ * @returns The matching ServiceConfig, or undefined if not found
+ */
+export function getServiceConfig(
+  serviceName: string,
+  environment: Environment
+): ServiceConfig | undefined {
+  const configs = createServiceConfigs(environment);
+  return configs.find((svc) => svc.name === serviceName);
+}
+
+/**
+ * Get all registered service names.
+ *
+ * @returns Array of service name strings from BASE_SERVICES
+ */
+export function getServiceNames(): string[] {
+  return BASE_SERVICES.map((svc) => svc.name);
+}

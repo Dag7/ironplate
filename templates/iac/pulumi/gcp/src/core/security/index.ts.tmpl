@@ -1,0 +1,75 @@
+/**
+ * Security Module
+ *
+ * Exports Cloud Armor and IAP configurations.
+ * Provides unified factory functions that accept EnvironmentConfig.
+ *
+ * NOTE: As of July 2025, IAP OAuth Admin API is deprecated.
+ * OAuth clients can no longer be created programmatically.
+ * See iap.ts for migration details.
+ *
+ * IAP Credentials flow:
+ * 1. Add iap-credentials to _secrets/[env].json
+ * 2. Run: ./scripts/pulumi-secret-set.sh -e [env]
+ * 3. Secrets are created by SecretsGenerator in GCP Secret Manager
+ */
+
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+
+export * from "./cloud-armor.js";
+export * from "./iap.js";
+
+import { CloudArmorPolicy, createCloudArmorPolicy } from "./cloud-armor.js";
+import { IapInfra, createIapInfra } from "./iap.js";
+
+// =============================================================================
+// Unified Security Stack
+// =============================================================================
+
+export interface SecurityStackOutputs {
+  cloudArmor?: CloudArmorPolicy;
+  iap?: IapInfra;
+  cloudArmorPolicyName?: pulumi.Output<string>;
+}
+
+/**
+ * Create the security stack from EnvironmentConfig
+ *
+ * @param config - Environment configuration
+ * @param projectNumber - GCP project number (required for IAP IAM policy)
+ * @param opts - Pulumi resource options
+ */
+export function createSecurityStack(
+  config: EnvironmentConfig,
+  projectNumber?: pulumi.Input<string>,
+  opts?: pulumi.ComponentResourceOptions
+): SecurityStackOutputs {
+  const outputs: SecurityStackOutputs = {};
+
+  // Create Cloud Armor policy if enabled
+  if (config.security.cloudArmor.enabled) {
+    outputs.cloudArmor = createCloudArmorPolicy(
+      config.gcpProject,
+      config.name,
+      {
+        enablePlusTier: config.security.cloudArmor.enablePlusTier,
+        blockedCountries: config.security.cloudArmor.blockedCountries,
+        rateLimitPerIp: config.security.cloudArmor.rateLimitPerIp,
+        authRateLimitPerIp: config.security.cloudArmor.authRateLimitPerIp
+      },
+      opts
+    );
+    outputs.cloudArmorPolicyName = outputs.cloudArmor.policyName;
+  }
+
+  // Create IAP IAM policy if enabled and project number provided
+  // NOTE: IAP credentials (client-id, client-secret, cookie-secret) are now
+  // managed by SecretsGenerator via _secrets/[env].json files.
+  // This module only handles the GCP-native IAP IAM policies.
+  if (config.security.iap.enabled && projectNumber) {
+    outputs.iap = createIapInfra(config, projectNumber, opts);
+  }
+
+  return outputs;
+}

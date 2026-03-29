@@ -1,0 +1,215 @@
+/**
+ * Networking Module
+ *
+ * Complete networking stack for the {{ .Project.Metadata.Name }} platform,
+ * including VPC, subnets, Cloud NAT, private service connections,
+ * and firewall rules. This module orchestrates all networking
+ * sub-components with proper dependency ordering.
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { Vpc, createVpc } from "./vpc.js";
+import {
+  Subnets,
+  createSubnets,
+  PrivateServiceConnection,
+  createPrivateServiceConnection,
+} from "./subnets.js";
+import { CloudNat, createCloudNat } from "./nat.js";
+import { Firewall, createFirewall } from "./firewall.js";
+
+// Re-export all networking components for convenient access
+export * from "./vpc.js";
+export * from "./subnets.js";
+export * from "./nat.js";
+export * from "./firewall.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/** Arguments for creating the complete networking stack */
+export interface NetworkingStackArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+}
+
+/** Outputs exposed by the networking stack */
+export interface NetworkingStackOutputs {
+  /** VPC component */
+  vpc: Vpc;
+  /** Subnets component */
+  subnets: Subnets;
+  /** Cloud NAT component (created when networking.enableCloudNat is true) */
+  cloudNat?: CloudNat;
+  /** Private service connection for managed GCP services */
+  privateServiceConnection: PrivateServiceConnection;
+  /** Firewall rules component */
+  firewall: Firewall;
+}
+
+// =============================================================================
+// Networking Stack Component
+// =============================================================================
+
+/**
+ * Complete networking stack ComponentResource for the {{ .Project.Metadata.Name }} platform.
+ *
+ * Orchestrates the creation of all networking infrastructure in the
+ * correct dependency order:
+ *
+ * 1. **VPC** -- The foundation network
+ * 2. **Subnets** -- GKE and private services subnets (depends on VPC)
+ * 3. **Private Service Connection** -- VPC peering for managed services (depends on VPC)
+ * 4. **Cloud NAT** -- Outbound internet for private nodes (depends on VPC, conditional)
+ * 5. **Firewall** -- Ingress/egress rules (depends on VPC)
+ *
+ * Helper methods provide convenient access to commonly referenced
+ * resources for downstream consumers (GKE, databases, etc.).
+ *
+ * @example
+ * ```ts
+ * const networking = createNetworkingStack(config);
+ * const cluster = createCluster(config, networking.getNetwork(), networking.getGkeSubnet());
+ * ```
+ */
+export class NetworkingStack extends pulumi.ComponentResource {
+  public readonly vpc: Vpc;
+  public readonly subnets: Subnets;
+  public readonly cloudNat?: CloudNat;
+  public readonly privateServiceConnection: PrivateServiceConnection;
+  public readonly firewall: Firewall;
+
+  constructor(
+    name: string,
+    args: NetworkingStackArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super(
+      "{{ .Project.Metadata.Name }}:networking:NetworkingStack",
+      name,
+      {},
+      opts
+    );
+
+    const { config } = args;
+
+    // Step 1: Create VPC
+    this.vpc = createVpc(config, { parent: this });
+
+    // Step 2: Create Subnets (depends on VPC)
+    this.subnets = createSubnets(config, this.vpc.network, {
+      parent: this,
+      dependsOn: [this.vpc.network],
+    });
+
+    // Step 3: Create Private Service Connection (depends on VPC)
+    this.privateServiceConnection = createPrivateServiceConnection(
+      config,
+      this.vpc.network,
+      {
+        parent: this,
+        dependsOn: [this.vpc.network],
+      }
+    );
+
+    // Step 4: Create Cloud NAT (conditional, depends on VPC)
+    if (config.networking.enableCloudNat) {
+      this.cloudNat = createCloudNat(config, this.vpc.network, {
+        parent: this,
+        dependsOn: [this.vpc.network],
+      });
+    }
+
+    // Step 5: Create Firewall Rules (depends on VPC)
+    this.firewall = createFirewall(config, this.vpc.network, {
+      parent: this,
+      dependsOn: [this.vpc.network],
+    });
+
+    this.registerOutputs({
+      vpc: this.vpc,
+      subnets: this.subnets,
+      cloudNat: this.cloudNat,
+      privateServiceConnection: this.privateServiceConnection,
+      firewall: this.firewall,
+    });
+  }
+
+  /**
+   * Get the VPC network resource.
+   * Used by GKE, Cloud SQL, and other components that reference the VPC.
+   *
+   * @returns The VPC network resource
+   */
+  getNetwork(): gcp.compute.Network {
+    return this.vpc.network;
+  }
+
+  /**
+   * Get the GKE subnet resource.
+   * Used by the GKE cluster for node IP allocation and secondary ranges.
+   *
+   * @returns The GKE subnetwork resource
+   */
+  getGkeSubnet(): gcp.compute.Subnetwork {
+    return this.subnets.gkeSubnet;
+  }
+
+  /**
+   * Get the static external IP addresses used by Cloud NAT.
+   * Returns undefined if Cloud NAT is not enabled.
+   *
+   * @returns An output containing NAT IP addresses, or undefined
+   */
+  getNatIps(): pulumi.Output<string[]> | undefined {
+    return this.cloudNat?.getNatIps();
+  }
+
+  /**
+   * Get all networking resources for dependency management.
+   * Pass the returned array as `dependsOn` to downstream components
+   * that require the full networking stack to be ready.
+   *
+   * @returns Array of all networking resources
+   */
+  getAllResources(): pulumi.Resource[] {
+    const resources: pulumi.Resource[] = [
+      this.vpc.network,
+      this.subnets.gkeSubnet,
+      this.subnets.privateServicesSubnet,
+      this.privateServiceConnection.connection,
+      ...Object.values(this.firewall.rules),
+    ];
+
+    if (this.cloudNat) {
+      resources.push(this.cloudNat.nat);
+    }
+
+    return resources;
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+/**
+ * Creates the complete networking stack for the given environment.
+ *
+ * @param config - Environment configuration
+ * @param opts - Pulumi component resource options
+ * @returns A fully configured NetworkingStack component
+ */
+export function createNetworkingStack(
+  config: EnvironmentConfig,
+  opts?: pulumi.ComponentResourceOptions
+): NetworkingStack {
+  return new NetworkingStack(
+    `{{ .Project.Metadata.Name }}-networking-${config.name}`,
+    { config },
+    opts
+  );
+}

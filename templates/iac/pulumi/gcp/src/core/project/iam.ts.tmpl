@@ -1,85 +1,277 @@
+/**
+ * IAM Configuration Module
+ *
+ * Sets up IAM roles, service accounts, and permissions for the
+ * {{ .Project.Metadata.Name }} platform.
+ * Follows the principle of least privilege.
+ */
+
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
-import { projectId, stackName } from "../../config/loader";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { serviceAccountName, serviceAccountEmail } from "../../utils/naming.js";
+import { gcpLabels } from "../../utils/tags.js";
 
-export interface ServiceAccountOutputs {
-  /** GKE node service account */
-  nodeServiceAccount: gcp.serviceaccount.Account;
-  /** Application workload identity service account */
-  appServiceAccount: gcp.serviceaccount.Account;
-  /** CI/CD service account for GitHub Actions OIDC */
-  cicdServiceAccount: gcp.serviceaccount.Account;
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface WorkloadIdentityConfig {
+  /** Kubernetes namespace */
+  namespace: string;
+  /** Kubernetes service account name */
+  serviceAccountName: string;
+}
+
+export interface ServiceAccountConfig {
+  /** Service account name suffix */
+  name: string;
+  /** Display name */
+  displayName: string;
+  /** Description */
+  description: string;
+  /** IAM roles to grant */
+  roles: string[];
+  /** Whether to create a key for this SA */
+  createKey?: boolean;
+  /** Workload Identity binding configuration (optional) */
+  workloadIdentity?: WorkloadIdentityConfig;
+}
+
+export interface IamSetupArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** Service accounts to create */
+  serviceAccounts: ServiceAccountConfig[];
+}
+
+export interface IamSetupOutputs {
+  /** Created service accounts */
+  serviceAccounts: Record<string, gcp.serviceaccount.Account>;
+  /** Service account emails */
+  serviceAccountEmails: Record<string, pulumi.Output<string>>;
+  /** Service account keys (if created) */
+  serviceAccountKeys: Record<string, gcp.serviceaccount.Key>;
+}
+
+// =============================================================================
+// Default Service Accounts
+// =============================================================================
+
+export const DEFAULT_SERVICE_ACCOUNTS: ServiceAccountConfig[] = [
+  {
+    name: "gke-nodes",
+    displayName: "GKE Node Service Account",
+    description: "Service account for GKE nodes",
+    roles: [
+      "roles/logging.logWriter",
+      "roles/monitoring.metricWriter",
+      "roles/monitoring.viewer",
+      "roles/stackdriver.resourceMetadata.writer",
+      "roles/artifactregistry.reader"
+    ]
+  },
+{{- if .Computed.HasExternalSecrets }}
+  {
+    name: "external-secrets",
+    displayName: "External Secrets Operator",
+    description:
+      "Service account for External Secrets Operator to access Secret Manager",
+    roles: ["roles/secretmanager.secretAccessor"]
+  },
+{{- end }}
+  {
+    name: "cloud-sql-proxy",
+    displayName: "Cloud SQL Proxy",
+    description: "Service account for Cloud SQL Proxy connections",
+    roles: ["roles/cloudsql.client"]
+  },
+{{- if .Computed.HasObservability }}
+  {
+    name: "tempo",
+    displayName: "Grafana Tempo",
+    description: "Service account for Tempo to access GCS",
+    roles: ["roles/storage.objectAdmin"]
+  },
+{{- end }}
+  {
+    name: "artifact-pusher",
+    displayName: "Artifact Pusher",
+    description:
+      "Service account for CI/CD to push container images and deploy to GKE",
+    roles: [
+      "roles/artifactregistry.writer",
+      "roles/storage.objectCreator",
+      "roles/container.developer" // Required for kubectl access in CI/CD
+    ]
+  },
+{{- if .Computed.HasLangfuse }}
+  {
+    name: "langfuse",
+    displayName: "Langfuse LLM Observability",
+    description: "Service account for Langfuse to access GCS blob storage",
+    roles: [
+      "roles/storage.objectAdmin" // Required for blob storage (traces, media)
+    ],
+    // Workload Identity binding -- K8s SA to GCP SA
+    workloadIdentity: {
+      namespace: "{{ .Project.Metadata.Name }}",
+      serviceAccountName: "langfuse"
+    }
+  },
+{{- end }}
+];
+
+// =============================================================================
+// IAM Setup Component
+// =============================================================================
+
+export class IamSetup extends pulumi.ComponentResource {
+  public readonly serviceAccounts: Record<string, gcp.serviceaccount.Account>;
+  public readonly serviceAccountEmails: Record<string, pulumi.Output<string>>;
+  public readonly serviceAccountKeys: Record<string, gcp.serviceaccount.Key>;
+
+  constructor(
+    name: string,
+    args: IamSetupArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:core:IamSetup", name, {}, opts);
+
+    const { config, serviceAccounts } = args;
+    const labels = gcpLabels(config, "iam");
+
+    this.serviceAccounts = {};
+    this.serviceAccountEmails = {};
+    this.serviceAccountKeys = {};
+
+    for (const saConfig of serviceAccounts) {
+      const saName = serviceAccountName(config.envShortName, saConfig.name);
+      const resourceName = `${name}-${saConfig.name}`;
+
+      // Create service account
+      const sa = new gcp.serviceaccount.Account(
+        resourceName,
+        {
+          accountId: saName,
+          displayName: saConfig.displayName,
+          description: saConfig.description,
+          project: config.gcpProject
+        },
+        { parent: this }
+      );
+
+      this.serviceAccounts[saConfig.name] = sa;
+      this.serviceAccountEmails[saConfig.name] = sa.email;
+
+      // Grant IAM roles
+      for (let i = 0; i < saConfig.roles.length; i++) {
+        const role = saConfig.roles[i];
+        if (!role) continue;
+
+        new gcp.projects.IAMMember(
+          `${resourceName}-role-${i}`,
+          {
+            project: config.gcpProject,
+            role: role,
+            member: pulumi.interpolate`serviceAccount:${sa.email}`
+          },
+          { parent: this }
+        );
+      }
+
+      // Create key if requested
+      if (saConfig.createKey) {
+        const key = new gcp.serviceaccount.Key(
+          `${resourceName}-key`,
+          {
+            serviceAccountId: sa.name
+          },
+          { parent: this }
+        );
+        this.serviceAccountKeys[saConfig.name] = key;
+      }
+    }
+
+    this.registerOutputs({
+      serviceAccounts: this.serviceAccounts,
+      serviceAccountEmails: this.serviceAccountEmails,
+      serviceAccountKeys: this.serviceAccountKeys
+    });
+  }
+
+  /**
+   * Get a service account email by name
+   */
+  getServiceAccountEmail(name: string): pulumi.Output<string> | undefined {
+    return this.serviceAccountEmails[name];
+  }
+
+  /**
+   * Get all service accounts for GKE node configuration
+   */
+  getGkeNodeServiceAccount(): pulumi.Output<string> | undefined {
+    return this.serviceAccountEmails["gke-nodes"];
+  }
+}
+
+// =============================================================================
+// Workload Identity Binding
+// =============================================================================
+
+export interface WorkloadIdentityBindingArgs {
+  /** GCP project ID */
+  project: string;
+  /** GCP service account */
+  gcpServiceAccount: gcp.serviceaccount.Account;
+  /** Kubernetes namespace */
+  namespace: string;
+  /** Kubernetes service account name */
+  k8sServiceAccount: string;
 }
 
 /**
- * Creates IAM service accounts and role bindings for the
- * {{ .Project.Metadata.Name }} project.
+ * Create a Workload Identity binding between a K8s SA and GCP SA
  */
-export function createServiceAccounts(
-  dependsOn: pulumi.Resource[] = [],
-): ServiceAccountOutputs {
-  // ── GKE Node Service Account ──────────────────────────────────────
-  const nodeServiceAccount = new gcp.serviceaccount.Account("gke-node-sa", {
-    accountId: `{{ .Project.Metadata.Name }}-${stackName}-gke-node`,
-    displayName: `GKE Node SA (${stackName})`,
-    project: projectId,
-  }, { dependsOn });
+export function createWorkloadIdentityBinding(
+  name: string,
+  args: WorkloadIdentityBindingArgs,
+  opts?: pulumi.ResourceOptions
+): gcp.serviceaccount.IAMMember {
+  const { project, gcpServiceAccount, namespace, k8sServiceAccount } = args;
 
-  const nodeRoles = [
-    "roles/logging.logWriter",
-    "roles/monitoring.metricWriter",
-    "roles/monitoring.viewer",
-    "roles/artifactregistry.reader",
-  ];
+  return new gcp.serviceaccount.IAMMember(
+    name,
+    {
+      serviceAccountId: gcpServiceAccount.name,
+      role: "roles/iam.workloadIdentityUser",
+      member: pulumi.interpolate`serviceAccount:${project}.svc.id.goog[${namespace}/${k8sServiceAccount}]`
+    },
+    opts
+  );
+}
 
-  nodeRoles.forEach((role, index) => {
-    new gcp.projects.IAMMember(`gke-node-role-${index}`, {
-      project: projectId,
-      role,
-      member: pulumi.interpolate`serviceAccount:${nodeServiceAccount.email}`,
-    });
-  });
+// =============================================================================
+// Factory Function
+// =============================================================================
 
-  // ── Application Service Account (Workload Identity) ───────────────
-  const appServiceAccount = new gcp.serviceaccount.Account("app-sa", {
-    accountId: `{{ .Project.Metadata.Name }}-${stackName}-app`,
-    displayName: `Application SA (${stackName})`,
-    project: projectId,
-  }, { dependsOn });
-
-  // Allow GKE workloads in the project namespace to impersonate this SA
-  new gcp.serviceaccount.IAMBinding("app-sa-workload-identity", {
-    serviceAccountId: appServiceAccount.name,
-    role: "roles/iam.workloadIdentityUser",
-    members: [
-      pulumi.interpolate`serviceAccount:${projectId}.svc.id.goog[{{ .Project.Metadata.Name }}/{{ .Project.Metadata.Name }}-app]`,
-    ],
-  });
-
-  // ── CI/CD Service Account (GitHub Actions OIDC) ───────────────────
-  const cicdServiceAccount = new gcp.serviceaccount.Account("cicd-sa", {
-    accountId: `{{ .Project.Metadata.Name }}-${stackName}-cicd`,
-    displayName: `CI/CD SA for GitHub Actions (${stackName})`,
-    project: projectId,
-  }, { dependsOn });
-
-  const cicdRoles = [
-    "roles/container.developer",
-    "roles/artifactregistry.writer",
-    "roles/iam.serviceAccountTokenCreator",
-  ];
-
-  cicdRoles.forEach((role, index) => {
-    new gcp.projects.IAMMember(`cicd-role-${index}`, {
-      project: projectId,
-      role,
-      member: pulumi.interpolate`serviceAccount:${cicdServiceAccount.email}`,
-    });
-  });
-
-  return {
-    nodeServiceAccount,
-    appServiceAccount,
-    cicdServiceAccount,
-  };
+/**
+ * Create IAM setup with default service accounts
+ */
+export function createIamSetup(
+  config: EnvironmentConfig,
+  additionalServiceAccounts: ServiceAccountConfig[] = [],
+  opts?: pulumi.ComponentResourceOptions
+): IamSetup {
+  return new IamSetup(
+    `{{ .Project.Metadata.Name }}-iam-${config.name}`,
+    {
+      config,
+      serviceAccounts: [
+        ...DEFAULT_SERVICE_ACCOUNTS,
+        ...additionalServiceAccounts
+      ]
+    },
+    opts
+  );
 }

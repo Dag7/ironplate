@@ -1,0 +1,283 @@
+/**
+ * Cloud DNS Management
+ *
+ * Creates and manages Cloud DNS zones and records for the {{ .Project.Metadata.Name }} platform.
+ * Each environment has its own isolated DNS zone.
+ *
+ * DNS Structure (Subdomain Delegation):
+ *   Production: {{ .Project.Metadata.Domain }} zone -> {{ .Project.Metadata.Domain }}, *.{{ .Project.Metadata.Domain }}
+ *   Staging: staging.{{ .Project.Metadata.Domain }} zone -> staging.{{ .Project.Metadata.Domain }}, *.staging.{{ .Project.Metadata.Domain }}
+ *
+ * Registrar Configuration:
+ *   - Production: Main nameservers point to production zone
+ *   - Staging: NS records for "staging" subdomain point to staging zone
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface CloudDnsArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+}
+
+// =============================================================================
+// Component
+// =============================================================================
+
+export class CloudDns extends pulumi.ComponentResource {
+  public readonly managedZone: gcp.dns.ManagedZone;
+  public readonly zoneName: pulumi.Output<string>;
+  public readonly nameServers: pulumi.Output<string[]>;
+  public readonly dnsName: string;
+  private config: EnvironmentConfig;
+  private project: string;
+  private baseDomain: string;
+
+  constructor(
+    name: string,
+    args: CloudDnsArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:core:CloudDns", name, {}, opts);
+
+    this.config = args.config;
+    this.project = args.config.gcpProject;
+    this.baseDomain = args.config.dns.domain.replace(/\.$/, "");
+
+    // Determine the DNS name for this environment's zone using config
+    // Production (no envSubdomain): {{ .Project.Metadata.Domain }}
+    // Staging (envSubdomain: "staging"): staging.{{ .Project.Metadata.Domain }}
+    this.dnsName = this.config.domain.envSubdomain
+      ? `${this.config.domain.envSubdomain}.${this.baseDomain}`
+      : this.baseDomain;
+
+    // Zone name (must be unique per project)
+    // Production: {{ .Project.Metadata.Domain | replace "." "-" }}
+    // Staging: staging-{{ .Project.Metadata.Domain | replace "." "-" }}
+    const zoneNameStr = this.dnsName.replace(/\./g, "-");
+
+    // Create the managed zone for this environment
+    this.managedZone = new gcp.dns.ManagedZone(
+      `${name}-zone`,
+      {
+        project: this.project,
+        name: zoneNameStr,
+        dnsName: `${this.dnsName}.`,
+        description: `DNS zone for ${this.dnsName} - {{ .Project.Metadata.Name }} ${this.config.name}`,
+        visibility: "public",
+        dnssecConfig: args.config.dns.enableDnssec
+          ? {
+              state: "on",
+              defaultKeySpecs: [
+                {
+                  algorithm: "rsasha256",
+                  keyLength: 2048,
+                  keyType: "keySigning"
+                },
+                {
+                  algorithm: "rsasha256",
+                  keyLength: 1024,
+                  keyType: "zoneSigning"
+                }
+              ]
+            }
+          : { state: "off" },
+        labels: {
+          environment: args.config.name,
+          "managed-by": "pulumi"
+        }
+      },
+      { parent: this }
+    );
+
+    this.zoneName = this.managedZone.name;
+    this.nameServers = this.managedZone.nameServers;
+
+    // Add CAA records for Let's Encrypt
+    this.addCaaRecords();
+
+    // Add custom records from config (email verification, SPF, DKIM, etc.)
+    this.addCustomRecords();
+
+    this.registerOutputs({
+      zoneName: this.zoneName,
+      nameServers: this.nameServers,
+      dnsName: this.dnsName
+    });
+  }
+
+  /**
+   * Add custom DNS records from configuration
+   * Used for email verification (DKIM, SPF, DMARC), etc.
+   */
+  private addCustomRecords(): void {
+    const customRecords = this.config.dns.customRecords;
+    if (!customRecords || customRecords.length === 0) {
+      return;
+    }
+
+    for (const record of customRecords) {
+      const subdomain = record.name || "";
+      const fqdn = subdomain
+        ? `${subdomain}.${this.dnsName}.`
+        : `${this.dnsName}.`;
+
+      // Create unique resource name from subdomain and type
+      const safeName = subdomain.replace(/[._]/g, "-") || "apex";
+      const resourceName = `${this.dnsName.replace(/\./g, "-")}-${safeName}-${record.type.toLowerCase()}`;
+
+      // Format rrdatas based on record type
+      let rrdatas: string[];
+      if (record.type === "MX") {
+        // MX records need priority prefix and trailing dot for FQDN
+        const priority = record.priority ?? 10;
+        const values = Array.isArray(record.value)
+          ? record.value
+          : [record.value];
+        rrdatas = values.map((v) => {
+          const fqdn = v.endsWith(".") ? v : `${v}.`;
+          return `${priority} ${fqdn}`;
+        });
+      } else if (record.type === "TXT") {
+        // TXT records need quotes
+        const values = Array.isArray(record.value)
+          ? record.value
+          : [record.value];
+        rrdatas = values.map((v) => `"${v}"`);
+      } else {
+        rrdatas = Array.isArray(record.value) ? record.value : [record.value];
+      }
+
+      new gcp.dns.RecordSet(
+        resourceName,
+        {
+          project: this.project,
+          managedZone: this.zoneName,
+          name: fqdn,
+          type: record.type,
+          ttl: record.ttl ?? 300,
+          rrdatas: rrdatas
+        },
+        { parent: this }
+      );
+    }
+  }
+
+  /**
+   * Add CAA records for Let's Encrypt certificate issuance
+   */
+  private addCaaRecords(): void {
+    new gcp.dns.RecordSet(
+      `${this.dnsName.replace(/\./g, "-")}-caa`,
+      {
+        project: this.project,
+        managedZone: this.zoneName,
+        name: `${this.dnsName}.`,
+        type: "CAA",
+        ttl: 3600,
+        rrdatas: [
+          '0 issue "letsencrypt.org"',
+          '0 issuewild "letsencrypt.org"',
+          `0 iodef "mailto:${this.config.dns.acmeEmail}"`
+        ]
+      },
+      { parent: this }
+    );
+  }
+
+  /**
+   * Configure DNS records for this environment pointing to the ingress static IP
+   *
+   * Each environment manages its own zone:
+   *   Production zone ({{ .Project.Metadata.Domain }}): {{ .Project.Metadata.Domain }} + *.{{ .Project.Metadata.Domain }} -> IP
+   *   Staging zone (staging.{{ .Project.Metadata.Domain }}): staging.{{ .Project.Metadata.Domain }} + *.staging.{{ .Project.Metadata.Domain }} -> IP
+   *
+   * @param ingressIp - The static IP reserved for the ingress LoadBalancer
+   */
+  configureEnvironmentRecords(ingressIp: pulumi.Input<string>): void {
+    const zonePrefix = this.dnsName.replace(/\./g, "-");
+
+    // Apex record for this zone
+    new gcp.dns.RecordSet(
+      `${zonePrefix}-apex`,
+      {
+        project: this.project,
+        managedZone: this.zoneName,
+        name: `${this.dnsName}.`,
+        type: "A",
+        ttl: 300,
+        rrdatas: [ingressIp]
+      },
+      { parent: this }
+    );
+
+    // Wildcard record for this zone
+    new gcp.dns.RecordSet(
+      `${zonePrefix}-wildcard`,
+      {
+        project: this.project,
+        managedZone: this.zoneName,
+        name: `*.${this.dnsName}.`,
+        type: "A",
+        ttl: 300,
+        rrdatas: [ingressIp]
+      },
+      { parent: this }
+    );
+  }
+
+  /**
+   * Add a custom DNS record (for special cases like MX, TXT)
+   */
+  addRecord(
+    subdomain: string,
+    type: "A" | "AAAA" | "CNAME" | "TXT" | "MX",
+    rrdatas: pulumi.Input<string>[],
+    ttl: number = 300
+  ): gcp.dns.RecordSet {
+    const fqdn = subdomain
+      ? `${subdomain}.${this.dnsName}.`
+      : `${this.dnsName}.`;
+    const recordName = `${subdomain || "apex"}-${type}`.toLowerCase();
+
+    return new gcp.dns.RecordSet(
+      `${this.dnsName.replace(/\./g, "-")}-${recordName}`,
+      {
+        project: this.project,
+        managedZone: this.zoneName,
+        name: fqdn,
+        type: type,
+        ttl: ttl,
+        rrdatas: rrdatas
+      },
+      { parent: this }
+    );
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+/**
+ * Create DNS infrastructure for an environment
+ *
+ * Each environment gets its own DNS zone:
+ *   - Production: Zone for {{ .Project.Metadata.Domain }}
+ *   - Staging: Zone for staging.{{ .Project.Metadata.Domain }} (requires subdomain delegation at registrar)
+ *
+ * @param config - Environment configuration
+ * @param opts - Pulumi resource options
+ */
+export function createDnsInfrastructure(
+  config: EnvironmentConfig,
+  opts?: pulumi.ComponentResourceOptions
+): CloudDns {
+  return new CloudDns(`{{ .Project.Metadata.Name }}-dns-${config.name}`, { config }, opts);
+}

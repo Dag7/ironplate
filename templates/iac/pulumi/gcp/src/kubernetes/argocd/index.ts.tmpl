@@ -1,0 +1,923 @@
+{{ if .Computed.HasArgoCD }}/**
+ * ArgoCD GitOps Controller Module
+ *
+ * Deploys ArgoCD with:
+ * - Helm chart installation with HA configuration
+ * - IAP protection via OAuth2 Proxy + Traefik ForwardAuth
+ * - Admin credentials stored in GCP Secret Manager
+ * - GitHub webhook for instant sync triggers
+ * - Slack notifications for deployment events
+ * - ArgoCD Image Updater for automatic image tag updates
+ * - Role-based access control with Google Groups integration
+ * - Node scheduling on infra nodes (non-spot, reliable)
+ *
+ * Architecture:
+ *   User -> argocd.{{ .Project.Metadata.Domain }} -> Traefik -> OAuth2 Proxy (IAP) -> ArgoCD Server
+ *   GitHub -> webhook -> ArgoCD -> Sync -> Kubernetes
+ *   Artifact Registry -> Image Updater -> Git commit -> ArgoCD -> Sync
+ *
+ * @see https://argo-cd.readthedocs.io/
+ * @see https://argocd-image-updater.readthedocs.io/
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as k8s from "@pulumi/kubernetes";
+import * as pulumi from "@pulumi/pulumi";
+import * as random from "@pulumi/random";
+import type { ArgoCDConfig, EnvironmentConfig } from "../../config/types.js";
+import { getImageUpdaterHelmValues } from "../../core/project/argocd-image-updater-iam.js";
+import { k8sLabels } from "../../utils/tags.js";
+
+// =============================================================================
+// Types (Re-export from config/types.ts)
+// =============================================================================
+
+export type {
+  ArgoCDConfig,
+  ArgoCDImageUpdaterConfig,
+  ArgoCDNotificationsConfig,
+  ArgoCDRbacConfig,
+  ArgoCDWebhookConfig
+} from "../../config/types.js";
+
+export interface ArgoCDArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** ArgoCD specific configuration */
+  argocdConfig: ArgoCDConfig;
+  /** Kubernetes provider */
+  k8sProvider: k8s.Provider;
+  /** ArgoCD namespace */
+  namespace: k8s.core.v1.Namespace;
+  /** Application namespace (for IngressRoutes and where apps deploy) */
+  appNamespace: k8s.core.v1.Namespace;
+}
+
+// =============================================================================
+// ArgoCD Component
+// =============================================================================
+
+export class ArgoCD extends pulumi.ComponentResource {
+  /** ArgoCD Helm release */
+  public readonly helmRelease: k8s.helm.v3.Release;
+  /** ArgoCD admin password Secret Manager ID */
+  public readonly adminPasswordSecretId: pulumi.Output<string>;
+  /** ArgoCD webhook secret Secret Manager ID */
+  public readonly webhookSecretId?: pulumi.Output<string>;
+  /** ArgoCD server URL */
+  public readonly serverUrl: pulumi.Output<string>;
+  /** Webhook URL for GitHub */
+  public readonly webhookUrl?: pulumi.Output<string>;
+  /** IngressRoute for ArgoCD UI */
+  public readonly ingressRoute: k8s.apiextensions.CustomResource;
+  /** ArgoCD Projects for staging/production */
+  public readonly projects: Record<string, k8s.apiextensions.CustomResource>;
+  /** Image Updater Helm release (if enabled) */
+  public readonly imageUpdaterRelease?: k8s.helm.v3.Release;
+
+  constructor(
+    name: string,
+    args: ArgoCDArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:kubernetes:ArgoCD", name, {}, opts);
+
+    const { config, argocdConfig, k8sProvider, namespace, appNamespace } = args;
+    const fqdn = `${argocdConfig.subdomain}.${config.domain.baseDomain}`;
+
+    // Labels for ArgoCD - IMPORTANT:
+    // 1. Do NOT include app.kubernetes.io/component (chart sets component-specific labels)
+    // 2. Do NOT override app.kubernetes.io/part-of (ArgoCD's informer filters by "argocd")
+    // Only add labels that don't conflict with chart's internal label filtering
+    const labels: Record<string, string> = {
+      environment: config.name
+    };
+
+    // Full labels for non-Helm resources (IngressRoute, Projects)
+    const resourceLabels = k8sLabels(config, "argocd");
+
+    // Node selector for workload placement
+    const nodeSelector = argocdConfig.useInfraNodes
+      ? { "workload-type": "infra" }
+      : {};
+
+    // Tolerations for infra node pool
+    const tolerations = argocdConfig.useInfraNodes
+      ? [
+          {
+            key: "workload-type",
+            operator: "Equal",
+            value: "infra",
+            effect: "NoSchedule"
+          }
+        ]
+      : [];
+
+    // ==========================================================================
+    // Generate Secrets
+    // ==========================================================================
+
+    // Admin password
+    const adminPassword = new random.RandomPassword(
+      `${name}-admin-password`,
+      {
+        length: 32,
+        special: true,
+        upper: true,
+        lower: true,
+        numeric: true,
+        overrideSpecial: "!@#$%&*()-_=+"
+      },
+      { parent: this }
+    );
+
+    // Webhook secret for GitHub
+    const webhookSecret = argocdConfig.webhook.enabled
+      ? new random.RandomPassword(
+          `${name}-webhook-secret`,
+          {
+            length: 40,
+            special: false,
+            upper: true,
+            lower: true,
+            numeric: true
+          },
+          { parent: this }
+        )
+      : undefined;
+
+    // ==========================================================================
+    // Store Secrets in GCP Secret Manager
+    // ==========================================================================
+
+    // Admin password secret
+    const adminPasswordGcpSecret = new gcp.secretmanager.Secret(
+      `${name}-admin-password-secret`,
+      {
+        secretId: "argocd-admin-password",
+        project: config.gcpProject,
+        replication: { auto: {} },
+        labels: { component: "argocd", "managed-by": "pulumi" }
+      },
+      { parent: this }
+    );
+
+    new gcp.secretmanager.SecretVersion(
+      `${name}-admin-password-version`,
+      {
+        secret: adminPasswordGcpSecret.id,
+        secretData: pulumi.secret(adminPassword.result)
+      },
+      { parent: this, dependsOn: [adminPasswordGcpSecret] }
+    );
+
+    this.adminPasswordSecretId = adminPasswordGcpSecret.secretId;
+
+    // Webhook secret (if enabled)
+    if (webhookSecret && argocdConfig.webhook.enabled) {
+      const webhookGcpSecret = new gcp.secretmanager.Secret(
+        `${name}-webhook-secret`,
+        {
+          secretId: "argocd-webhook-secret",
+          project: config.gcpProject,
+          replication: { auto: {} },
+          labels: { component: "argocd", "managed-by": "pulumi" }
+        },
+        { parent: this }
+      );
+
+      new gcp.secretmanager.SecretVersion(
+        `${name}-webhook-secret-version`,
+        {
+          secret: webhookGcpSecret.id,
+          secretData: pulumi.secret(webhookSecret.result)
+        },
+        { parent: this, dependsOn: [webhookGcpSecret] }
+      );
+
+      this.webhookSecretId = webhookGcpSecret.secretId;
+    }
+
+    // ==========================================================================
+    // Slack Credentials (for notifications - passed via Helm values)
+    // ==========================================================================
+    const slackCredentials = config.secrets.credentials?.["slack-credentials"];
+
+    // ==========================================================================
+    // Build RBAC Policy
+    // ==========================================================================
+    const rbacPolicy = buildRbacPolicy(argocdConfig.rbac, config.name);
+
+    // ==========================================================================
+    // Deploy ArgoCD via Helm
+    // ==========================================================================
+    const replicas = argocdConfig.replicas;
+
+    this.helmRelease = new k8s.helm.v3.Release(
+      `${name}-argocd`,
+      {
+        name: "argocd",
+        namespace: namespace.metadata.name,
+        chart: "argo-cd",
+        repositoryOpts: {
+          repo: "https://argoproj.github.io/argo-helm"
+        },
+        version: argocdConfig.version,
+        values: {
+          // =====================================================================
+          // Global Settings
+          // =====================================================================
+          global: {
+            domain: fqdn,
+            nodeSelector: nodeSelector,
+            tolerations: tolerations,
+            additionalLabels: labels
+          },
+
+          // =====================================================================
+          // Server (UI + API)
+          // =====================================================================
+          server: {
+            ingress: { enabled: false },
+            extraArgs: ["--insecure"],
+            replicas: replicas,
+            resources: argocdConfig.serverResources,
+            service: { type: "ClusterIP" },
+            pdb: { enabled: argocdConfig.pdbEnabled, minAvailable: 1 },
+            nodeSelector: nodeSelector,
+            tolerations: tolerations
+          },
+
+          // =====================================================================
+          // Controller (Sync engine)
+          // =====================================================================
+          controller: {
+            replicas: replicas,
+            resources: argocdConfig.controllerResources,
+            pdb: { enabled: argocdConfig.pdbEnabled, minAvailable: 1 },
+            nodeSelector: nodeSelector,
+            tolerations: tolerations
+          },
+
+          // =====================================================================
+          // Repo Server (Git operations)
+          // =====================================================================
+          repoServer: {
+            replicas: replicas,
+            resources: argocdConfig.repoServerResources,
+            pdb: { enabled: argocdConfig.pdbEnabled, minAvailable: 1 },
+            nodeSelector: nodeSelector,
+            tolerations: tolerations
+          },
+
+          // =====================================================================
+          // ApplicationSet Controller
+          // =====================================================================
+          applicationSet: {
+            enabled: true,
+            replicas: argocdConfig.applicationSetReplicas,
+            nodeSelector: nodeSelector,
+            tolerations: tolerations
+          },
+
+          // =====================================================================
+          // Notifications Controller
+          // =====================================================================
+          notifications: {
+            enabled: argocdConfig.notifications.enabled,
+            nodeSelector: nodeSelector,
+            tolerations: tolerations,
+            ...(argocdConfig.notifications.enabled &&
+              slackCredentials && {
+                secret: {
+                  items: {
+                    "slack-token": slackCredentials.apply(
+                      (creds) => creds?.["slack-bot-token"] ?? ""
+                    )
+                  }
+                }
+              })
+          },
+
+          // =====================================================================
+          // Redis
+          // =====================================================================
+          redis: {
+            enabled: !argocdConfig.redisHa,
+            resources: {
+              requests: { cpu: "100m", memory: "128Mi" },
+              limits: { cpu: "500m", memory: "256Mi" }
+            },
+            nodeSelector: nodeSelector,
+            tolerations: tolerations
+          },
+
+          "redis-ha": {
+            enabled: argocdConfig.redisHa,
+            haproxy: { enabled: argocdConfig.redisHa }
+          },
+
+          // =====================================================================
+          // Dex (SSO) - Disabled, we use IAP
+          // =====================================================================
+          dex: { enabled: false },
+
+          // =====================================================================
+          // Configs
+          // =====================================================================
+          configs: {
+            // Credential templates for repository access
+            ...(argocdConfig.repositoryCredentials?.githubApp && {
+              credentialTemplates: {
+                "github-app": {
+                  url: "https://github.com",
+                  githubAppID:
+                    argocdConfig.repositoryCredentials.githubApp.appId,
+                  githubAppInstallationID:
+                    argocdConfig.repositoryCredentials.githubApp.installationId,
+                  githubAppPrivateKey:
+                    argocdConfig.repositoryCredentials.githubApp.privateKey
+                }
+              }
+            }),
+            ...(!argocdConfig.repositoryCredentials?.githubApp &&
+              argocdConfig.repositoryCredentials?.githubToken && {
+                credentialTemplates: {
+                  "github-https": {
+                    url: "https://github.com",
+                    username: "git",
+                    password: argocdConfig.repositoryCredentials.githubToken
+                  }
+                }
+              }),
+
+            // Repository definitions
+            repositories: argocdConfig.allowedRepositories.reduce(
+              (acc, repo, idx) => ({
+                ...acc,
+                [`repo-${idx}`]: {
+                  url: repo,
+                  type: "git",
+                  name:
+                    repo.split("/").pop()?.replace(".git", "") || `repo-${idx}`
+                }
+              }),
+              {} as Record<string, { url: string; type: string; name: string }>
+            ),
+
+            // ConfigMap settings
+            cm: {
+              url: `https://${fqdn}`,
+              "kustomize.buildOptions": "--enable-helm",
+              "application.resourceTrackingMethod": "annotation",
+              "accounts.admin": "apiKey, login",
+              "server.rbac.disableApplicationFineGrainedRBACInheritance":
+                "false"
+            },
+
+            // RBAC configuration
+            rbac: rbacPolicy,
+
+            // Parameters
+            params: {
+              "server.insecure": "true",
+              "server.enable.gzip": "true",
+              ...(argocdConfig.webhook.enabled && {
+                "webhook.github.enabled": "true"
+              })
+            },
+
+            // Secrets
+            secret: {
+              argocdServerAdminPassword: adminPassword.bcryptHash,
+              ...(webhookSecret && {
+                "webhook.github.secret": webhookSecret.result
+              })
+            },
+
+            // Notifications configuration
+            ...(argocdConfig.notifications.enabled &&
+              buildNotificationsConfig(argocdConfig.notifications, config.name))
+          }
+        }
+      },
+      { parent: this, provider: k8sProvider }
+    );
+
+    this.serverUrl = pulumi.output(`https://${fqdn}`);
+    if (argocdConfig.webhook.enabled) {
+      this.webhookUrl = pulumi.output(`https://${fqdn}/api/webhook`);
+    }
+
+    // ==========================================================================
+    // Create Traefik IngressRoute with IAP Protection
+    // ==========================================================================
+    const middlewares = argocdConfig.enableIap
+      ? [
+          { name: "iap-errors", namespace: appNamespace.metadata.name },
+          { name: "iap-auth", namespace: appNamespace.metadata.name },
+          { name: "security-headers", namespace: appNamespace.metadata.name }
+        ]
+      : [{ name: "security-headers", namespace: appNamespace.metadata.name }];
+
+    this.ingressRoute = new k8s.apiextensions.CustomResource(
+      `${name}-ingress-route`,
+      {
+        apiVersion: "traefik.io/v1alpha1",
+        kind: "IngressRoute",
+        metadata: {
+          name: "argocd",
+          namespace: appNamespace.metadata.name,
+          labels: resourceLabels
+        },
+        spec: {
+          entryPoints: ["websecure"],
+          routes: [
+            // Webhook endpoint - bypass IAP for GitHub webhooks
+            ...(argocdConfig.webhook.enabled
+              ? [
+                  {
+                    match: `Host(\`${fqdn}\`) && PathPrefix(\`/api/webhook\`)`,
+                    kind: "Rule",
+                    middlewares: [
+                      {
+                        name: "security-headers",
+                        namespace: appNamespace.metadata.name
+                      }
+                    ],
+                    services: [
+                      {
+                        name: "argocd-server",
+                        namespace: namespace.metadata.name,
+                        port: 80
+                      }
+                    ]
+                  }
+                ]
+              : []),
+            // Main ArgoCD route with IAP protection
+            {
+              match: `Host(\`${fqdn}\`)`,
+              kind: "Rule",
+              middlewares: middlewares,
+              services: [
+                {
+                  name: "argocd-server",
+                  namespace: namespace.metadata.name,
+                  port: 80
+                }
+              ]
+            }
+          ],
+          tls: {
+            secretName: config.domain.tlsSecretName
+          }
+        }
+      },
+      { parent: this, provider: k8sProvider, dependsOn: [this.helmRelease] }
+    );
+
+    // ==========================================================================
+    // Create ArgoCD Projects
+    // ==========================================================================
+    this.projects = {};
+
+    // Main project
+    this.projects["{{ .Project.Metadata.Name }}"] = new k8s.apiextensions.CustomResource(
+      `${name}-project-{{ .Project.Metadata.Name }}`,
+      {
+        apiVersion: "argoproj.io/v1alpha1",
+        kind: "AppProject",
+        metadata: {
+          name: `{{ .Project.Metadata.Name }}-${config.name}`,
+          namespace: namespace.metadata.name,
+          labels: resourceLabels,
+          finalizers: ["resources-finalizer.argocd.argoproj.io"]
+        },
+        spec: {
+          description: `{{ .Project.Metadata.Name }} ${config.name} environment applications`,
+          sourceRepos: argocdConfig.allowedRepositories,
+          destinations: [
+            { server: "https://kubernetes.default.svc", namespace: "{{ .Project.Metadata.Name }}" },
+            { server: "https://kubernetes.default.svc", namespace: "argocd" },
+            {
+              server: "https://kubernetes.default.svc",
+              namespace: "traefik-system"
+            },
+{{ if .Computed.HasObservability }}            {
+              server: "https://kubernetes.default.svc",
+              namespace: "monitoring"
+            },
+{{ end }}          ],
+          clusterResourceWhitelist: [
+            { group: "*", kind: "Namespace" },
+            { group: "rbac.authorization.k8s.io", kind: "ClusterRole" },
+            { group: "rbac.authorization.k8s.io", kind: "ClusterRoleBinding" },
+            { group: "traefik.io", kind: "*" },
+            { group: "networking.k8s.io", kind: "Ingress" }
+          ],
+          namespaceResourceBlacklist: [{ group: "", kind: "Secret" }],
+          orphanedResources: {
+            warn: true,
+            ignore: [
+              { group: "apps", kind: "ReplicaSet" },
+              { group: "discovery.k8s.io", kind: "EndpointSlice" },
+              { group: "", kind: "Endpoints" },
+              { group: "", kind: "Pod" },
+              { group: "batch", kind: "Job" },
+              { group: "", kind: "ConfigMap", name: "kube-root-ca.crt" },
+              { group: "apps", kind: "Deployment", name: "oauth2-proxy" },
+              { group: "", kind: "Service", name: "oauth2-proxy" },
+              { group: "", kind: "Secret", name: "{{ .Project.Metadata.Name }}-*-tls" },
+              { group: "", kind: "Secret", name: "*-credentials" },
+              { group: "apps", kind: "Deployment", name: "argocd-*" },
+              { group: "apps", kind: "StatefulSet", name: "argocd-*" },
+              { group: "", kind: "Service", name: "argocd-*" },
+              { group: "", kind: "ConfigMap", name: "argocd-*" },
+              { group: "", kind: "Secret", name: "argocd-*" },
+              { group: "", kind: "ServiceAccount", name: "argocd-*" },
+              {
+                group: "rbac.authorization.k8s.io",
+                kind: "Role",
+                name: "argocd-*"
+              },
+              {
+                group: "rbac.authorization.k8s.io",
+                kind: "RoleBinding",
+                name: "argocd-*"
+              },
+              {
+                group: "networking.k8s.io",
+                kind: "NetworkPolicy",
+                name: "argocd-*"
+              }
+            ]
+          },
+          ...(argocdConfig.enableSyncWindows && {
+            syncWindows: [
+              {
+                kind: "allow",
+                schedule: "0 9-17 * * 1-5",
+                duration: "8h",
+                applications: ["*"],
+                manualSync: true
+              }
+            ]
+          })
+        }
+      },
+      { parent: this, provider: k8sProvider, dependsOn: [this.helmRelease] }
+    );
+
+    // Infrastructure project
+    this.projects["infra"] = new k8s.apiextensions.CustomResource(
+      `${name}-project-infra`,
+      {
+        apiVersion: "argoproj.io/v1alpha1",
+        kind: "AppProject",
+        metadata: {
+          name: `{{ .Project.Metadata.Name }}-infra-${config.name}`,
+          namespace: namespace.metadata.name,
+          labels: resourceLabels,
+          finalizers: ["resources-finalizer.argocd.argoproj.io"]
+        },
+        spec: {
+          description: `{{ .Project.Metadata.Name }} ${config.name} infrastructure`,
+          sourceRepos: argocdConfig.allowedRepositories,
+          destinations: [
+            { server: "https://kubernetes.default.svc", namespace: "{{ .Project.Metadata.Name }}" },
+{{ if .Computed.HasObservability }}            {
+              server: "https://kubernetes.default.svc",
+              namespace: "monitoring"
+            },
+{{ end }}          ],
+          clusterResourceWhitelist: [{ group: "*", kind: "*" }],
+          orphanedResources: {
+            warn: true,
+            ignore: [
+              { group: "apps", kind: "ReplicaSet" },
+              { group: "discovery.k8s.io", kind: "EndpointSlice" },
+              { group: "", kind: "Endpoints" },
+              { group: "", kind: "Pod" },
+              { group: "batch", kind: "Job" },
+              { group: "", kind: "ConfigMap", name: "kube-root-ca.crt" },
+              { group: "", kind: "Secret", name: "{{ .Project.Metadata.Name }}-*-tls" },
+              { group: "", kind: "Secret", name: "*-credentials" },
+              { group: "", kind: "Event" },
+              { group: "", kind: "ServiceAccount", name: "default" },
+              { group: "", kind: "Secret", name: "sh.helm.release.*" }
+            ]
+          }
+        }
+      },
+      { parent: this, provider: k8sProvider, dependsOn: [this.helmRelease] }
+    );
+
+    // ==========================================================================
+    // Deploy ArgoCD Image Updater (if enabled)
+    // ==========================================================================
+    if (argocdConfig.imageUpdater.enabled) {
+      const authHelmValues = getImageUpdaterHelmValues(config);
+
+      this.imageUpdaterRelease = new k8s.helm.v3.Release(
+        `${name}-image-updater`,
+        {
+          name: "argocd-image-updater",
+          namespace: namespace.metadata.name,
+          chart: "argocd-image-updater",
+          repositoryOpts: {
+            repo: "https://argoproj.github.io/argo-helm"
+          },
+          version: argocdConfig.imageUpdater.version,
+          values: {
+            replicaCount: argocdConfig.replicas,
+            resources: {
+              requests: { cpu: "100m", memory: "128Mi" },
+              limits: { cpu: "500m", memory: "256Mi" }
+            },
+            nodeSelector: nodeSelector,
+            tolerations: tolerations,
+            config: {
+              argocd: {
+                grpcWeb: true,
+                serverAddress: "argocd-server.argocd.svc.cluster.local:80",
+                insecure: true,
+                plaintext: true
+              },
+              registries: [
+                {
+                  name: "Artifact Registry",
+                  prefix: `${config.gcpRegion}-docker.pkg.dev`,
+                  api_url: `https://${config.gcpRegion}-docker.pkg.dev`,
+                  credentials: authHelmValues.credentials,
+                  credsexpire: "45m",
+                  default: true
+                }
+              ],
+              logLevel: argocdConfig.logLevel
+            },
+            ...(authHelmValues.volumes && {
+              volumes: authHelmValues.volumes
+            }),
+            ...(authHelmValues.volumeMounts && {
+              volumeMounts: authHelmValues.volumeMounts
+            }),
+            serviceAccount: {
+              create: true,
+              name: "argocd-image-updater",
+              ...(authHelmValues.serviceAccountAnnotations && {
+                annotations: authHelmValues.serviceAccountAnnotations
+              })
+            },
+            metrics: {
+              enabled: true,
+              serviceMonitor: { enabled: false }
+            }
+          }
+        },
+        { parent: this, provider: k8sProvider, dependsOn: [this.helmRelease] }
+      );
+    }
+
+    this.registerOutputs({
+      helmRelease: this.helmRelease,
+      adminPasswordSecretId: this.adminPasswordSecretId,
+      webhookSecretId: this.webhookSecretId,
+      serverUrl: this.serverUrl,
+      webhookUrl: this.webhookUrl,
+      ingressRoute: this.ingressRoute,
+      projects: this.projects,
+      imageUpdaterRelease: this.imageUpdaterRelease
+    });
+  }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/**
+ * Build RBAC policy CSV for ArgoCD
+ */
+function buildRbacPolicy(
+  rbacConfig: ArgoCDConfig["rbac"],
+  environment: string
+): Record<string, string> {
+  const policyLines: string[] = [];
+
+  // Admin groups
+  for (const group of rbacConfig.adminGroups) {
+    policyLines.push(`g, ${group}, role:admin`);
+  }
+
+  // Developer groups
+  for (const group of rbacConfig.developerGroups) {
+    policyLines.push(`g, ${group}, role:developer`);
+  }
+
+  // Viewer groups
+  for (const group of rbacConfig.viewerGroups) {
+    policyLines.push(`g, ${group}, role:readonly`);
+  }
+
+  // Define developer role
+  policyLines.push(
+    `p, role:developer, applications, get, */*, allow`,
+    `p, role:developer, applications, list, */*, allow`,
+    `p, role:developer, applications, sync, */*, allow`,
+    `p, role:developer, logs, get, */*, allow`,
+    `p, role:developer, exec, create, */*, allow`,
+    `p, role:developer, projects, get, *, allow`,
+    `p, role:developer, repositories, get, *, allow`,
+    `p, role:developer, clusters, get, *, allow`
+  );
+
+  // Environment-specific restrictions
+  if (environment === "production") {
+    policyLines.push(
+      `p, role:developer, applications, delete, */*, deny`,
+      `p, role:developer, applications, action/*, */*, deny`
+    );
+  } else {
+    policyLines.push(`p, role:developer, applications, action/*, */*, allow`);
+  }
+
+  return {
+    "policy.default": rbacConfig.defaultPolicy,
+    "policy.csv": policyLines.join("\n"),
+    ...(rbacConfig.enableGoogleGroups && {
+      scopes: "[groups, email]"
+    })
+  };
+}
+
+/**
+ * Build notifications configuration for ArgoCD Helm chart
+ */
+function buildNotificationsConfig(
+  notificationsConfig: ArgoCDConfig["notifications"],
+  environment: string
+): Record<string, unknown> {
+  if (!notificationsConfig.enabled) {
+    return {};
+  }
+
+  const channel = notificationsConfig.slackChannel || "#deployments";
+  const alertChannel = notificationsConfig.slackAlertChannel || "#alerts";
+
+  return {
+    notifications: {
+      "service.slack": `
+token: $slack-token
+`,
+      "template.app-deployed": `
+message: |
+  :white_check_mark: *{{.app.metadata.name}}* deployed successfully to *${environment}*
+  {{if .app.status.sync.revision}}Revision: \`{{.app.status.sync.revision | substr 0 7}}\`{{end}}
+slack:
+  attachments: |
+    [{
+      "color": "#18be52",
+      "fields": [
+        {"title": "Application", "value": "{{.app.metadata.name}}", "short": true},
+        {"title": "Environment", "value": "${environment}", "short": true},
+        {"title": "Sync Status", "value": "{{.app.status.sync.status}}", "short": true}
+      ]
+    }]
+`,
+      "template.app-sync-failed": `
+message: |
+  :x: *{{.app.metadata.name}}* sync failed in *${environment}*
+  {{if .app.status.operationState.message}}Error: {{.app.status.operationState.message}}{{end}}
+slack:
+  attachments: |
+    [{
+      "color": "#E96D76",
+      "fields": [
+        {"title": "Application", "value": "{{.app.metadata.name}}", "short": true},
+        {"title": "Environment", "value": "${environment}", "short": true},
+        {"title": "Error", "value": "{{.app.status.operationState.message}}", "short": false}
+      ]
+    }]
+`,
+      "template.app-health-degraded": `
+message: |
+  :warning: *{{.app.metadata.name}}* health degraded in *${environment}*
+  Status: {{.app.status.health.status}}
+slack:
+  attachments: |
+    [{
+      "color": "#f4c030",
+      "fields": [
+        {"title": "Application", "value": "{{.app.metadata.name}}", "short": true},
+        {"title": "Health", "value": "{{.app.status.health.status}}", "short": true}
+      ]
+    }]
+`,
+      "trigger.on-deployed": `
+- when: app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+  send:
+  - app-deployed
+`,
+      "trigger.on-sync-failed": `
+- when: app.status.operationState.phase in ['Failed', 'Error']
+  send:
+  - app-sync-failed
+`,
+      "trigger.on-health-degraded": `
+- when: app.status.health.status == 'Degraded'
+  send:
+  - app-health-degraded
+`,
+      subscriptions: `
+- recipients:
+  - slack:${channel}
+  triggers:
+  - on-deployed
+- recipients:
+  - slack:${alertChannel}
+  triggers:
+  - on-sync-failed
+  - on-health-degraded
+`
+    }
+  };
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createArgoCD(
+  config: EnvironmentConfig,
+  argocdConfig: ArgoCDConfig,
+  k8sProvider: k8s.Provider,
+  namespace: k8s.core.v1.Namespace,
+  appNamespace: k8s.core.v1.Namespace,
+  opts?: pulumi.ComponentResourceOptions
+): ArgoCD | undefined {
+  if (!argocdConfig.enabled) {
+    pulumi.log.info("ArgoCD is disabled, skipping deployment");
+    return undefined;
+  }
+
+  return new ArgoCD(
+    `{{ .Project.Metadata.Name }}-argocd-${config.name}`,
+    { config, argocdConfig, k8sProvider, namespace, appNamespace },
+    opts
+  );
+}
+
+// =============================================================================
+// Default Configuration
+// =============================================================================
+
+export const defaultArgoCDConfig: ArgoCDConfig = {
+  enabled: false,
+  version: "9.4.2",
+  subdomain: "argocd",
+  replicas: 2,
+  enableSso: false,
+  allowedRepositories: [],
+  enableIap: true,
+  useInfraNodes: true,
+  webhook: {
+    enabled: true,
+    allowedOrganizations: []
+  },
+  notifications: {
+    enabled: false
+  },
+  imageUpdater: {
+    enabled: false,
+    version: "1.0.4",
+    registryPrefix: "us-central1-docker.pkg.dev/project/{{ .Project.Metadata.Name }}",
+    updateStrategy: "digest",
+    writeBackMethod: "git"
+  },
+  rbac: {
+    defaultPolicy: "role:readonly",
+    adminGroups: [],
+    developerGroups: [],
+    viewerGroups: [],
+    enableGoogleGroups: true
+  },
+  serverResources: {
+    requests: { cpu: "100m", memory: "128Mi" },
+    limits: { cpu: "500m", memory: "512Mi" }
+  },
+  controllerResources: {
+    requests: { cpu: "250m", memory: "256Mi" },
+    limits: { cpu: "1000m", memory: "1Gi" }
+  },
+  repoServerResources: {
+    requests: { cpu: "100m", memory: "128Mi" },
+    limits: { cpu: "500m", memory: "512Mi" }
+  },
+  applicationSetReplicas: 1,
+  pdbEnabled: false,
+  redisHa: false,
+  enableSyncWindows: false,
+  logLevel: "info"
+};
+{{ end }}

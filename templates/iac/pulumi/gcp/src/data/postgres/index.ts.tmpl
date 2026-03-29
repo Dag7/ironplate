@@ -1,0 +1,333 @@
+/**
+ * Cloud SQL PostgreSQL Module
+ *
+ * Creates Cloud SQL PostgreSQL instance with databases for the {{ .Project.Metadata.Name }} platform.
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import * as random from "@pulumi/random";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { resourceName } from "../../utils/naming.js";
+import { defaultLabels, withLabels } from "../../utils/tags.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface PostgresArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** VPC network for private IP */
+  network: gcp.compute.Network;
+  /** Private service connection (must be created before instance) */
+  privateServiceConnection: gcp.servicenetworking.Connection;
+}
+
+export interface PostgresOutputs {
+  /** Cloud SQL instance */
+  instance: gcp.sql.DatabaseInstance;
+  /** Databases */
+  databases: Record<string, gcp.sql.Database>;
+  /** Database user */
+  user: gcp.sql.User;
+  /** Generated password */
+  password: pulumi.Output<string>;
+  /** Private IP address */
+  privateIp: pulumi.Output<string>;
+  /** Connection name */
+  connectionName: pulumi.Output<string>;
+}
+
+// =============================================================================
+// PostgreSQL Component
+// =============================================================================
+
+export class PostgresInstance extends pulumi.ComponentResource {
+  public readonly instance: gcp.sql.DatabaseInstance;
+  public readonly databases: Record<string, gcp.sql.Database>;
+  public readonly user: gcp.sql.User;
+  public readonly password: pulumi.Output<string>;
+  public readonly privateIp: pulumi.Output<string>;
+  public readonly connectionName: pulumi.Output<string>;
+
+  constructor(
+    name: string,
+    args: PostgresArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:data:PostgresInstance", name, {}, opts);
+
+    const { config, network, privateServiceConnection } = args;
+    const instanceName = resourceName("sql", "instance");
+    const labels = withLabels({ component: "postgres" });
+    const dbConfig = config.database;
+
+    // Generate random password for database user
+    const dbPassword = new random.RandomPassword(
+      `${name}-password`,
+      {
+        length: 32,
+        special: true,
+        overrideSpecial: "!#$%&*()-_=+[]{}<>:?"
+      },
+      { parent: this }
+    );
+    this.password = dbPassword.result;
+
+    // Build database flags
+    const databaseFlags = Object.entries(dbConfig.databaseFlags ?? {}).map(
+      ([flagName, value]) => ({
+        name: flagName,
+        value: value
+      })
+    );
+
+    // Create Cloud SQL instance
+    this.instance = new gcp.sql.DatabaseInstance(
+      name,
+      {
+        name: instanceName,
+        project: config.gcpProject,
+        region: config.gcpRegion,
+        databaseVersion: dbConfig.postgresVersion,
+        deletionProtection: dbConfig.deletionProtection,
+
+        settings: {
+          tier: dbConfig.tier,
+          // Edition: ENTERPRISE (standard) or ENTERPRISE_PLUS (advanced features)
+          edition: dbConfig.edition,
+
+          // Availability
+          availabilityType: dbConfig.highAvailability ? "REGIONAL" : "ZONAL",
+
+          // Disk configuration
+          diskSize: dbConfig.diskSizeGb,
+          diskType: "PD_SSD",
+          diskAutoresize: dbConfig.diskAutoresize,
+          diskAutoresizeLimit: dbConfig.diskAutoresizeLimit,
+
+          // IP configuration (private IP only)
+          ipConfiguration: {
+            ipv4Enabled: false, // No public IP
+            privateNetwork: network.id,
+            sslMode: "ENCRYPTED_ONLY",
+            enablePrivatePathForGoogleCloudServices: true
+          },
+
+          // Backup configuration
+          backupConfiguration: {
+            enabled: true,
+            startTime: "04:00", // 4 AM UTC
+            pointInTimeRecoveryEnabled: dbConfig.enablePointInTimeRecovery,
+            // Transaction log retention must be 1-7 days (GCP limit)
+            transactionLogRetentionDays: Math.min(
+              dbConfig.backupRetentionDays,
+              7
+            ),
+            backupRetentionSettings: {
+              retainedBackups: dbConfig.backupRetentionDays,
+              retentionUnit: "COUNT"
+            }
+          },
+
+          // Maintenance window
+          maintenanceWindow: dbConfig.maintenanceWindow
+            ? {
+                day: dbConfig.maintenanceWindow.day,
+                hour: dbConfig.maintenanceWindow.hour,
+                updateTrack: "stable"
+              }
+            : undefined,
+
+          // Query insights
+          insightsConfig: dbConfig.insightsConfig
+            ? {
+                queryInsightsEnabled:
+                  dbConfig.insightsConfig.queryInsightsEnabled,
+                queryStringLength: dbConfig.insightsConfig.queryStringLength,
+                recordApplicationTags:
+                  dbConfig.insightsConfig.recordApplicationTags,
+                recordClientAddress: dbConfig.insightsConfig.recordClientAddress
+              }
+            : undefined,
+
+          // Database flags
+          databaseFlags: databaseFlags,
+
+          // User labels
+          userLabels: labels
+        }
+      },
+      { parent: this, dependsOn: [privateServiceConnection] }
+    );
+
+    // Create databases
+    this.databases = {};
+
+    // Main application database
+    this.databases["{{ .Project.Metadata.Name }}"] = new gcp.sql.Database(
+      `${name}-{{ .Project.Metadata.Name }}`,
+      {
+        name: "{{ .Project.Metadata.Name }}",
+        project: config.gcpProject,
+        instance: this.instance.name,
+        charset: "UTF8",
+        collation: "en_US.UTF8"
+      },
+      { parent: this, dependsOn: [this.instance] }
+    );
+
+    // Hasura metadata database
+    this.databases["hasura_metadata"] = new gcp.sql.Database(
+      `${name}-hasura-metadata`,
+      {
+        name: "hasura_metadata",
+        project: config.gcpProject,
+        instance: this.instance.name,
+        charset: "UTF8",
+        collation: "en_US.UTF8"
+      },
+      { parent: this, dependsOn: [this.instance] }
+    );
+{{ if .Computed.HasLangfuse }}
+    // Langfuse database
+    this.databases["langfuse"] = new gcp.sql.Database(
+      `${name}-langfuse`,
+      {
+        name: "langfuse",
+        project: config.gcpProject,
+        instance: this.instance.name,
+        charset: "UTF8",
+        collation: "en_US.UTF8"
+      },
+      { parent: this, dependsOn: [this.instance] }
+    );
+{{ end }}
+    // Create database user
+    this.user = new gcp.sql.User(
+      `${name}-user`,
+      {
+        name: "{{ .Project.Metadata.Name }}",
+        project: config.gcpProject,
+        instance: this.instance.name,
+        password: this.password
+      },
+      { parent: this, dependsOn: [this.instance] }
+    );
+
+    // Get private IP
+    this.privateIp = this.instance.privateIpAddress;
+    this.connectionName = this.instance.connectionName;
+
+    this.registerOutputs({
+      instance: this.instance,
+      databases: this.databases,
+      user: this.user,
+      password: this.password,
+      privateIp: this.privateIp,
+      connectionName: this.connectionName
+    });
+  }
+
+  /**
+   * Get connection string for a database with proper URL encoding.
+   *
+   * @param database - Database name
+   * @param options - Connection options
+   * @param options.useSidecar - If true, uses 127.0.0.1 (Cloud SQL Proxy sidecar), else uses private IP
+   * @param options.sslMode - SSL mode (default: "require" for Cloud SQL)
+   */
+  getConnectionString(
+    database: string,
+    options?: {
+      useSidecar?: boolean;
+      sslMode?: string;
+    }
+  ): pulumi.Output<string> {
+    const useSidecar = options?.useSidecar ?? true; // Default to sidecar pattern
+    const sslMode = options?.sslMode ?? "require"; // Cloud SQL requires SSL
+
+    return pulumi.all([this.privateIp, this.password]).apply(([ip, pwd]) => {
+      // URL-encode the password to handle special characters
+      const encodedPassword = encodeURIComponent(pwd);
+      const encodedUser = encodeURIComponent("{{ .Project.Metadata.Name }}");
+
+      // Use 127.0.0.1 for Cloud SQL Proxy sidecar, else private IP
+      const host = useSidecar ? "127.0.0.1" : ip;
+
+      // Build standard PostgreSQL connection string
+      // Note: connection_limit and pool_timeout are Prisma-specific parameters
+      // and will cause errors with clients like Hasura. Use getPrismaConnectionString
+      // for Prisma-based apps like Langfuse.
+      return `postgresql://${encodedUser}:${encodedPassword}@${host}:5432/${database}?sslmode=${sslMode}`;
+    });
+  }
+
+  /**
+   * Get connection string using private IP (for services that don't use Cloud SQL Proxy)
+   */
+  getDirectConnectionString(
+    database: string,
+    options?: {
+      sslMode?: string;
+    }
+  ): pulumi.Output<string> {
+    return this.getConnectionString(database, {
+      ...options,
+      useSidecar: false
+    });
+  }
+
+  /**
+   * Get Prisma-compatible connection string with connection pool parameters.
+   * Use this for Prisma-based apps like Langfuse.
+   *
+   * @param database - Database name
+   * @param options - Connection options
+   * @param options.connectionLimit - Max connections per pod (default: 50)
+   * @param options.poolTimeout - Pool timeout in seconds (default: 20)
+   * @param options.useSidecar - If true, uses 127.0.0.1 (Cloud SQL Proxy sidecar), else uses private IP
+   * @param options.sslMode - SSL mode (default: "require" for Cloud SQL)
+   */
+  getPrismaConnectionString(
+    database: string,
+    options?: {
+      connectionLimit?: number;
+      poolTimeout?: number;
+      useSidecar?: boolean;
+      sslMode?: string;
+    }
+  ): pulumi.Output<string> {
+    const connectionLimit = options?.connectionLimit ?? 50;
+    const poolTimeout = options?.poolTimeout ?? 20;
+    const useSidecar = options?.useSidecar ?? true;
+    const sslMode = options?.sslMode ?? "require";
+
+    return pulumi.all([this.privateIp, this.password]).apply(([ip, pwd]) => {
+      const encodedPassword = encodeURIComponent(pwd);
+      const encodedUser = encodeURIComponent("{{ .Project.Metadata.Name }}");
+      const host = useSidecar ? "127.0.0.1" : ip;
+
+      // Prisma-specific connection string with pool parameters
+      return `postgresql://${encodedUser}:${encodedPassword}@${host}:5432/${database}?sslmode=${sslMode}&connection_limit=${connectionLimit}&pool_timeout=${poolTimeout}`;
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createPostgresInstance(
+  config: EnvironmentConfig,
+  network: gcp.compute.Network,
+  privateServiceConnection: gcp.servicenetworking.Connection,
+  opts?: pulumi.ComponentResourceOptions
+): PostgresInstance {
+  return new PostgresInstance(
+    `{{ .Project.Metadata.Name }}-postgres-${config.name}`,
+    { config, network, privateServiceConnection },
+    opts
+  );
+}

@@ -1,0 +1,137 @@
+/**
+ * Vertex AI Budget Configuration
+ *
+ * Creates a GCP Cloud Billing Budget scoped to Vertex AI usage.
+ * Sends email alerts when spending reaches configured thresholds.
+ *
+ * Note: GCP budgets are alerting-only - they don't hard-block spending.
+ * For hard caps, implement application-level rate limiting.
+ *
+ * @see https://www.pulumi.com/guides/how-to/gcp-billing-budget/
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { VertexAIConfig } from "../../config/types.js";
+
+export interface VertexBudgetArgs {
+  /** GCP project ID */
+  project: string;
+  /** Vertex AI configuration with budget settings */
+  config: VertexAIConfig;
+}
+
+export interface VertexBudgetOutputs {
+  /** The created budget resource */
+  budget: gcp.billing.Budget;
+  /** Notification channels created for alerts */
+  notificationChannels: gcp.monitoring.NotificationChannel[];
+}
+
+/**
+ * Create a Vertex AI spending budget with email alerts
+ *
+ * NOTE: Budget creation is currently disabled due to GCP Billing Budget API issues.
+ * The API returns "invalid argument" errors even with correct service ID format.
+ * Set `budget.disabled: false` in config to re-enable once the issue is resolved.
+ *
+ * @see https://github.com/hashicorp/terraform-provider-google/issues/19796
+ * @see https://github.com/pulumi/pulumi-gcp/issues/514
+ */
+export function createVertexAIBudget(
+  name: string,
+  args: VertexBudgetArgs,
+  opts?: pulumi.ResourceOptions
+): VertexBudgetOutputs | undefined {
+  const { project, config } = args;
+
+  // Skip if budget not configured or missing billing account
+  if (!config.budget || !config.billingAccount) {
+    if (config.budget && !config.billingAccount) {
+      pulumi.log.warn(
+        "Vertex AI budget configured but billingAccount is missing. Skipping budget creation."
+      );
+    }
+    return undefined;
+  }
+
+  // Skip if budget is explicitly disabled
+  if (config.budget.disabled) {
+    pulumi.log.info(
+      "Vertex AI budget creation is disabled. Set budget.disabled: false to enable."
+    );
+    return undefined;
+  }
+
+  // Use billing account ID directly (Pulumi provider adds the prefix)
+  const billingAccountId = config.billingAccount;
+  const { monthlyLimitUsd, alertThresholds, notificationEmails } =
+    config.budget;
+
+  // Get the project number (required for budget filter)
+  const projectInfo = gcp.organizations.getProjectOutput({
+    projectId: project
+  });
+
+  const notificationChannels: gcp.monitoring.NotificationChannel[] = [];
+
+  for (let i = 0; i < notificationEmails.length; i++) {
+    const email = notificationEmails[i];
+    if (!email) continue;
+
+    const channel = new gcp.monitoring.NotificationChannel(
+      `${name}-notify-${i}`,
+      {
+        type: "email",
+        displayName: `Vertex AI Budget Alert - ${email}`,
+        labels: {
+          email_address: email
+        },
+        project: project
+      },
+      opts
+    );
+
+    notificationChannels.push(channel);
+  }
+  const channelIds = pulumi.all(notificationChannels.map((ch) => ch.id));
+  // Create the budget (notifications temporarily disabled to debug)
+  // Reference: https://www.pulumi.com/guides/how-to/gcp-billing-budget/
+  const budget = new gcp.billing.Budget(
+    `${name}-budget`,
+    {
+      billingAccount: billingAccountId,
+      displayName: `Vertex AI Budget - ${name}`,
+
+      // Scope to this project and Vertex AI service
+      budgetFilter: {
+        projects: [pulumi.interpolate`projects/${projectInfo.number}`],
+        // services: ["services/aiplatform.googleapis.com"]
+        services: ["services/C7E2-9256-1C43"]
+      },
+
+      // Set the spending limit
+      amount: {
+        specifiedAmount: {
+          currencyCode: "USD",
+          units: String(monthlyLimitUsd)
+        }
+      },
+      // Create threshold rules for alerts
+      thresholdRules: alertThresholds.map((threshold) => ({
+        thresholdPercent: threshold,
+        spendBasis: "CURRENT_SPEND"
+      })),
+      allUpdatesRule: {
+        monitoringNotificationChannels: channelIds,
+        disableDefaultIamRecipients: false
+      }
+    },
+    {
+      parent: opts?.parent,
+      dependsOn: notificationChannels
+    }
+  );
+
+  return { budget, notificationChannels: notificationChannels };
+}

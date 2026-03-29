@@ -1,0 +1,501 @@
+/**
+ * ArgoCD Image Updater IAM & Authentication Setup
+ *
+ * Implements the Strategy pattern for registry authentication, supporting:
+ *
+ * 1. workload-identity-script (default, recommended)
+ *    - Uses external script to fetch tokens from GKE metadata server
+ *    - Complies with iam.disableServiceAccountKeyCreation org policy
+ *    - Works with Artifact Registry (pkg.dev)
+ *
+ * 2. workload-identity-native
+ *    - Uses argocd-image-updater's native 'gcp' credential type
+ *    - Simpler but may not work with Artifact Registry
+ *    - Works well with GCR (gcr.io)
+ *
+ * 3. pull-secret
+ *    - Uses Docker pull secret from External Secrets
+ *    - Requires SA key creation to be allowed in org policy
+ *    - Most compatible but less secure
+ *
+ * @see https://argocd-image-updater.readthedocs.io/en/stable/configuration/registries/
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as k8s from "@pulumi/kubernetes";
+import * as pulumi from "@pulumi/pulumi";
+import type {
+  EnvironmentConfig,
+  ImageUpdaterAuthStrategy
+} from "../../config/types.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface ImageUpdaterIamArgs {
+  config: EnvironmentConfig;
+  /** Kubernetes provider */
+  k8sProvider: k8s.Provider;
+  /** ClusterSecretStore name (required for pull-secret strategy) */
+  clusterSecretStoreName?: string;
+}
+
+export interface ImageUpdaterIamOutputs {
+  /** Service account email */
+  serviceAccountEmail: pulumi.Output<string>;
+  /** Service account name */
+  serviceAccountName: pulumi.Output<string>;
+  /** Authentication strategy used */
+  authStrategy: ImageUpdaterAuthStrategy;
+  /** ConfigMap with auth script (for workload-identity-script strategy) */
+  authScriptConfigMap?: k8s.core.v1.ConfigMap;
+  /** ExternalSecret (for pull-secret strategy) */
+  externalSecret?: k8s.apiextensions.CustomResource;
+}
+
+/**
+ * Helm values additions for each strategy
+ */
+export interface ImageUpdaterHelmValues {
+  /** Credentials string for registries config */
+  credentials: string;
+  /** Additional volumes to mount (Helm chart uses 'volumes', not 'extraVolumes') */
+  volumes?: Record<string, unknown>[];
+  /** Additional volume mounts (Helm chart uses 'volumeMounts', not 'extraVolumeMounts') */
+  volumeMounts?: Record<string, unknown>[];
+  /** ServiceAccount annotations */
+  serviceAccountAnnotations?: Record<string, string>;
+}
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const SA_NAME = "argocd-image-updater";
+const NAMESPACE = "argocd";
+const K8S_SA_NAME = "argocd-image-updater";
+const PULL_SECRET_NAME = "artifact-registry-credentials";
+const AUTH_SCRIPTS_CONFIGMAP = "argocd-image-updater-auth-scripts";
+const DOCKER_CONFIG_SECRET_ID = "argocd-image-updater-docker-config";
+
+// =============================================================================
+// Auth Script for Workload Identity
+// =============================================================================
+
+const GCP_TOKEN_SCRIPT = `#!/bin/sh
+# Fetch access token from GKE Workload Identity metadata server
+# This script is called by argocd-image-updater for registry authentication
+#
+# Output format for 'ext:' credentials: username:password
+# For GCP Artifact Registry: oauth2accesstoken:<access_token>
+
+# Get access token from metadata server
+TOKEN=$(wget -q -O- --header="Metadata-Flavor: Google" \\
+  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \\
+  | sed 's/.*"access_token":"\\([^"]*\\)".*/\\1/')
+
+if [ -z "$TOKEN" ]; then
+  echo "Failed to get access token from metadata server" >&2
+  exit 1
+fi
+
+# Output in format: username:password
+echo "oauth2accesstoken:$TOKEN"
+`;
+
+// =============================================================================
+// Strategy: Base IAM Resources
+// =============================================================================
+
+interface BaseIamResources {
+  serviceAccount: gcp.serviceaccount.Account;
+  artifactRegistryBinding: gcp.projects.IAMMember;
+  workloadIdentityBinding: gcp.serviceaccount.IAMBinding;
+}
+
+function createBaseIamResources(
+  config: EnvironmentConfig,
+  opts?: pulumi.ComponentResourceOptions
+): BaseIamResources {
+  // Create GCP Service Account
+  const serviceAccount = new gcp.serviceaccount.Account(
+    `${config.name}-argocd-image-updater-sa`,
+    {
+      accountId: SA_NAME,
+      displayName: "ArgoCD Image Updater",
+      description: `Service account for ArgoCD Image Updater in ${config.name}`,
+      project: config.gcpProject
+    },
+    opts
+  );
+
+  // Grant Artifact Registry Reader role
+  const artifactRegistryBinding = new gcp.projects.IAMMember(
+    `${config.name}-image-updater-artifact-registry-reader`,
+    {
+      project: config.gcpProject,
+      role: "roles/artifactregistry.reader",
+      member: pulumi.interpolate`serviceAccount:${serviceAccount.email}`
+    },
+    { ...opts, dependsOn: [serviceAccount] }
+  );
+
+  // Workload Identity binding - allows K8s SA to impersonate GCP SA
+  const workloadIdentityBinding = new gcp.serviceaccount.IAMBinding(
+    `${config.name}-image-updater-workload-identity`,
+    {
+      serviceAccountId: serviceAccount.name,
+      role: "roles/iam.workloadIdentityUser",
+      members: [
+        pulumi.interpolate`serviceAccount:${config.gcpProject}.svc.id.goog[${NAMESPACE}/${K8S_SA_NAME}]`
+      ]
+    },
+    { ...opts, dependsOn: [serviceAccount] }
+  );
+
+  return { serviceAccount, artifactRegistryBinding, workloadIdentityBinding };
+}
+
+// =============================================================================
+// Strategy: Workload Identity with Script
+// =============================================================================
+
+interface WorkloadIdentityScriptResult {
+  authScriptConfigMap: k8s.core.v1.ConfigMap;
+  helmValues: ImageUpdaterHelmValues;
+}
+
+function createWorkloadIdentityScriptStrategy(
+  config: EnvironmentConfig,
+  k8sProvider: k8s.Provider,
+  opts?: pulumi.ComponentResourceOptions
+): WorkloadIdentityScriptResult {
+  // Create ConfigMap with auth script
+  const authScriptConfigMap = new k8s.core.v1.ConfigMap(
+    `${config.name}-image-updater-auth-script`,
+    {
+      metadata: {
+        name: AUTH_SCRIPTS_CONFIGMAP,
+        namespace: NAMESPACE,
+        labels: {
+          "app.kubernetes.io/name": "argocd-image-updater",
+          "app.kubernetes.io/component": "auth-scripts",
+          "app.kubernetes.io/managed-by": "pulumi",
+          environment: config.name
+        }
+      },
+      data: {
+        "gcp-token.sh": GCP_TOKEN_SCRIPT
+      }
+    },
+    { provider: k8sProvider, ...opts }
+  );
+
+  const helmValues: ImageUpdaterHelmValues = {
+    credentials: "ext:/scripts/gcp-token.sh",
+    // Note: Helm chart uses 'volumes' and 'volumeMounts' (not 'extra' prefix)
+    volumes: [
+      {
+        name: "auth-scripts",
+        configMap: {
+          name: AUTH_SCRIPTS_CONFIGMAP,
+          defaultMode: 493 // 0755
+        }
+      }
+    ],
+    volumeMounts: [
+      {
+        name: "auth-scripts",
+        mountPath: "/scripts",
+        readOnly: true
+      }
+    ],
+    serviceAccountAnnotations: {
+      "iam.gke.io/gcp-service-account": `${SA_NAME}@${config.gcpProject}.iam.gserviceaccount.com`
+    }
+  };
+
+  return { authScriptConfigMap, helmValues };
+}
+
+// =============================================================================
+// Strategy: Workload Identity Native
+// =============================================================================
+
+function createWorkloadIdentityNativeStrategy(
+  config: EnvironmentConfig
+): ImageUpdaterHelmValues {
+  return {
+    credentials: "gcp",
+    serviceAccountAnnotations: {
+      "iam.gke.io/gcp-service-account": `${SA_NAME}@${config.gcpProject}.iam.gserviceaccount.com`
+    }
+  };
+}
+
+// =============================================================================
+// Strategy: Pull Secret (requires SA key + External Secrets)
+// =============================================================================
+
+interface PullSecretResult {
+  externalSecret: k8s.apiextensions.CustomResource;
+  dockerConfigSecret: gcp.secretmanager.Secret;
+  helmValues: ImageUpdaterHelmValues;
+}
+
+function createPullSecretStrategy(
+  config: EnvironmentConfig,
+  k8sProvider: k8s.Provider,
+  serviceAccount: gcp.serviceaccount.Account,
+  clusterSecretStoreName: string,
+  opts?: pulumi.ComponentResourceOptions
+): PullSecretResult {
+  // Create SA key (will fail if org policy blocks it)
+  const serviceAccountKey = new gcp.serviceaccount.Key(
+    `${config.name}-argocd-image-updater-key`,
+    {
+      serviceAccountId: serviceAccount.name,
+      publicKeyType: "TYPE_X509_PEM_FILE"
+    },
+    { ...opts, dependsOn: [serviceAccount] }
+  );
+
+  // Build Docker config JSON
+  const dockerConfigJson = pulumi
+    .all([serviceAccountKey.privateKey])
+    .apply(([privateKeyBase64]) => {
+      if (!privateKeyBase64) {
+        throw new Error("Service account private key is undefined");
+      }
+      const privateKeyJson = Buffer.from(privateKeyBase64, "base64").toString(
+        "utf-8"
+      );
+      const username = "_json_key";
+      const password = privateKeyJson;
+      const authToken = Buffer.from(`${username}:${password}`).toString(
+        "base64"
+      );
+
+      const dockerConfig = {
+        auths: {
+          [`${config.gcpRegion}-docker.pkg.dev`]: {
+            username,
+            password,
+            auth: authToken
+          }
+        }
+      };
+      return JSON.stringify(dockerConfig);
+    });
+
+  // Store in Secret Manager
+  const dockerConfigSecret = new gcp.secretmanager.Secret(
+    `${config.name}-argocd-image-updater-docker-config`,
+    {
+      secretId: DOCKER_CONFIG_SECRET_ID,
+      project: config.gcpProject,
+      replication: { auto: {} },
+      labels: {
+        component: "argocd-image-updater",
+        "managed-by": "pulumi"
+      }
+    },
+    { ...opts, dependsOn: [serviceAccount] }
+  );
+
+  new gcp.secretmanager.SecretVersion(
+    `${config.name}-argocd-image-updater-docker-config-version`,
+    {
+      secret: dockerConfigSecret.id,
+      secretData: pulumi.secret(dockerConfigJson)
+    },
+    { ...opts, dependsOn: [dockerConfigSecret, serviceAccountKey] }
+  );
+
+  // Create ExternalSecret
+  const externalSecret = new k8s.apiextensions.CustomResource(
+    `${config.name}-argocd-image-updater-external-secret`,
+    {
+      apiVersion: "external-secrets.io/v1beta1",
+      kind: "ExternalSecret",
+      metadata: {
+        name: PULL_SECRET_NAME,
+        namespace: NAMESPACE,
+        labels: {
+          "app.kubernetes.io/name": "argocd-image-updater",
+          "app.kubernetes.io/component": "registry-credentials",
+          "app.kubernetes.io/managed-by": "pulumi",
+          environment: config.name
+        }
+      },
+      spec: {
+        refreshInterval: config.secrets.refreshInterval,
+        secretStoreRef: {
+          name: clusterSecretStoreName,
+          kind: "ClusterSecretStore"
+        },
+        target: {
+          name: PULL_SECRET_NAME,
+          creationPolicy: "Owner",
+          template: {
+            type: "kubernetes.io/dockerconfigjson",
+            data: {
+              ".dockerconfigjson": "{{ "{{" }} .dockerconfig {{ "}}" }}"
+            }
+          }
+        },
+        data: [
+          {
+            secretKey: "dockerconfig",
+            remoteRef: { key: DOCKER_CONFIG_SECRET_ID }
+          }
+        ]
+      }
+    },
+    { provider: k8sProvider, dependsOn: [dockerConfigSecret], ...opts }
+  );
+
+  const helmValues: ImageUpdaterHelmValues = {
+    credentials: `pullsecret:${NAMESPACE}/${PULL_SECRET_NAME}`
+  };
+
+  return { externalSecret, dockerConfigSecret, helmValues };
+}
+
+// =============================================================================
+// Main Entry Point
+// =============================================================================
+
+/**
+ * Create IAM and authentication resources for ArgoCD Image Updater.
+ *
+ * Uses the Strategy pattern based on config.argocd.imageUpdater.authStrategy:
+ * - workload-identity-script (default): External script + Workload Identity
+ * - workload-identity-native: Native 'gcp' credentials
+ * - pull-secret: Docker pull secret via External Secrets
+ */
+export function createImageUpdaterIam(
+  args: ImageUpdaterIamArgs,
+  opts?: pulumi.ComponentResourceOptions
+): ImageUpdaterIamOutputs | undefined {
+  const { config, k8sProvider, clusterSecretStoreName } = args;
+
+  // Only create if Image Updater is enabled
+  if (!config.argocd?.imageUpdater?.enabled) {
+    return undefined;
+  }
+
+  // Default to workload-identity-script (most compatible with org policies)
+  const authStrategy: ImageUpdaterAuthStrategy =
+    config.argocd.imageUpdater.authStrategy ?? "workload-identity-script";
+
+  pulumi.log.info(
+    `Creating ArgoCD Image Updater IAM with strategy: ${authStrategy}`
+  );
+
+  // Create base IAM resources (common to all strategies)
+  const { serviceAccount } = createBaseIamResources(config, opts);
+
+  // Apply strategy-specific configuration
+  let authScriptConfigMap: k8s.core.v1.ConfigMap | undefined;
+  let externalSecret: k8s.apiextensions.CustomResource | undefined;
+
+  switch (authStrategy) {
+    case "workload-identity-script": {
+      const result = createWorkloadIdentityScriptStrategy(
+        config,
+        k8sProvider,
+        opts
+      );
+      authScriptConfigMap = result.authScriptConfigMap;
+      break;
+    }
+
+    case "workload-identity-native":
+      // No additional resources needed, just Workload Identity binding
+      break;
+
+    case "pull-secret": {
+      if (!clusterSecretStoreName) {
+        throw new Error(
+          "pull-secret strategy requires clusterSecretStoreName to be provided"
+        );
+      }
+      const result = createPullSecretStrategy(
+        config,
+        k8sProvider,
+        serviceAccount,
+        clusterSecretStoreName,
+        opts
+      );
+      externalSecret = result.externalSecret;
+      break;
+    }
+
+    default:
+      throw new Error(`Unknown auth strategy: ${authStrategy}`);
+  }
+
+  return {
+    serviceAccountEmail: serviceAccount.email,
+    serviceAccountName: serviceAccount.name,
+    authStrategy,
+    authScriptConfigMap,
+    externalSecret
+  };
+}
+
+/**
+ * Get Helm values for Image Updater based on auth strategy.
+ * Call this when configuring the Image Updater Helm chart.
+ */
+export function getImageUpdaterHelmValues(
+  config: EnvironmentConfig
+): ImageUpdaterHelmValues {
+  const authStrategy: ImageUpdaterAuthStrategy =
+    config.argocd?.imageUpdater?.authStrategy ?? "workload-identity-script";
+
+  switch (authStrategy) {
+    case "workload-identity-script":
+      return {
+        credentials: "ext:/scripts/gcp-token.sh",
+        // Note: Helm chart uses 'volumes' and 'volumeMounts' (not 'extra' prefix)
+        volumes: [
+          {
+            name: "auth-scripts",
+            configMap: {
+              name: AUTH_SCRIPTS_CONFIGMAP,
+              defaultMode: 493 // 0755
+            }
+          }
+        ],
+        volumeMounts: [
+          {
+            name: "auth-scripts",
+            mountPath: "/scripts",
+            readOnly: true
+          }
+        ],
+        serviceAccountAnnotations: {
+          "iam.gke.io/gcp-service-account": `${SA_NAME}@${config.gcpProject}.iam.gserviceaccount.com`
+        }
+      };
+
+    case "workload-identity-native":
+      return {
+        credentials: "gcp",
+        serviceAccountAnnotations: {
+          "iam.gke.io/gcp-service-account": `${SA_NAME}@${config.gcpProject}.iam.gserviceaccount.com`
+        }
+      };
+
+    case "pull-secret":
+      return {
+        credentials: `pullsecret:${NAMESPACE}/${PULL_SECRET_NAME}`
+      };
+
+    default:
+      throw new Error(`Unknown auth strategy: ${authStrategy}`);
+  }
+}

@@ -1,38 +1,122 @@
+/**
+ * GCP API Enablement Module
+ *
+ * Enables all required GCP APIs for the {{ .Project.Metadata.Name }} platform.
+ * APIs must be enabled before resources can be created.
+ */
+
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
-import { projectId } from "../../config/loader";
+import { REQUIRED_GCP_APIS, type GcpApi } from "../../config/types.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface ApiEnablerArgs {
+  /** GCP Project ID */
+  project: string;
+  /** Additional APIs to enable beyond the required set */
+  additionalApis?: string[];
+  /** Disable dependent services when disabling API */
+  disableDependentServices?: boolean;
+  /** Disable the API if it's no longer used */
+  disableOnDestroy?: boolean;
+}
+
+export interface ApiEnablerOutputs {
+  /** Map of API name to enabled service resource */
+  enabledApis: Record<string, gcp.projects.Service>;
+  /** List of all enabled API names */
+  apiNames: pulumi.Output<string[]>;
+}
+
+// =============================================================================
+// API Enabler Component
+// =============================================================================
 
 /**
- * Enables required GCP APIs for the {{ .Project.Metadata.Name }} project.
+ * Enables all required GCP APIs for the {{ .Project.Metadata.Name }} platform.
  *
- * Each API is created as a Pulumi resource so that it can be tracked and
- * depended upon by downstream resources.
+ * This component should be created first, and other resources should
+ * depend on it to ensure APIs are enabled before resource creation.
  */
-export function enableApis(): Record<string, gcp.projects.Service> {
-  const apis: Record<string, string> = {
-    compute: "compute.googleapis.com",
-    container: "container.googleapis.com",
-    sqladmin: "sqladmin.googleapis.com",
-    redis: "redis.googleapis.com",
-    dns: "dns.googleapis.com",
-    certificatemanager: "certificatemanager.googleapis.com",
-    secretmanager: "secretmanager.googleapis.com",
-    artifactregistry: "artifactregistry.googleapis.com",
-    iam: "iam.googleapis.com",
-    cloudresourcemanager: "cloudresourcemanager.googleapis.com",{{ if hasItem .Project.Spec.Infrastructure.Components "observability" }}
-    monitoring: "monitoring.googleapis.com",{{ end }}
-  };
+export class ApiEnabler extends pulumi.ComponentResource {
+  public readonly enabledApis: Record<string, gcp.projects.Service>;
+  public readonly apiNames: pulumi.Output<string[]>;
 
-  const enabledApis: Record<string, gcp.projects.Service> = {};
+  constructor(
+    name: string,
+    args: ApiEnablerArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:core:ApiEnabler", name, {}, opts);
 
-  for (const [name, api] of Object.entries(apis)) {
-    enabledApis[name] = new gcp.projects.Service(`api-${name}`, {
-      project: projectId,
-      service: api,
-      disableDependentServices: false,
-      disableOnDestroy: false,
+    const {
+      project,
+      additionalApis = [],
+      disableDependentServices = true,
+      disableOnDestroy = false
+    } = args;
+
+    // Combine required and additional APIs
+    const allApis = [...new Set([...REQUIRED_GCP_APIS, ...additionalApis])];
+
+    // Enable each API
+    this.enabledApis = {};
+    const apiOutputs: pulumi.Output<string>[] = [];
+
+    for (const api of allApis) {
+      const apiName = api.replace(".googleapis.com", "").replace(/\./g, "-");
+
+      const service = new gcp.projects.Service(
+        `${name}-${apiName}`,
+        {
+          project: project,
+          service: api,
+          disableDependentServices: disableDependentServices,
+          disableOnDestroy: disableOnDestroy
+        },
+        { parent: this }
+      );
+
+      this.enabledApis[api] = service;
+      apiOutputs.push(service.service);
+    }
+
+    this.apiNames = pulumi.all(apiOutputs);
+
+    this.registerOutputs({
+      enabledApis: this.enabledApis,
+      apiNames: this.apiNames
     });
   }
 
-  return enabledApis;
+  /**
+   * Get a specific API service resource
+   */
+  getApi(apiName: GcpApi): gcp.projects.Service | undefined {
+    return this.enabledApis[apiName];
+  }
+
+  /**
+   * Create dependency option for resources that need APIs enabled
+   */
+  dependsOn(): pulumi.Resource[] {
+    return Object.values(this.enabledApis);
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+/**
+ * Create API enabler with standard configuration
+ */
+export function createApiEnabler(
+  project: string,
+  opts?: pulumi.ComponentResourceOptions
+): ApiEnabler {
+  return new ApiEnabler("{{ .Project.Metadata.Name }}-apis", { project }, opts);
 }

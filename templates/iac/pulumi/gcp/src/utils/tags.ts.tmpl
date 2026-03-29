@@ -1,43 +1,273 @@
 /**
- * Default GCP labels for {{ .Project.Metadata.Name }} infrastructure.
+ * Resource Tagging Utilities
  *
- * Returns a standard set of labels applied to all GCP resources
- * for cost tracking, ownership, and automation filtering.
+ * Consistent labeling/tagging across all infrastructure resources.
+ * Supports both GCP labels and Kubernetes labels.
  */
 
-import * as pulumi from "@pulumi/pulumi";
+import type { Environment, EnvironmentConfig } from "../config/types.js";
+
+// =============================================================================
+// Standard Labels
+// =============================================================================
 
 /**
- * Returns the standard set of GCP labels to apply to all resources.
- *
- * Labels include:
- * - `project`: The project identifier
- * - `organization`: The owning organization
- * - `managed-by`: Always "pulumi"
- * - `environment`: Derived from the current Pulumi stack name
+ * Standard labels applied to all GCP resources
  */
-export function defaultLabels(): Record<string, string> {
-  const env = pulumi.getStack();
+export interface GcpLabels {
+  [key: string]: string;
+}
+
+/**
+ * Standard labels applied to all Kubernetes resources
+ */
+export interface K8sLabels {
+  [key: string]: string;
+}
+
+// =============================================================================
+// Label Generation Functions
+// =============================================================================
+
+/**
+ * Generate common GCP labels for a resource
+ *
+ * GCP label key requirements:
+ * - Must start with a lowercase letter
+ * - Can contain lowercase letters, numbers, underscores, and hyphens
+ * - Cannot contain slashes, dots, or other special characters
+ * - Max 63 characters
+ */
+export function gcpLabels(
+  config: EnvironmentConfig,
+  component: string
+): GcpLabels {
+  // Filter out any labels with invalid GCP key characters (safety check)
+  const validCommonLabels: GcpLabels = {};
+  for (const [key, value] of Object.entries(config.commonLabels)) {
+    if (/^[a-z][a-z0-9_-]*$/.test(key)) {
+      validCommonLabels[key] = value;
+    }
+  }
 
   return {
-    project: "{{ .Project.Metadata.Name }}",
-    organization: "{{ .Project.Metadata.Organization }}",
-    "managed-by": "pulumi",
-    environment: env,
+    ...validCommonLabels,
+    component: component.toLowerCase(),
+    environment: config.name,
+    project: config.gcpProject,
+    "managed-by": "pulumi"
   };
 }
 
 /**
- * Merges additional labels with the default label set.
- *
- * @param extra - Additional labels to include
- * @returns Merged label set with defaults taking precedence for conflicts
+ * Generate common Kubernetes labels for a resource
  */
-export function withLabels(
-  extra: Record<string, string>,
-): Record<string, string> {
+export function k8sLabels(
+  config: EnvironmentConfig,
+  component: string,
+  additionalLabels?: Record<string, string>
+): K8sLabels {
   return {
-    ...extra,
-    ...defaultLabels(),
+    "app.kubernetes.io/name": component.toLowerCase(),
+    "app.kubernetes.io/instance": `${component.toLowerCase()}-${config.name}`,
+    "app.kubernetes.io/version": "latest",
+    "app.kubernetes.io/component": component.toLowerCase(),
+    "app.kubernetes.io/part-of": "{{ .Project.Metadata.Name }}",
+    "app.kubernetes.io/managed-by": "pulumi",
+    environment: config.name,
+    ...additionalLabels
   };
+}
+
+/**
+ * Generate labels for a service
+ */
+export function serviceLabels(
+  config: EnvironmentConfig,
+  serviceName: string,
+  additionalLabels?: Record<string, string>
+): K8sLabels {
+  return {
+    "app.kubernetes.io/name": serviceName,
+    "app.kubernetes.io/instance": `${serviceName}-${config.name}`,
+    "app.kubernetes.io/part-of": "{{ .Project.Metadata.Name }}",
+    "app.kubernetes.io/managed-by": "pulumi",
+    app: serviceName,
+    environment: config.name,
+    ...additionalLabels
+  };
+}
+
+/**
+ * Generate selector labels for Kubernetes workloads
+ */
+export function selectorLabels(serviceName: string): K8sLabels {
+  return {
+    app: serviceName
+  };
+}
+
+/**
+ * Generate pod template labels
+ */
+export function podLabels(
+  config: EnvironmentConfig,
+  serviceName: string,
+  additionalLabels?: Record<string, string>
+): K8sLabels {
+  return {
+    ...serviceLabels(config, serviceName, additionalLabels),
+    "pod-template-hash": "managed"
+  };
+}
+
+// =============================================================================
+// Environment-Specific Labels
+// =============================================================================
+
+/**
+ * Get labels specific to staging environment
+ */
+export function stagingLabels(): GcpLabels {
+  return {
+    "cost-center": "engineering",
+    "data-classification": "internal",
+    "backup-policy": "daily"
+  };
+}
+
+/**
+ * Get labels specific to production environment
+ */
+export function productionLabels(): GcpLabels {
+  return {
+    "cost-center": "production",
+    "data-classification": "confidential",
+    "backup-policy": "continuous",
+    "sla-tier": "premium"
+  };
+}
+
+/**
+ * Get environment-specific labels
+ */
+export function environmentLabels(environment: Environment): GcpLabels {
+  return environment === "staging" ? stagingLabels() : productionLabels();
+}
+
+// =============================================================================
+// Infrastructure Component Labels
+// =============================================================================
+
+/**
+ * Labels for networking components
+ */
+export function networkingLabels(config: EnvironmentConfig): GcpLabels {
+  return gcpLabels(config, "networking");
+}
+
+/**
+ * Labels for GKE cluster
+ */
+export function gkeLabels(config: EnvironmentConfig): GcpLabels {
+  return {
+    ...gcpLabels(config, "gke"),
+    "cluster-name": `{{ .Project.Metadata.Name }}-${config.name}-cluster`
+  };
+}
+
+/**
+ * Labels for database resources
+ */
+export function databaseLabels(config: EnvironmentConfig): GcpLabels {
+  return {
+    ...gcpLabels(config, "database"),
+    "data-classification":
+      config.name === "production" ? "confidential" : "internal"
+  };
+}
+
+/**
+ * Labels for Redis resources
+ */
+export function redisLabels(config: EnvironmentConfig): GcpLabels {
+  return gcpLabels(config, "redis");
+}
+
+/**
+ * Labels for storage buckets
+ */
+export function storageLabels(
+  config: EnvironmentConfig,
+  purpose: string
+): GcpLabels {
+  return {
+    ...gcpLabels(config, "storage"),
+    purpose: purpose
+  };
+}
+
+/**
+ * Labels for secret manager
+ */
+export function secretLabels(
+  config: EnvironmentConfig,
+  secretType: string
+): GcpLabels {
+  return {
+    ...gcpLabels(config, "secrets"),
+    "secret-type": secretType
+  };
+}
+
+// =============================================================================
+// Label Utilities
+// =============================================================================
+
+/**
+ * Merge multiple label sets
+ */
+export function mergeLabels(
+  ...labelSets: (GcpLabels | undefined)[]
+): GcpLabels {
+  return labelSets.reduce<GcpLabels>((acc, labels) => {
+    if (labels) {
+      return { ...acc, ...labels };
+    }
+    return acc;
+  }, {});
+}
+
+/**
+ * Convert GCP labels to Kubernetes labels
+ */
+export function gcpToK8sLabels(gcpLabels: GcpLabels): K8sLabels {
+  const k8sLabels: K8sLabels = {};
+  for (const [key, value] of Object.entries(gcpLabels)) {
+    k8sLabels[key] = value;
+  }
+  return k8sLabels;
+}
+
+/**
+ * Validate GCP labels
+ * - Keys: 1-63 characters, lowercase letters, numbers, underscores, hyphens
+ * - Values: 0-63 characters
+ * - Keys must start with a lowercase letter
+ */
+export function validateGcpLabels(labels: GcpLabels): boolean {
+  const keyPattern = /^[a-z][a-z0-9_-]{0,62}$/;
+  const valuePattern = /^[a-z0-9_-]{0,63}$/;
+
+  for (const [key, value] of Object.entries(labels)) {
+    if (!keyPattern.test(key)) {
+      console.warn(`Invalid GCP label key: ${key}`);
+      return false;
+    }
+    if (!valuePattern.test(value)) {
+      console.warn(`Invalid GCP label value for ${key}: ${value}`);
+      return false;
+    }
+  }
+  return true;
 }

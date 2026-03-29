@@ -1,0 +1,191 @@
+# GitHub App Setup - ArgoCD Repository Access
+
+This guide covers creating a GitHub App for ArgoCD to access private repositories.
+
+## Why GitHub App?
+
+| Method                | Pros                                                           | Cons                                         |
+| --------------------- | -------------------------------------------------------------- | -------------------------------------------- |
+| **GitHub App**        | Not tied to a person, fine-grained permissions, doesn't expire | More setup steps                             |
+| Personal Access Token | Quick to create                                                | Tied to person, expires, broader permissions |
+| Deploy Key            | Simple, read-only                                              | SSH only, per-repo                           |
+
+## Quick Setup
+
+### 1. Create GitHub App
+
+1. Go to your organization settings:
+
+   ```
+   https://github.com/organizations/{{ .Project.Metadata.Organization }}/settings/apps
+   ```
+
+2. Click **"New GitHub App"**
+
+3. Fill in the form:
+
+   | Field               | Value                                                  |
+   | ------------------- | ------------------------------------------------------ |
+   | **GitHub App name** | `ArgoCD {{ .Project.Metadata.Name }}`                  |
+   | **Description**     | `ArgoCD GitOps access to {{ .Project.Metadata.Name }} repositories` |
+   | **Homepage URL**    | `https://argocd.{{ .Project.Metadata.Domain }}`        |
+
+4. **Identifying and authorizing users** section:
+   - Callback URL: _(leave empty)_
+   - Expire user authorization tokens: **Unchecked**
+   - Request user authorization during installation: **Unchecked**
+   - Enable Device Flow: **Unchecked**
+
+5. **Post installation** section:
+   - Setup URL: _(leave empty)_
+   - Redirect on update: **Unchecked**
+
+6. **Webhook** section:
+   - Active: **Unchecked** (we'll use repo-level webhooks instead)
+
+7. **Permissions** section:
+
+   **Repository permissions:**
+   | Permission | Access |
+   |------------|--------|
+   | Contents | **Read-only** |
+   | Metadata | **Read-only** (auto-selected) |
+
+   _(Leave all others as "No access")_
+
+8. **Subscribe to events**:
+   - _(Leave all unchecked)_
+
+9. **Where can this GitHub App be installed?**
+   - **Only on this account**
+
+10. Click **"Create GitHub App"**
+
+### 2. Generate Private Key
+
+1. After creation, scroll down to **"Private keys"**
+2. Click **"Generate a private key"**
+3. Save the downloaded `.pem` file securely
+
+### 3. Install the App
+
+1. In the left sidebar, click **"Install App"**
+2. Click **"Install"** next to your organization
+3. Select **"Only select repositories"**
+4. Choose the `{{ .Project.Metadata.Name }}` repository
+5. Click **"Install"**
+
+### 4. Get Credentials
+
+After installation, note these values:
+
+| Value               | Where to Find                                                 |
+| ------------------- | ------------------------------------------------------------- |
+| **App ID**          | App settings page (top section)                               |
+| **Installation ID** | URL after installing: `github.com/.../installations/XXXXXXXX` |
+| **Private Key**     | The `.pem` file you downloaded                                |
+| **Client ID**       | App settings page (optional, for OAuth)                       |
+| **Client Secret**   | Generate in app settings (optional)                           |
+
+### 5. Add to Pulumi Secrets
+
+Format the private key for JSON (escape newlines):
+
+```bash
+# Convert .pem to single line
+cat path/to/private-key.pem | awk '{printf "%s\\n", $0}'
+```
+
+Add to your `staging.json` / `production.json`:
+
+```json
+{
+  "github-app-credentials": {
+    "appId": "YOUR_APP_ID",
+    "installationId": "YOUR_INSTALLATION_ID",
+    "privateKey": "-----BEGIN RSA PRIVATE KEY-----\\nMIIE...\\n-----END RSA PRIVATE KEY-----\\n",
+    "clientId": "YOUR_CLIENT_ID",
+    "clientSecret": "YOUR_CLIENT_SECRET"
+  }
+}
+```
+
+Then run:
+
+```bash
+./scripts/pulumi-secret-set.sh -e staging
+./scripts/pulumi-secret-set.sh -e production
+```
+
+## One App for All Environments
+
+You only need **ONE GitHub App** for both staging and production:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│          GitHub App: ArgoCD {{ .Project.Metadata.Name }}              │
+│          (installed on {{ .Project.Metadata.Name }} repo)            │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+        ┌─────────┴─────────┐
+        ▼                   ▼
+┌───────────────┐   ┌───────────────┐
+│ ArgoCD        │   │ ArgoCD        │
+│ Staging       │   │ Production    │
+│ (staging      │   │ (main         │
+│  branch)      │   │  branch)      │
+└───────────────┘   └───────────────┘
+```
+
+Both environments use the same credentials because:
+
+- They access the **same repository**
+- They just watch **different branches**
+- The app only has **read-only** access
+
+## Troubleshooting
+
+### ArgoCD can't clone repository
+
+1. Verify app is installed on the repo:
+
+   ```
+   https://github.com/organizations/{{ .Project.Metadata.Organization }}/settings/installations
+   ```
+
+2. Check ArgoCD repo-server logs:
+
+   ```bash
+   kubectl logs -n argocd -l app.kubernetes.io/component=repo-server
+   ```
+
+3. Verify credentials in ArgoCD:
+   ```bash
+   argocd repo list
+   ```
+
+### Private key format issues
+
+The private key must have `\n` for newlines in JSON:
+
+```bash
+# Good
+"privateKey": "-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n-----END RSA PRIVATE KEY-----\n"
+
+# Bad (actual newlines break JSON)
+"privateKey": "-----BEGIN RSA PRIVATE KEY-----
+MIIE...
+-----END RSA PRIVATE KEY-----"
+```
+
+### App not appearing in installation list
+
+- Ensure the app is created in the **organization**, not personal account
+- Check organization settings → Installed GitHub Apps
+
+## Security Best Practices
+
+1. **Minimal permissions**: Only `Contents: Read-only` is needed
+2. **Single repository**: Only install on the repos ArgoCD needs
+3. **Rotate keys**: Generate new private keys periodically
+4. **Audit logs**: GitHub App actions are logged in organization audit log

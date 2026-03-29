@@ -1,0 +1,103 @@
+/**
+ * Load Balancer Infrastructure
+ *
+ * Reserves a static IP for the ingress controller's LoadBalancer service.
+ * The actual Load Balancer is created by GKE when the ingress Service is deployed.
+ *
+ * Architecture:
+ *   Pulumi: Static IP + Cloud DNS
+ *   GKE: Ingress Service (type: LoadBalancer) -> uses static IP
+ *   K8s: BackendConfig -> references Cloud Armor policy
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface LoadBalancerInfraArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+}
+
+export interface LoadBalancerInfraOutputs {
+  /** Reserved static IP resource */
+  staticIp: gcp.compute.Address;
+  /** The actual IP address string */
+  ipAddress: pulumi.Output<string>;
+  /** IP name (for K8s annotations) */
+  ipName: string;
+}
+
+// =============================================================================
+// Component
+// =============================================================================
+
+export class LoadBalancerInfra extends pulumi.ComponentResource {
+  public readonly staticIp: gcp.compute.Address;
+  public readonly ipAddress: pulumi.Output<string>;
+  public readonly ipName: string;
+
+  constructor(
+    name: string,
+    args: LoadBalancerInfraArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:core:LoadBalancerInfra", name, {}, opts);
+
+    const { config } = args;
+    this.ipName = `{{ .Project.Metadata.Name }}-${config.name}-ingress-ip`;
+
+    // Reserve a REGIONAL static IP for the ingress LoadBalancer service
+    // GKE creates L4 (TCP/UDP) load balancers for Service type: LoadBalancer
+    this.staticIp = new gcp.compute.Address(
+      `${name}-ip`,
+      {
+        project: config.gcpProject,
+        region: config.gcpRegion,
+        name: this.ipName,
+        description: `Static IP for ingress controller (${config.name})`,
+        addressType: "EXTERNAL",
+        networkTier: "PREMIUM", // Required for cross-region, better performance
+        labels: {
+          environment: config.name,
+          component: "ingress",
+          "managed-by": "pulumi"
+        }
+      },
+      { parent: this }
+    );
+
+    this.ipAddress = this.staticIp.address;
+
+    this.registerOutputs({
+      staticIp: this.staticIp,
+      ipAddress: this.ipAddress,
+      ipName: this.ipName
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+/**
+ * Create load balancer infrastructure (static IP) for ingress
+ *
+ * @param config - Environment configuration
+ * @param opts - Pulumi resource options
+ */
+export function createLoadBalancerInfra(
+  config: EnvironmentConfig,
+  opts?: pulumi.ComponentResourceOptions
+): LoadBalancerInfra {
+  if (!config.loadBalancer.enabled) {
+    throw new Error("Load balancer is disabled in configuration");
+  }
+
+  return new LoadBalancerInfra(`{{ .Project.Metadata.Name }}-lb-${config.name}`, { config }, opts);
+}

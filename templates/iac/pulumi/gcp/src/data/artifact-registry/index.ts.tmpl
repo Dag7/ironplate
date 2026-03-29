@@ -1,0 +1,142 @@
+/**
+ * Artifact Registry Module
+ *
+ * Creates and manages GCP Artifact Registry for Docker container images.
+ * Includes cleanup policies for image retention and vulnerability scanning
+ * for the {{ .Project.Metadata.Name }} platform.
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { defaultLabels, withLabels } from "../../utils/tags.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface ArtifactRegistryArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+}
+
+export interface CleanupPolicyConfig {
+  /** Keep only the N most recent versions per package */
+  keepRecentVersions: number;
+  /** Delete untagged images after N days (0 = immediately) */
+  deleteUntaggedAfterDays: number;
+}
+
+export interface ArtifactRegistryOutputs {
+  /** The Docker repository */
+  repository: gcp.artifactregistry.Repository;
+  /** Repository URL for docker push/pull */
+  repositoryUrl: pulumi.Output<string>;
+  /** Full image prefix (e.g., us-central1-docker.pkg.dev/project/repo) */
+  imagePrefix: pulumi.Output<string>;
+}
+
+// =============================================================================
+// Artifact Registry Component
+// =============================================================================
+
+export class ArtifactRegistry extends pulumi.ComponentResource {
+  public readonly repository: gcp.artifactregistry.Repository;
+  public readonly repositoryUrl: pulumi.Output<string>;
+  public readonly imagePrefix: pulumi.Output<string>;
+
+  constructor(
+    name: string,
+    args: ArtifactRegistryArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:data:ArtifactRegistry", name, {}, opts);
+
+    const { config } = args;
+    const labels = withLabels({ component: "artifact-registry" });
+
+    // Repository name: {{ .Project.Metadata.Name }} (simple, project already has env)
+    const repoName = "{{ .Project.Metadata.Name }}";
+
+    // ==========================================================================
+    // Create Docker Repository
+    // ==========================================================================
+    this.repository = new gcp.artifactregistry.Repository(
+      `${name}-docker`,
+      {
+        repositoryId: repoName,
+        project: config.gcpProject,
+        location: config.gcpRegion,
+        format: "DOCKER",
+        description: `Docker container images for {{ .Project.Metadata.Name }} ${config.name} environment`,
+
+        // Cleanup policies for image retention
+        // KEEP policies protect images from DELETE policies
+        cleanupPolicies: [
+          // Policy 1: Keep only the N most recent versions per package (per tag)
+          // This ensures we always have the latest images available for k8s pulls
+          {
+            id: "keep-recent-versions",
+            action: "KEEP",
+            mostRecentVersions: {
+              keepCount: 3 // Keep 3 most recent tagged versions per package
+            }
+          },
+          // Policy 2: Delete untagged images after 1 day
+          // Untagged images are typically intermediate build layers
+          {
+            id: "delete-untagged",
+            action: "DELETE",
+            condition: {
+              tagState: "UNTAGGED",
+              olderThan: "86400s" // 1 day in seconds
+            }
+          }
+          // Note: We intentionally do NOT delete old tagged images by age.
+          // The keep-recent-versions policy ensures we retain the 3 most recent,
+          // and that's sufficient - deleting by age could cause issues if deployments
+          // are infrequent and k8s needs to pull an older image for scaling/restarts.
+        ],
+
+        // Enable cleanup policy enforcement
+        cleanupPolicyDryRun: false,
+
+        // Labels
+        labels: labels
+      },
+      { parent: this }
+    );
+
+    // ==========================================================================
+    // Compute Repository URLs
+    // ==========================================================================
+
+    // Format: {region}-docker.pkg.dev/{project}/{repository}
+    this.repositoryUrl = pulumi.interpolate`${config.gcpRegion}-docker.pkg.dev/${config.gcpProject}/${repoName}`;
+
+    // Full image prefix for use in deployments
+    // Usage: ${imagePrefix}/service-name:tag
+    this.imagePrefix = this.repositoryUrl;
+
+    this.registerOutputs({
+      repository: this.repository,
+      repositoryUrl: this.repositoryUrl,
+      imagePrefix: this.imagePrefix
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createArtifactRegistry(
+  config: EnvironmentConfig,
+  opts?: pulumi.ComponentResourceOptions
+): ArtifactRegistry {
+  return new ArtifactRegistry(
+    `{{ .Project.Metadata.Name }}-artifact-registry-${config.name}`,
+    { config },
+    opts
+  );
+}

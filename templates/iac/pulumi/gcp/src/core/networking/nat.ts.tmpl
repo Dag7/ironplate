@@ -1,0 +1,176 @@
+/**
+ * Cloud NAT Configuration Module
+ *
+ * Creates Cloud Router and Cloud NAT for outbound internet access from
+ * private GKE nodes in the {{ .Project.Metadata.Name }} platform.
+ * Uses static external IPs for deterministic egress addresses,
+ * enabling IP-based allowlisting with third-party services.
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { resourceName } from "../../utils/naming.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/** Arguments for creating the Cloud NAT component */
+export interface CloudNatArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** VPC network for the Cloud Router */
+  network: gcp.compute.Network;
+}
+
+/** Outputs exposed by the Cloud NAT component */
+export interface CloudNatOutputs {
+  /** Cloud Router resource */
+  router: gcp.compute.Router;
+  /** Cloud NAT resource */
+  nat: gcp.compute.RouterNat;
+  /** Reserved static external IP addresses for NAT */
+  natIps: gcp.compute.Address[];
+}
+
+// =============================================================================
+// Cloud NAT Component
+// =============================================================================
+
+/**
+ * Cloud NAT ComponentResource for the {{ .Project.Metadata.Name }} platform.
+ *
+ * Provisions:
+ * - A Cloud Router for BGP route advertisement
+ * - Static external IP addresses (2 for production, 1 otherwise)
+ * - Cloud NAT with manual IP allocation and port mapping configuration
+ *
+ * Port allocation uses 1024-4096 ports per VM with endpoint-independent
+ * mapping disabled for security. Error-only logging keeps costs low
+ * while providing visibility into NAT failures.
+ *
+ * @example
+ * ```ts
+ * const cloudNat = createCloudNat(config, vpc.network);
+ * const egressIps = cloudNat.getNatIps();
+ * ```
+ */
+export class CloudNat extends pulumi.ComponentResource {
+  public readonly router: gcp.compute.Router;
+  public readonly nat: gcp.compute.RouterNat;
+  public readonly natIps: gcp.compute.Address[];
+
+  constructor(
+    name: string,
+    args: CloudNatArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:networking:CloudNat", name, {}, opts);
+
+    const { config, network } = args;
+
+    // =========================================================================
+    // Cloud Router
+    // =========================================================================
+    const cloudRouterResourceName = resourceName("router", "nat");
+    this.router = new gcp.compute.Router(
+      `${name}-router`,
+      {
+        name: cloudRouterResourceName,
+        project: config.gcpProject,
+        region: config.gcpRegion,
+        network: network.selfLink,
+        description: `Cloud Router for {{ .Project.Metadata.Name }} ${config.name} NAT`,
+      },
+      { parent: this }
+    );
+
+    // =========================================================================
+    // Static External IPs for NAT
+    // Production gets multiple IPs for higher throughput and redundancy
+    // =========================================================================
+    const numIps = config.name === "production" ? 2 : 1;
+    this.natIps = [];
+
+    for (let i = 0; i < numIps; i++) {
+      const ip = new gcp.compute.Address(
+        `${name}-nat-ip-${i}`,
+        {
+          name: `${resourceName("nat", "ip")}-${i}`,
+          project: config.gcpProject,
+          region: config.gcpRegion,
+          addressType: "EXTERNAL",
+          networkTier: "PREMIUM",
+        },
+        { parent: this }
+      );
+      this.natIps.push(ip);
+    }
+
+    // =========================================================================
+    // Cloud NAT
+    // =========================================================================
+    const cloudNatResourceName = resourceName("nat", "gateway");
+    this.nat = new gcp.compute.RouterNat(
+      `${name}-nat`,
+      {
+        name: cloudNatResourceName,
+        project: config.gcpProject,
+        region: config.gcpRegion,
+        router: this.router.name,
+        natIpAllocateOption: "MANUAL_ONLY",
+        natIps: this.natIps.map((ip) => ip.selfLink),
+        sourceSubnetworkIpRangesToNat: "ALL_SUBNETWORKS_ALL_IP_RANGES",
+        minPortsPerVm: 1024,
+        maxPortsPerVm: 4096,
+        enableEndpointIndependentMapping: false,
+        logConfig: {
+          enable: true,
+          filter: "ERRORS_ONLY",
+        },
+      },
+      { parent: this, dependsOn: [...this.natIps] }
+    );
+
+    this.registerOutputs({
+      router: this.router,
+      nat: this.nat,
+      natIps: this.natIps,
+    });
+  }
+
+  /**
+   * Get the static external IP addresses used by Cloud NAT.
+   * Useful for sharing with third-party services that require IP allowlisting.
+   *
+   * @returns An output containing the list of NAT IP addresses
+   */
+  getNatIps(): pulumi.Output<string[]> {
+    return pulumi.all(this.natIps.map((ip) => ip.address));
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+/**
+ * Creates Cloud NAT for the given environment.
+ *
+ * @param config - Environment configuration
+ * @param network - VPC network for the Cloud Router
+ * @param opts - Pulumi component resource options
+ * @returns A fully configured CloudNat component
+ */
+export function createCloudNat(
+  config: EnvironmentConfig,
+  network: gcp.compute.Network,
+  opts?: pulumi.ComponentResourceOptions
+): CloudNat {
+  return new CloudNat(
+    `{{ .Project.Metadata.Name }}-nat-${config.name}`,
+    { config, network },
+    opts
+  );
+}

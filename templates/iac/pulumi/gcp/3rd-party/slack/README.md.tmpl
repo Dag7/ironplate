@@ -1,0 +1,120 @@
+# Slack App Setup - ArgoCD Notifications
+
+This folder contains the Slack app manifest for ArgoCD deployment notifications.
+
+## Quick Setup
+
+### 1. Create Slack App from Manifest
+
+1. Go to [Slack API Apps](https://api.slack.com/apps)
+2. Click **"Create New App"**
+3. Select **"From an app manifest"**
+4. Choose your workspace
+5. Select **JSON** tab
+6. Paste the contents of `argocd-notifications.manifest.json`
+7. Click **"Create"**
+
+### 2. Install App to Workspace
+
+1. After creation, go to **"Install App"** in the sidebar
+2. Click **"Install to Workspace"**
+3. Select the channels for notifications:
+   - `#{{ .Project.Metadata.Name }}-deployments` - Successful deployments
+   - `#{{ .Project.Metadata.Name }}-alerts` - Failed syncs and health issues
+4. Click **"Allow"**
+
+### 3. Get Webhook URL
+
+1. Go to **"Incoming Webhooks"** in the sidebar
+2. Enable **"Activate Incoming Webhooks"** if not already enabled
+3. Click **"Add New Webhook to Workspace"**
+4. Select `#{{ .Project.Metadata.Name }}-deployments` channel
+5. Copy the webhook URL
+
+### 4. Configure ArgoCD
+
+Create the ArgoCD notifications secret:
+
+```bash
+# Replace with your actual webhook URL
+SLACK_WEBHOOK_URL="<your-slack-webhook-url>"
+
+kubectl create secret generic argocd-notifications-secret \
+  -n argocd \
+  --from-literal=slack-token="${SLACK_WEBHOOK_URL}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Or add to GCP Secret Manager and use External Secrets:
+
+```bash
+# Add to GCP Secret Manager
+echo -n "${SLACK_WEBHOOK_URL}" | gcloud secrets create argocd-slack-webhook \
+  --data-file=- \
+  --replication-policy=automatic
+
+# The External Secrets Operator will sync it to K8s
+```
+
+## Notification Channels
+
+| Channel                                | Purpose                  | Triggers                     |
+| -------------------------------------- | ------------------------ | ---------------------------- |
+| `#{{ .Project.Metadata.Name }}-deployments` | Deployment notifications | Sync succeeded, app created  |
+| `#{{ .Project.Metadata.Name }}-alerts`      | Critical alerts          | Sync failed, degraded health |
+| `#{{ .Project.Metadata.Name }}-prod-alerts` | Production only          | Production sync events       |
+
+## Message Format
+
+ArgoCD sends messages like:
+
+```
+Application {{ .Project.Metadata.Name }}-services-staging is now Synced
+   Revision: abc1234
+   Author: John Doe
+   Message: feat: add new feature
+```
+
+```
+Application {{ .Project.Metadata.Name }}-services-production sync failed
+   Error: ComparisonError: Failed to compare...
+```
+
+## Testing
+
+After setup, test the webhook:
+
+```bash
+curl -X POST -H 'Content-type: application/json' \
+  --data '{"text":"ArgoCD notifications test"}' \
+  "${SLACK_WEBHOOK_URL}"
+```
+
+## Troubleshooting
+
+### Notifications not appearing
+
+1. Check the secret exists:
+
+   ```bash
+   kubectl get secret argocd-notifications-secret -n argocd
+   ```
+
+2. Check ArgoCD notifications controller logs:
+
+   ```bash
+   kubectl logs -n argocd -l app.kubernetes.io/name=argocd-notifications-controller
+   ```
+
+3. Verify webhook URL is correct:
+   ```bash
+   kubectl get secret argocd-notifications-secret -n argocd -o jsonpath='{.data.slack-token}' | base64 -d
+   ```
+
+### Rate limiting
+
+Slack has rate limits. If you're deploying frequently, consider:
+
+- Batching notifications
+- Using threading for related messages
+- Limiting to important events only

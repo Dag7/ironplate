@@ -1,0 +1,143 @@
+/**
+ * GKE Module
+ *
+ * Complete GKE setup including cluster and node pools.
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { GkeCluster, createGkeCluster } from "./cluster.js";
+import { NodePools, createNodePools } from "./node-pools.js";
+import { createKubeconfig } from "../../utils/outputs.js";
+
+// Re-export components
+export * from "./cluster.js";
+export * from "./node-pools.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface GkeStackArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** VPC network */
+  network: gcp.compute.Network;
+  /** GKE subnet */
+  subnet: gcp.compute.Subnetwork;
+  /** Node service account email */
+  nodeServiceAccountEmail?: pulumi.Output<string>;
+}
+
+export interface GkeStackOutputs {
+  /** GKE cluster component */
+  cluster: GkeCluster;
+  /** Node pools component */
+  nodePools: NodePools;
+  /** Kubeconfig for cluster access */
+  kubeconfig: pulumi.Output<string>;
+}
+
+// =============================================================================
+// GKE Stack Component
+// =============================================================================
+
+/**
+ * Complete GKE stack for the {{ .Project.Metadata.Name }} platform
+ */
+export class GkeStack extends pulumi.ComponentResource {
+  public readonly cluster: GkeCluster;
+  public readonly nodePools: NodePools;
+  public readonly kubeconfig: pulumi.Output<string>;
+
+  constructor(
+    name: string,
+    args: GkeStackArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:gke:GkeStack", name, {}, opts);
+
+    const { config, network, subnet, nodeServiceAccountEmail } = args;
+
+    // Create GKE cluster
+    this.cluster = createGkeCluster(
+      config,
+      network,
+      subnet,
+      nodeServiceAccountEmail,
+      { parent: this }
+    );
+
+    // Create node pools
+    this.nodePools = createNodePools(
+      config,
+      this.cluster.cluster,
+      nodeServiceAccountEmail,
+      { parent: this, dependsOn: [this.cluster.cluster] }
+    );
+
+    // Generate kubeconfig
+    this.kubeconfig = createKubeconfig(
+      this.cluster.clusterName,
+      this.cluster.endpoint,
+      this.cluster.caCertificate,
+      config.gcpProject
+    );
+
+    this.registerOutputs({
+      cluster: this.cluster,
+      nodePools: this.nodePools,
+      kubeconfig: this.kubeconfig
+    });
+  }
+
+  /**
+   * Get the GKE cluster resource
+   */
+  getCluster(): gcp.container.Cluster {
+    return this.cluster.cluster;
+  }
+
+  /**
+   * Get cluster endpoint
+   */
+  getEndpoint(): pulumi.Output<string> {
+    return this.cluster.endpoint;
+  }
+
+  /**
+   * Get cluster CA certificate
+   */
+  getCaCertificate(): pulumi.Output<string> {
+    return this.cluster.caCertificate;
+  }
+
+  /**
+   * Get all resources for dependency management
+   */
+  dependsOn(): pulumi.Resource[] {
+    return [this.cluster.cluster, ...Object.values(this.nodePools.nodePools)];
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+/**
+ * Create complete GKE stack
+ */
+export function createGkeStack(
+  config: EnvironmentConfig,
+  network: gcp.compute.Network,
+  subnet: gcp.compute.Subnetwork,
+  nodeServiceAccountEmail?: pulumi.Output<string>,
+  opts?: pulumi.ComponentResourceOptions
+): GkeStack {
+  return new GkeStack(
+    `{{ .Project.Metadata.Name }}-gke-stack-${config.name}`,
+    { config, network, subnet, nodeServiceAccountEmail },
+    opts
+  );
+}

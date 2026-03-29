@@ -1,0 +1,138 @@
+#!/bin/bash
+# =============================================================================
+# Setup GitHub Webhook for ArgoCD
+# =============================================================================
+# This script configures a GitHub webhook to trigger ArgoCD syncs on push.
+#
+# Prerequisites:
+#   - GitHub CLI (gh) installed and authenticated
+#   - Pulumi stack deployed (to get webhook secret)
+#   - GITHUB_TOKEN with admin:repo_hook permission
+#
+# Usage:
+#   ./setup-argocd-github-webhook.sh -e staging
+#   ./setup-argocd-github-webhook.sh -e production
+# =============================================================================
+
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Default values
+ENVIRONMENT=""
+DRY_RUN=false
+
+# Parse arguments
+while getopts "e:dh" opt; do
+  case $opt in
+    e) ENVIRONMENT="$OPTARG" ;;
+    d) DRY_RUN=true ;;
+    h)
+      echo "Usage: $0 -e <environment> [-d]"
+      echo "  -e  Environment (staging|production)"
+      echo "  -d  Dry run (show what would be done)"
+      exit 0
+      ;;
+    *)
+      echo "Invalid option: -$OPTARG" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$ENVIRONMENT" ]]; then
+  echo -e "${RED}Error: Environment (-e) is required${NC}"
+  exit 1
+fi
+
+if [[ "$ENVIRONMENT" != "staging" && "$ENVIRONMENT" != "production" ]]; then
+  echo -e "${RED}Error: Environment must be 'staging' or 'production'${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}Setting up ArgoCD GitHub webhook for ${ENVIRONMENT}...${NC}"
+
+# Get configuration from Pulumi
+cd "$(dirname "$0")/.."
+echo "Fetching configuration from Pulumi stack ${ENVIRONMENT}..."
+
+WEBHOOK_URL=$(pulumi stack output argocdWebhookUrl -s "$ENVIRONMENT" 2>/dev/null || echo "")
+GCP_PROJECT=$(pulumi config get gcp:project -s "$ENVIRONMENT" 2>/dev/null || echo "")
+GITHUB_ORG=$(pulumi config get {{ .Project.Metadata.Name }}:github.organization -s "$ENVIRONMENT" 2>/dev/null || echo "{{ .Project.Metadata.Organization }}")
+GITHUB_REPO=$(pulumi config get {{ .Project.Metadata.Name }}:github.repository -s "$ENVIRONMENT" 2>/dev/null || echo "{{ .Project.Metadata.Name }}")
+
+if [[ -z "$WEBHOOK_URL" ]]; then
+  echo -e "${RED}Error: Could not get webhook URL from Pulumi. Is ArgoCD deployed?${NC}"
+  exit 1
+fi
+
+echo "  Webhook URL: $WEBHOOK_URL"
+echo "  GitHub Repo: $GITHUB_ORG/$GITHUB_REPO"
+
+# Get webhook secret from GCP Secret Manager
+echo "Fetching webhook secret from GCP Secret Manager..."
+WEBHOOK_SECRET=$(gcloud secrets versions access latest \
+  --secret="argocd-webhook-secret" \
+  --project="$GCP_PROJECT" 2>/dev/null || echo "")
+
+if [[ -z "$WEBHOOK_SECRET" ]]; then
+  echo -e "${RED}Error: Could not get webhook secret from GCP Secret Manager${NC}"
+  exit 1
+fi
+
+echo -e "${GREEN}✓ Retrieved webhook secret${NC}"
+
+# Check if webhook already exists
+echo "Checking for existing webhooks..."
+EXISTING_WEBHOOK=$(gh api "repos/$GITHUB_ORG/$GITHUB_REPO/hooks" \
+  --jq ".[] | select(.config.url == \"$WEBHOOK_URL\") | .id" 2>/dev/null || echo "")
+
+if [[ -n "$EXISTING_WEBHOOK" ]]; then
+  echo -e "${YELLOW}Webhook already exists (ID: $EXISTING_WEBHOOK). Updating...${NC}"
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo -e "${YELLOW}[DRY RUN] Would update webhook ID $EXISTING_WEBHOOK${NC}"
+  else
+    gh api "repos/$GITHUB_ORG/$GITHUB_REPO/hooks/$EXISTING_WEBHOOK" \
+      --method PATCH \
+      --field "config[url]=$WEBHOOK_URL" \
+      --field "config[secret]=$WEBHOOK_SECRET" \
+      --field "config[content_type]=json" \
+      --field "config[insecure_ssl]=0" \
+      --field "events[]=push" \
+      --field "active=true"
+    echo -e "${GREEN}✓ Webhook updated successfully${NC}"
+  fi
+else
+  echo "Creating new webhook..."
+
+  if [[ "$DRY_RUN" == "true" ]]; then
+    echo -e "${YELLOW}[DRY RUN] Would create webhook with URL: $WEBHOOK_URL${NC}"
+  else
+    gh api "repos/$GITHUB_ORG/$GITHUB_REPO/hooks" \
+      --method POST \
+      --field "name=web" \
+      --field "config[url]=$WEBHOOK_URL" \
+      --field "config[secret]=$WEBHOOK_SECRET" \
+      --field "config[content_type]=json" \
+      --field "config[insecure_ssl]=0" \
+      --field "events[]=push" \
+      --field "active=true"
+    echo -e "${GREEN}✓ Webhook created successfully${NC}"
+  fi
+fi
+
+echo ""
+echo -e "${GREEN}==================================================${NC}"
+echo -e "${GREEN}GitHub webhook setup complete!${NC}"
+echo -e "${GREEN}==================================================${NC}"
+echo ""
+echo "Webhook URL: $WEBHOOK_URL"
+echo "Events: push"
+echo ""
+echo "ArgoCD will now automatically sync when you push to the repository."
+echo ""

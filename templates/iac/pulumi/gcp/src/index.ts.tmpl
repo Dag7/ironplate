@@ -1,205 +1,689 @@
-import * as pulumi from "@pulumi/pulumi";
+/**
+ * {{ .Project.Metadata.Name }} Infrastructure as Code - Main Entry Point
+ *
+ * This is the main Pulumi program that orchestrates all INFRASTRUCTURE
+ * components for the {{ .Project.Metadata.Name }} platform on Google Cloud Platform.
+ *
+ * IMPORTANT: This manages INFRASTRUCTURE ONLY, not application workloads.
+ * - Workloads are deployed via Tilt (dev/CI) or ArgoCD (production GitOps)
+ * - Pulumi manages: GCP resources, GKE cluster, databases, secrets, ingress controller
+ * - Tilt/ArgoCD manages: Application deployments, services, HPAs
+ *
+ * Usage:
+ *   pulumi up -s staging     # Deploy staging infrastructure
+ *   pulumi up -s production  # Deploy production infrastructure
+ */
+
 import * as gcp from "@pulumi/gcp";
 import * as k8s from "@pulumi/kubernetes";
+import * as pulumi from "@pulumi/pulumi";
 
-import { enableApis } from "./core/project";
-import { createServiceAccounts } from "./core/project/iam";
-import { createNetwork } from "./core/networking";
-import { createGkeCluster } from "./core/gke";
-import { createSecurityPolicies } from "./core/security";
-import { createCertificates } from "./core/certificates";
-import { createDnsZone } from "./core/dns";
-import { createLoadBalancer } from "./core/load-balancer";
-import { createDataLayer } from "./data";
-import { setupKubernetes } from "./kubernetes";
-{{- if .Computed.HasArgoCD }}
-import { setupArgoCD } from "./kubernetes/argocd";
-{{- end }}
+// Configuration
+import { loadConfig, validateConfig } from "./config/index.js";
 
-const config = new pulumi.Config();
-const gcpConfig = new pulumi.Config("gcp");
+// Core Infrastructure
+import { CertManager, createCertManager } from "./core/certificates/index.js";
+import { createDnsInfrastructure } from "./core/dns/index.js";
+import { createGkeStack } from "./core/gke/index.js";
+import { createLoadBalancerInfra } from "./core/load-balancer/index.js";
+import { createNetworkingStack } from "./core/networking/index.js";
+{{ if .Computed.HasArgoCD }}import { createImageUpdaterIam } from "./core/project/argocd-image-updater-iam.js";
+{{ end }}import {
+  createWorkloadIdentityBinding,
+  DEFAULT_SERVICE_ACCOUNTS
+} from "./core/project/iam.js";
+import {
+  createGitHubWorkloadIdentity,
+  createProjectSetup,
+} from "./core/project/index.js";
+import { createVertexAIBudget } from "./core/project/vertex-budget.js";
+import { createSecurityStack } from "./core/security/index.js";
 
-const projectName = "{{ .Project.Metadata.Name }}";
-const environment = config.require("environment");
-const shortName = config.require("shortName");
-const domain = config.require("domain");
-const nodeCount = config.requireNumber("nodeCount");
-const machineType = config.require("machineType");
-const dbTier = config.require("dbTier");
-const region = gcpConfig.require("region");
-const gcpProject = gcpConfig.require("project");
+// Data Layer
+import { createDataLayer } from "./data/index.js";
 
-async function main(): Promise<Record<string, pulumi.Output<string>>> {
-    // -------------------------------------------------------------------------
-    // Phase 1: Enable required GCP APIs
-    // -------------------------------------------------------------------------
-    const apis = enableApis(gcpProject, [
-        "container.googleapis.com",
-        "compute.googleapis.com",
-        "dns.googleapis.com",
-        "sqladmin.googleapis.com",
-        "redis.googleapis.com",
-        "secretmanager.googleapis.com",
-        "artifactregistry.googleapis.com",
-        "cloudresourcemanager.googleapis.com",
-        "iam.googleapis.com",
-        "certificatemanager.googleapis.com",
-{{- if .Computed.HasKafka }}
-        "managedkafka.googleapis.com",
-{{- end }}
-    ]);
+// Secrets
+import { createSecretsGenerator } from "./secrets-generator/index.js";
 
-    // -------------------------------------------------------------------------
-    // Phase 2: IAM - Service accounts and role bindings
-    // -------------------------------------------------------------------------
-    const iam = createServiceAccounts({
-        projectName,
-        environment,
-        shortName,
-        gcpProject,
-    }, { dependsOn: apis });
+// Kubernetes Infrastructure (NOT workloads)
+{{ if .Computed.HasArgoCD }}import { ArgoCD, createArgoCD } from "./kubernetes/argocd/index.js";
+{{ end }}import { createIAP, IAP } from "./kubernetes/iap/index.js";
+import {
+  createTraefikIngress,
+  TraefikIngress
+} from "./kubernetes/ingress/index.js";
+import { createNamespaces } from "./kubernetes/namespaces/index.js";
+{{ if .Computed.HasExternalSecrets }}import {
+  createSecretsStack,
+  SecretsInfra
+} from "./kubernetes/secrets/index.js";
+{{ end }}
+// Utilities
+import { createSummary } from "./utils/outputs.js";
 
-    // -------------------------------------------------------------------------
-    // Phase 3: Networking - VPC, subnets, Cloud NAT, firewall rules
-    // -------------------------------------------------------------------------
-    const network = createNetwork({
-        projectName,
-        environment,
-        shortName,
-        region,
-    }, { dependsOn: apis });
+// =============================================================================
+// Main Program
+// =============================================================================
 
-    // -------------------------------------------------------------------------
-    // Phase 4: GKE cluster
-    // -------------------------------------------------------------------------
-    const cluster = createGkeCluster({
-        projectName,
-        environment,
-        shortName,
-        region,
-        nodeCount,
-        machineType,
-        network: network.vpc,
-        subnet: network.subnet,
-        serviceAccount: iam.gkeServiceAccount,
-    }, { dependsOn: [network, iam] });
+async function main() {
+  // Load and validate configuration
+  const config = loadConfig();
+  validateConfig(config);
 
-    // Build a Kubernetes provider from the GKE cluster kubeconfig
-    const k8sProvider = new k8s.Provider(`${projectName}-${shortName}-k8s`, {
-        kubeconfig: cluster.kubeconfig,
+  pulumi.log.info(
+    `Deploying {{ .Project.Metadata.Name }} infrastructure for ${config.name} environment`
+  );
+  pulumi.log.info(`GCP Project: ${config.gcpProject}`);
+  pulumi.log.info(`Region: ${config.gcpRegion}`);
+
+  // ===========================================================================
+  // Phase 1: GCP Project Setup (APIs & IAM)
+  // ===========================================================================
+  pulumi.log.info("Phase 1: Setting up GCP project...");
+
+  const projectSetup = createProjectSetup(config);
+
+  // ===========================================================================
+  // Phase 1.5: GitHub Workload Identity (for CI/CD)
+  // ===========================================================================
+  pulumi.log.info("Phase 1.5: Setting up GitHub Workload Identity...");
+
+  const artifactPusherSa =
+    projectSetup.iamSetup.serviceAccounts["artifact-pusher"];
+  const githubWorkloadIdentity = artifactPusherSa
+    ? createGitHubWorkloadIdentity(
+        {
+          config,
+          githubOrg: config.github.organization,
+          githubRepo: config.github.repository,
+          serviceAccounts: [artifactPusherSa],
+          allowedBranches: config.github.allowedBranches
+        },
+        { dependsOn: projectSetup.dependsOn() }
+      )
+    : undefined;
+
+  // ===========================================================================
+  // Phase 2: Networking
+  // ===========================================================================
+  pulumi.log.info("Phase 2: Creating networking stack...");
+
+  const networking = createNetworkingStack(config, {
+    dependsOn: projectSetup.dependsOn()
+  });
+
+  // ===========================================================================
+  // Phase 3: Security (Cloud Armor + IAP OAuth)
+  // ===========================================================================
+  pulumi.log.info("Phase 3: Setting up security (Cloud Armor + IAP)...");
+
+  const project = gcp.organizations.getProjectOutput({
+    projectId: config.gcpProject
+  });
+
+  const security = createSecurityStack(config, project.number, {
+    dependsOn: projectSetup.dependsOn()
+  });
+
+  // ===========================================================================
+  // Phase 4: Load Balancer Infrastructure (Static IP)
+  // ===========================================================================
+  pulumi.log.info("Phase 4: Reserving static IP for load balancer...");
+
+  let loadBalancerInfra;
+  if (config.loadBalancer.enabled) {
+    loadBalancerInfra = createLoadBalancerInfra(config, {
+      dependsOn: projectSetup.dependsOn()
     });
+  }
 
-    // -------------------------------------------------------------------------
-    // Phase 5: Security - Cloud Armor policies
-    // -------------------------------------------------------------------------
-    const security = createSecurityPolicies({
-        projectName,
-        environment,
-        shortName,
-    }, { dependsOn: apis });
+  // ===========================================================================
+  // Phase 5: Cloud DNS
+  // ===========================================================================
+  pulumi.log.info("Phase 5: Configuring Cloud DNS...");
 
-    // -------------------------------------------------------------------------
-    // Phase 6: Certificates - cert-manager and TLS certificates
-    // -------------------------------------------------------------------------
-    const certificates = createCertificates({
-        projectName,
-        environment,
-        shortName,
-        domain,
+  const dns = createDnsInfrastructure(config, {
+    dependsOn: projectSetup.dependsOn()
+  });
+
+  // Configure DNS records pointing to the static IP
+  if (loadBalancerInfra) {
+    dns.configureEnvironmentRecords(loadBalancerInfra.ipAddress);
+  }
+
+  // ===========================================================================
+  // Phase 6: Data Layer (Cloud SQL, Redis, Storage)
+  // ===========================================================================
+  pulumi.log.info("Phase 6: Provisioning data layer...");
+
+  const dataLayer = createDataLayer(
+    config,
+    networking.vpc.network,
+    networking.privateServiceConnection.connection,
+    {
+      dependsOn: networking.dependsOn()
+    }
+  );
+
+  // ===========================================================================
+  // Phase 7: Secrets Generation & GCP Secret Manager
+  // ===========================================================================
+  pulumi.log.info("Phase 7: Generating secrets...");
+
+  const secretsGenerator = createSecretsGenerator(
+    config,
+    {
+      databasePassword: dataLayer.postgres.password,
+      databaseConnectionStrings: dataLayer.getDatabaseConnectionStrings(),
+{{ if .Computed.HasRedis }}      redisConnectionUrl: dataLayer.getRedisConnectionUrl(),
+      redisAuthString: dataLayer.redis.authString,
+{{ end }}{{ if .Computed.HasLangfuse }}      langfuseRedisConnectionUrl: dataLayer.getLangfuseRedisConnectionUrl(),
+      langfuseRedisAuthString: dataLayer.getLangfuseRedisAuthString(),
+{{ end }}    },
+    {
+      dependsOn: [...dataLayer.dependsOn(), ...projectSetup.dependsOn()]
+    }
+  );
+
+  // ===========================================================================
+  // Phase 8: GKE Cluster
+  // ===========================================================================
+  pulumi.log.info("Phase 8: Creating GKE cluster...");
+
+  const gke = createGkeStack(
+    config,
+    networking.vpc.network,
+    networking.subnets.gkeSubnet,
+    projectSetup.iamSetup.getGkeNodeServiceAccount(),
+    {
+      dependsOn: [...networking.dependsOn(), ...projectSetup.dependsOn()]
+    }
+  );
+
+  // ===========================================================================
+  // Phase 9: Kubernetes Provider & Resources
+  // ===========================================================================
+  pulumi.log.info("Phase 9: Configuring Kubernetes resources...");
+
+  // Create Kubernetes provider using local kubeconfig context
+  const k8sProvider = new k8s.Provider("{{ .Project.Metadata.Name }}-k8s", {
+    context: pulumi.interpolate`gke_${config.gcpProject}_${config.gcpRegion}_${gke.cluster.clusterName}`
+  });
+
+  // Create namespaces
+  const namespaces = createNamespaces(config, k8sProvider, {
+    dependsOn: gke.dependsOn()
+  });
+
+{{ if .Computed.HasExternalSecrets }}  // Get External Secrets service account (for Workload Identity binding)
+  const externalSecretsServiceAccount =
+    projectSetup.iamSetup.serviceAccounts["external-secrets"];
+
+  // Deploy External Secrets Operator + ClusterSecretStore (infrastructure only)
+  // NOTE: ExternalSecret CRDs are created by Kustomize, not Pulumi
+  let secretsInfra: SecretsInfra | undefined;
+  if (externalSecretsServiceAccount) {
+    const externalSecretsNs = namespaces.getNamespace("external-secrets");
+
+    if (externalSecretsNs) {
+      secretsInfra = createSecretsStack(
+        config,
         k8sProvider,
-    }, { dependsOn: [cluster] });
+        externalSecretsNs,
+        externalSecretsServiceAccount,
+        {
+          dependsOn: [
+            ...Object.values(namespaces.namespaces),
+            ...Object.values(secretsGenerator.gcpSecrets)
+          ]
+        }
+      );
+    }
+  }
+{{ end }}
+{{ if .Computed.HasObservability }}  // ===========================================================================
+  // Phase 9.5: Tempo Workload Identity Binding (for GCS access)
+  // ===========================================================================
+  const tempoServiceAccount = projectSetup.iamSetup.serviceAccounts["tempo"];
+  if (
+    tempoServiceAccount &&
+    config.observability.tempoStorageBackend === "gcs"
+  ) {
+    pulumi.log.info("Phase 9.5: Creating Tempo Workload Identity binding...");
+    createWorkloadIdentityBinding(
+      `{{ .Project.Metadata.Name }}-tempo-wi-binding-${config.name}`,
+      {
+        project: config.gcpProject,
+        gcpServiceAccount: tempoServiceAccount,
+        namespace: "monitoring",
+        k8sServiceAccount: "tempo"
+      },
+      { dependsOn: gke.dependsOn() }
+    );
 
-    // -------------------------------------------------------------------------
-    // Phase 7: DNS - Cloud DNS managed zone and records
-    // -------------------------------------------------------------------------
-    const dns = createDnsZone({
-        projectName,
-        environment,
-        shortName,
-        domain,
-    }, { dependsOn: apis });
+    const tempoBucket = dataLayer.storage.getBucket("tempo-traces");
+    if (tempoBucket) {
+      new gcp.storage.BucketIAMMember(
+        `{{ .Project.Metadata.Name }}-tempo-bucket-iam-${config.name}`,
+        {
+          bucket: tempoBucket.name,
+          role: "roles/storage.admin",
+          member: pulumi.interpolate`serviceAccount:${tempoServiceAccount.email}`
+        },
+        { dependsOn: [tempoBucket, tempoServiceAccount] }
+      );
+    }
+  }
+{{ end }}
+  // ===========================================================================
+  // Phase 9.6: Service-Specific Workload Identity Bindings (for GCS access)
+  // ===========================================================================
+  // Add Workload Identity bindings for services that need direct GCP API access
+  // (e.g., file upload services needing GCS, AI services needing Vertex AI)
+  // Example:
+  //   const filesSa = projectSetup.iamSetup.serviceAccounts["files"];
+  //   if (filesSa) {
+  //     createWorkloadIdentityBinding(
+  //       `{{ .Project.Metadata.Name }}-files-wi-binding-${config.name}`,
+  //       { project: config.gcpProject, gcpServiceAccount: filesSa, namespace: "{{ .Project.Metadata.Name }}", k8sServiceAccount: "files-service" },
+  //       { dependsOn: gke.dependsOn() }
+  //     );
+  //   }
 
-    // -------------------------------------------------------------------------
-    // Phase 8: Load Balancer - Static IP and forwarding rules
-    // -------------------------------------------------------------------------
-    const loadBalancer = createLoadBalancer({
-        projectName,
-        environment,
-        shortName,
-        region,
-        securityPolicy: security.policy,
-    }, { dependsOn: [security, dns] });
+  // ===========================================================================
+  // Phase 9.7: Vertex AI Budget (optional)
+  // ===========================================================================
+  if (config.vertexAI?.budget) {
+    pulumi.log.info("Phase 9.7: Creating Vertex AI budget...");
+    createVertexAIBudget(
+      `{{ .Project.Metadata.Name }}-vertex-budget-${config.name}`,
+      {
+        project: config.gcpProject,
+        config: config.vertexAI
+      },
+      { dependsOn: projectSetup.dependsOn() }
+    );
+  }
 
-    // -------------------------------------------------------------------------
-    // Phase 9: Data layer - Cloud SQL, Memorystore, GCS, Artifact Registry
-    // -------------------------------------------------------------------------
-    const data = createDataLayer({
-        projectName,
-        environment,
-        shortName,
-        region,
-        dbTier,
-        network: network.vpc,
-{{- if .Computed.HasRedis }}
-        redisEnabled: true,
-{{- end }}
-{{- if .Computed.HasKafka }}
-        kafkaEnabled: true,
-{{- end }}
-    }, { dependsOn: [network, apis] });
+{{ if .Computed.HasLangfuse }}  // ===========================================================================
+  // Phase 9.8: Langfuse Workload Identity + GCS Bucket IAM
+  // ===========================================================================
+  const langfuseSaConfig = DEFAULT_SERVICE_ACCOUNTS.find(
+    (sa) => sa.name === "langfuse"
+  );
+  const langfuseServiceAccount =
+    projectSetup.iamSetup.serviceAccounts["langfuse"];
+  const langfuseBucket = dataLayer.storage.getBucket("langfuse-blob");
 
-    // -------------------------------------------------------------------------
-    // Phase 10: Kubernetes setup - namespaces, secrets, ingress controller
-    // -------------------------------------------------------------------------
-    const kubernetes = setupKubernetes({
-        projectName,
-        environment,
-        shortName,
-        domain,
-        staticIp: loadBalancer.staticIp,
-        k8sProvider,
-{{- if .Computed.HasExternalSecrets }}
-        externalSecretsEnabled: true,
-{{- end }}
-{{- if .Computed.HasObservability }}
-        observabilityEnabled: true,
-{{- end }}
-{{- if .Computed.HasDapr }}
-        daprEnabled: true,
-{{- end }}
-    }, { dependsOn: [cluster, data, loadBalancer] });
+  if (langfuseServiceAccount && langfuseSaConfig?.workloadIdentity) {
+    pulumi.log.info(
+      "Phase 9.8: Creating Langfuse Workload Identity binding for GCS access..."
+    );
 
-    // -------------------------------------------------------------------------
-    // Phase 11: Conditional components
-    // -------------------------------------------------------------------------
-{{- if .Computed.HasArgoCD }}
-    const argocd = setupArgoCD({
-        projectName,
-        environment,
-        shortName,
-        domain,
-        k8sProvider,
-    }, { dependsOn: [kubernetes] });
-{{- end }}
+    const { namespace, serviceAccountName } = langfuseSaConfig.workloadIdentity;
+    createWorkloadIdentityBinding(
+      `{{ .Project.Metadata.Name }}-langfuse-wi-binding-${config.name}`,
+      {
+        project: config.gcpProject,
+        gcpServiceAccount: langfuseServiceAccount,
+        namespace,
+        k8sServiceAccount: serviceAccountName
+      },
+      { dependsOn: gke.dependsOn() }
+    );
 
-    // -------------------------------------------------------------------------
-    // Phase 12: Export stack outputs
-    // -------------------------------------------------------------------------
-    return {
-        clusterName: cluster.name,
-        kubeconfig: cluster.kubeconfig,
-        registryUrl: data.registryUrl,
-        staticIpAddress: loadBalancer.staticIpAddress,
-        databaseConnectionName: data.databaseConnectionName,
-        dnsNameServers: dns.nameServers,
-    };
+    if (langfuseBucket) {
+      new gcp.storage.BucketIAMMember(
+        `{{ .Project.Metadata.Name }}-langfuse-bucket-iam-${config.name}`,
+        {
+          bucket: langfuseBucket.name,
+          role: "roles/storage.admin",
+          member: pulumi.interpolate`serviceAccount:${langfuseServiceAccount.email}`
+        },
+        { dependsOn: [langfuseBucket, langfuseServiceAccount] }
+      );
+    }
+  }
+{{ end }}
+  // ===========================================================================
+  // Phase 10: cert-manager + TLS Certificates
+  // ===========================================================================
+  pulumi.log.info("Phase 10: Deploying cert-manager for TLS certificates...");
+
+  let certManager: CertManager | undefined;
+  const appNs = namespaces.getNamespace("{{ .Project.Metadata.Name }}");
+
+  if (appNs) {
+    certManager = createCertManager(config, dns.zoneName, k8sProvider, {
+      dependsOn: [...gke.dependsOn(), ...Object.values(namespaces.namespaces)]
+    });
+  }
+
+  // ===========================================================================
+  // Phase 11: Traefik Ingress Controller
+  // ===========================================================================
+  pulumi.log.info("Phase 11: Deploying Traefik ingress controller...");
+
+  const traefikNs = namespaces.getNamespace("traefik-system");
+  let traefik: TraefikIngress | undefined;
+  if (traefikNs && appNs) {
+    traefik = createTraefikIngress(
+      config,
+      k8sProvider,
+      traefikNs,
+      appNs,
+      {
+        staticIp: loadBalancerInfra?.ipAddress,
+        cloudArmorPolicyName: security.cloudArmorPolicyName
+      },
+      {
+        dependsOn: [
+          ...Object.values(namespaces.namespaces),
+          ...(certManager ? [certManager.helmRelease] : [])
+        ]
+      }
+    );
+  }
+
+  // ===========================================================================
+  // Phase 11.5: IAP (Identity-Aware Proxy)
+  // ===========================================================================
+  pulumi.log.info("Phase 11.5: Deploying IAP (OAuth2 Proxy)...");
+
+  let iap: IAP | undefined;
+
+  const tlsSecretName = config.domain.tlsSecretName;
+  const clusterSecretStoreName = config.secrets.clusterSecretStoreName;
+
+  const iapCredentialsConfigured =
+    !!config.secrets.credentials?.["iap-credentials"];
+
+  if (config.security.iap.enabled && !iapCredentialsConfigured) {
+    pulumi.log.warn(
+      "IAP CREDENTIALS NOT CONFIGURED - SKIPPING IAP DEPLOYMENT. " +
+      "Protected services will be accessible WITHOUT authentication until IAP is configured. " +
+      "To enable: 1) Add iap-credentials to _secrets/[env].json, " +
+      "2) Run: ./scripts/pulumi-secret-set.sh -e [env], " +
+      "3) Re-run: pulumi up"
+    );
+  } else if (
+    appNs &&
+    traefik &&
+{{ if .Computed.HasExternalSecrets }}    secretsInfra &&
+{{ end }}    config.security.iap.enabled &&
+    iapCredentialsConfigured
+  ) {
+    pulumi.log.info("IAP credentials configured, deploying OAuth2 Proxy...");
+
+    const iapDependencies: pulumi.Resource[] = [
+      traefik.helmRelease,
+{{ if .Computed.HasExternalSecrets }}      secretsInfra.externalSecrets.secretStore,
+{{ end }}    ];
+    if (traefik.middlewares["security-headers"]) {
+      iapDependencies.push(traefik.middlewares["security-headers"]);
+    }
+    if (certManager?.certificate) {
+      iapDependencies.push(certManager.certificate);
+    }
+
+    iap = createIAP(
+      config,
+      k8sProvider,
+      appNs,
+      tlsSecretName,
+      clusterSecretStoreName,
+      { dependsOn: iapDependencies }
+    );
+  } else if (!config.security.iap.enabled) {
+    pulumi.log.info("IAP is disabled in configuration, skipping...");
+  }
+
+{{ if .Computed.HasArgoCD }}  // ===========================================================================
+  // Phase 12: ArgoCD GitOps Controller
+  // ===========================================================================
+  pulumi.log.info("Phase 12: Deploying ArgoCD GitOps Controller...");
+
+  const argocdNs = namespaces.getNamespace("argocd");
+  let argocd: ArgoCD | undefined;
+  if (argocdNs && appNs && config.argocd?.enabled) {
+    const infrastructureDependencies: pulumi.Resource[] = [];
+
+    if (traefik) {
+      infrastructureDependencies.push(traefik.helmRelease);
+      if (traefik.middlewares["security-headers"]) {
+        infrastructureDependencies.push(
+          traefik.middlewares["security-headers"]
+        );
+      }
+    }
+
+    // Add IAP dependencies (if enabled)
+    if (iap) {
+      infrastructureDependencies.push(
+        iap.middleware,
+        iap.deployment,
+        iap.service
+      );
+    }
+
+    argocd = createArgoCD(
+      config,
+      config.argocd,
+      k8sProvider,
+      argocdNs,
+      appNs,
+      {
+        dependsOn: [
+          ...Object.values(namespaces.namespaces),
+          ...infrastructureDependencies
+        ]
+      }
+    );
+  } else if (!config.argocd?.enabled) {
+    pulumi.log.info("ArgoCD is disabled in configuration, skipping...");
+  }
+
+  // ===========================================================================
+  // Phase 12.5: ArgoCD Image Updater IAM + Auth Script
+  // ===========================================================================
+  if (config.argocd?.imageUpdater?.enabled && argocd) {
+    pulumi.log.info("Phase 12.5: Setting up ArgoCD Image Updater IAM...");
+    createImageUpdaterIam(
+      {
+        config,
+        k8sProvider
+      },
+      {
+        dependsOn: [argocd.helmRelease]
+      }
+    );
+  }
+{{ end }}
+  // ===========================================================================
+  // Stack Outputs
+  // ===========================================================================
+  pulumi.log.info("Generating stack outputs...");
+
+  return {
+    // Environment Info
+    environment: config.name,
+    gcpProject: config.gcpProject,
+    gcpRegion: config.gcpRegion,
+
+    // Networking
+    vpcId: networking.vpc.networkId,
+    vpcName: networking.vpc.network.name,
+    gkeSubnetId: networking.subnets.gkeSubnet.id,
+    natIps: networking.getNatIps(),
+
+    // Load Balancer
+    traefikStaticIp: loadBalancerInfra?.ipAddress,
+    traefikStaticIpName: loadBalancerInfra?.ipName,
+
+    // DNS
+    dnsZoneName: dns.zoneName,
+    dnsNameServers: dns.nameServers,
+
+    // Security
+    cloudArmorPolicyName: security.cloudArmorPolicyName
+      ? pulumi.output(security.cloudArmorPolicyName)
+      : undefined,
+
+    // GKE
+    gkeClusterName: gke.cluster.clusterName,
+    gkeClusterEndpoint: pulumi.secret(gke.cluster.endpoint),
+    gkeClusterCaCertificate: pulumi.secret(gke.cluster.caCertificate),
+    kubeconfig: pulumi.secret(gke.kubeconfig),
+
+    // Database
+    postgresInstanceName: dataLayer.postgres.instance.name,
+    postgresPrivateIp: pulumi.secret(dataLayer.postgres.privateIp),
+    postgresConnectionName: dataLayer.postgres.connectionName,
+
+{{ if .Computed.HasRedis }}    // Redis
+    redisHost: pulumi.secret(dataLayer.redis.host),
+    redisPort: dataLayer.redis.port,
+{{ end }}
+    // Storage Buckets
+    storageBuckets: Object.fromEntries(
+      Object.entries(dataLayer.storage.buckets).map(([name, bucket]) => [
+        name,
+        bucket.name
+      ])
+    ),
+
+    // Artifact Registry (Docker images)
+    artifactRegistryUrl: dataLayer.artifactRegistry.repositoryUrl,
+    dockerImagePrefix: dataLayer.artifactRegistry.imagePrefix,
+
+    // Secrets (references only, not values)
+    secretManagerSecrets: Object.fromEntries(
+      Object.entries(secretsGenerator.gcpSecrets).map(([name, secret]) => [
+        name,
+        secret.secretId
+      ])
+    ),
+
+    // cert-manager + TLS
+    certManagerReady: certManager?.helmRelease.status.apply(
+      (s) => s?.status === "deployed"
+    ),
+    tlsCertificateSecretName: certManager?.certificateSecretName,
+
+    // Traefik Ingress
+    traefikHelmReleaseName: traefik?.helmRelease.name,
+    traefikLoadBalancerIp: traefik?.loadBalancerIp,
+    traefikMiddlewares: traefik ? Object.keys(traefik.middlewares) : [],
+
+    // GitHub CI/CD (Workload Identity)
+    githubWorkloadIdentityProvider: githubWorkloadIdentity?.providerPath,
+    githubCicdServiceAccount:
+      projectSetup.iamSetup.serviceAccountEmails["artifact-pusher"],
+
+{{ if .Computed.HasExternalSecrets }}    // External Secrets Operator
+    externalSecretsOperatorReady:
+      secretsInfra?.externalSecrets.helmRelease.status.apply(
+        (s) => s?.status === "deployed"
+      ),
+    clusterSecretStoreName:
+      secretsInfra?.externalSecrets.secretStore.metadata.apply((m) => m?.name),
+{{ end }}
+    // Domains
+    baseDomain: config.dns.domain,
+    appDomain: `${config.domain.appSubdomain}.${config.domain.baseDomain}`,
+    apiDomain: `${config.domain.apiSubdomain}.${config.domain.baseDomain}`,
+    authDomain: `${config.domain.authSubdomain}.${config.domain.baseDomain}`,
+
+    // IAP (Identity-Aware Proxy)
+    iapEnabled: config.security.iap.enabled,
+    iapOauth2ProxyReady: iap ? true : false,
+
+{{ if .Computed.HasArgoCD }}    // ArgoCD
+    argocdEnabled: config.argocd?.enabled ?? false,
+    argocdServerUrl: argocd?.serverUrl,
+    argocdAdminPasswordSecretId: argocd?.adminPasswordSecretId,
+    argocdWebhookUrl: argocd?.webhookUrl,
+    argocdWebhookSecretId: argocd?.webhookSecretId,
+    argocdImageUpdaterEnabled: config.argocd?.imageUpdater?.enabled ?? false,
+{{ end }}
+    // Connection Commands
+    gcloudGetCredentials: pulumi.interpolate`gcloud container clusters get-credentials ${gke.cluster.clusterName} --region ${config.gcpRegion} --project ${config.gcpProject}`,
+
+    // Summary
+    summary: createSummary(config.name, config.gcpProject, {
+      gke: {
+        clusterName: gke.cluster.clusterName,
+        clusterEndpoint: gke.cluster.endpoint,
+        clusterCaCertificate: gke.cluster.caCertificate,
+        kubeconfig: gke.kubeconfig
+      },
+      database: {
+        instanceName: dataLayer.postgres.instance.name,
+        connectionName: dataLayer.postgres.connectionName,
+        privateIp: dataLayer.postgres.privateIp,
+        databases: ["{{ .Project.Metadata.Name }}"{{ if .Computed.HasHasura }}, "hasura_metadata"{{ end }}],
+        connectionStrings: dataLayer.getDatabaseConnectionStrings()
+      },
+{{ if .Computed.HasRedis }}      redis: {
+        host: dataLayer.redis.host,
+        port: dataLayer.redis.port,
+        authString: dataLayer.redis.authString,
+        connectionUrl: dataLayer.redis.connectionUrl
+      },
+{{ end }}      networking: {
+        vpcId: networking.vpc.networkId,
+        vpcName: networking.vpc.network.name,
+        subnetIds: {
+          gke: networking.subnets.gkeSubnet.id,
+          privateServices: networking.subnets.privateServicesSubnet.id
+        },
+        natIp: networking.cloudNat?.natIps[0]?.address ?? pulumi.output("N/A")
+      }
+    })
+  };
 }
 
-const outputs = main();
-
-export const clusterName = outputs.then(o => o.clusterName);
-export const kubeconfig = pulumi.secret(outputs.then(o => o.kubeconfig));
-export const registryUrl = outputs.then(o => o.registryUrl);
-export const staticIpAddress = outputs.then(o => o.staticIpAddress);
-export const databaseConnectionName = outputs.then(o => o.databaseConnectionName);
-export const dnsNameServers = outputs.then(o => o.dnsNameServers);
+// Execute main and export outputs
+const outputs = await main();
+export const environment = outputs.environment;
+export const gcpProject = outputs.gcpProject;
+export const gcpRegion = outputs.gcpRegion;
+export const vpcId = outputs.vpcId;
+export const vpcName = outputs.vpcName;
+export const traefikStaticIp = outputs.traefikStaticIp;
+export const dnsZoneName = outputs.dnsZoneName;
+export const dnsNameServers = outputs.dnsNameServers;
+export const cloudArmorPolicyName = outputs.cloudArmorPolicyName;
+export const gkeClusterName = outputs.gkeClusterName;
+export const gkeClusterEndpoint = outputs.gkeClusterEndpoint;
+export const kubeconfig = outputs.kubeconfig;
+export const postgresInstanceName = outputs.postgresInstanceName;
+export const postgresPrivateIp = outputs.postgresPrivateIp;
+{{ if .Computed.HasRedis }}export const redisHost = outputs.redisHost;
+{{ end }}export const storageBuckets = outputs.storageBuckets;
+export const artifactRegistryUrl = outputs.artifactRegistryUrl;
+export const dockerImagePrefix = outputs.dockerImagePrefix;
+export const secretManagerSecrets = outputs.secretManagerSecrets;
+export const certManagerReady = outputs.certManagerReady;
+export const tlsCertificateSecretName = outputs.tlsCertificateSecretName;
+export const traefikHelmReleaseName = outputs.traefikHelmReleaseName;
+export const traefikLoadBalancerIp = outputs.traefikLoadBalancerIp;
+export const traefikMiddlewares = outputs.traefikMiddlewares;
+export const githubWorkloadIdentityProvider =
+  outputs.githubWorkloadIdentityProvider;
+export const githubCicdServiceAccount = outputs.githubCicdServiceAccount;
+{{ if .Computed.HasExternalSecrets }}export const externalSecretsOperatorReady =
+  outputs.externalSecretsOperatorReady;
+export const clusterSecretStoreName = outputs.clusterSecretStoreName;
+{{ end }}export const baseDomain = outputs.baseDomain;
+export const appDomain = outputs.appDomain;
+export const apiDomain = outputs.apiDomain;
+export const authDomain = outputs.authDomain;
+export const gcloudGetCredentials = outputs.gcloudGetCredentials;
+{{ if .Computed.HasArgoCD }}export const argocdEnabled = outputs.argocdEnabled;
+export const argocdServerUrl = outputs.argocdServerUrl;
+export const argocdAdminPasswordSecretId = outputs.argocdAdminPasswordSecretId;
+export const argocdWebhookUrl = outputs.argocdWebhookUrl;
+export const argocdWebhookSecretId = outputs.argocdWebhookSecretId;
+export const argocdImageUpdaterEnabled = outputs.argocdImageUpdaterEnabled;
+{{ end }}export const summary = outputs.summary;

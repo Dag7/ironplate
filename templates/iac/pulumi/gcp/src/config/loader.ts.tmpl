@@ -1,82 +1,515 @@
-import * as pulumi from "@pulumi/pulumi";
-import { EnvironmentConfig, NetworkConfig, GkeConfig, DatabaseConfig } from "./types";
-
 /**
- * Loads and returns typed infrastructure configuration from Pulumi config.
+ * Configuration Loader
  *
- * Reads values from `Pulumi.<stack>.yaml` with sensible defaults for
- * the {{ .Project.Metadata.Name }} project.
+ * Loads configuration from Pulumi stack config files (Pulumi.<stack>.yaml).
+ * This allows the same TypeScript code to work for both staging and production,
+ * with environment-specific values defined in YAML.
+ *
+ * Usage:
+ *   const config = loadConfig();
+ *   // config.gke.nodePools, config.database.tier, etc.
  */
 
-const config = new pulumi.Config();
-const gcpConfig = new pulumi.Config("gcp");
-
-/** Current GCP project ID */
-export const projectId = gcpConfig.require("project");
-
-/** Current GCP region */
-export const region = gcpConfig.get("region") || "{{ .Project.Spec.Cloud.Region }}";
-
-/** Current Pulumi stack name, used as the environment identifier */
-export const stackName = pulumi.getStack();
+import * as pulumi from "@pulumi/pulumi";
+import type {
+{{ if .Computed.HasArgoCD }}  ArgoCDConfig,
+  ArgoCDImageUpdaterConfig,
+  ArgoCDNotificationsConfig,
+  ArgoCDRbacConfig,
+  ArgoCDResourceConfig,
+  ArgoCDWebhookConfig,
+{{ end }}  CertificateConfig,
+  DatabaseConfig,
+  DnsConfig,
+  DomainConfig,
+  EmailCredentials,
+  EncryptionCredentials,
+  EnvironmentConfig,
+{{ if .Computed.HasArgoCD }}  GitHubAppSecretCredentials,
+{{ end }}  GitHubConfig,
+  GkeConfig,
+{{ if .Computed.HasHasura }}  HasuraCredentials,
+{{ end }}  IapCredentials,
+  JwtCredentials,
+{{ if .Computed.HasLangfuse }}  LangfuseClickhouseCredentials,
+  LangfuseConfig,
+  LangfuseCredentials,
+{{ end }}  LlmCredentials,
+  LoadBalancerConfig,
+  NetworkingConfig,
+  OAuthCredentials,
+{{ if .Computed.HasObservability }}  ObservabilityConfig,
+  GrafanaCredentials,
+  AlertmanagerCredentials,
+{{ end }}{{ if .Computed.HasRedis }}  RedisConfig,
+{{ end }}  SecurityConfig,
+  SlackCredentials,
+  StorageConfig,
+  TraefikConfig,
+{{ if .Computed.HasArgoCD }}  VertexAIConfig,
+{{ end }}} from "./types.js";
 
 /**
- * Loads the environment configuration from Pulumi config values,
- * applying defaults appropriate for the current stack.
+ * Load configuration from Pulumi stack config.
+ * Reads from Pulumi.<stack>.yaml and applies sensible defaults.
+ *
+ * @returns The fully resolved environment configuration
  */
-export function loadEnvironmentConfig(): EnvironmentConfig {
-  const isProduction = stackName === "production" || stackName === "prod";
+export function loadConfig(): EnvironmentConfig {
+  const config = new pulumi.Config("{{ .Project.Metadata.Name }}");
+  const gcpConfig = new pulumi.Config("gcp");
 
+  // Get environment name from stack name
+  const stackName = pulumi.getStack();
+  const environment = stackName;
+
+  // Get short environment name from config (required for resource naming)
+  const envShortName = config.require("envShortName");
+
+  // Load nested objects from YAML config
+  const networking = config.requireObject<NetworkingConfig>("networking");
+  const gke = config.requireObject<GkeConfig>("gke");
+  const database = config.requireObject<DatabaseConfig>("database");
+{{ if .Computed.HasRedis }}  const redis = config.requireObject<RedisConfig>("redis");
+{{ end }}  const storage = config.requireObject<StorageConfig>("storage");
+  const domain = config.requireObject<DomainConfig>("domain");
+  const dns = config.requireObject<DnsConfig>("dns");
+  const security = config.requireObject<SecurityConfig>("security");
+  const loadBalancer = config.requireObject<LoadBalancerConfig>("loadBalancer");
+  // Load certificate config (required for cert-manager)
+  const certificate = config.requireObject<CertificateConfig>("certificate");
+  // Load Traefik config (required for ingress controller)
+  const traefik = config.requireObject<TraefikConfig>("traefik");
+  // Load base secrets config (non-secret values)
+  const secretsBase = config.getObject<{
+    enableExternalSecrets?: boolean;
+    refreshInterval?: string;
+    clusterSecretStoreName?: string;
+  }>("secrets");
+{{ if .Computed.HasObservability }}  const observability =
+    config.requireObject<ObservabilityConfig>("observability");
+{{ end }}{{ if .Computed.HasLangfuse }}  const langfuse = config.requireObject<LangfuseConfig>("langfuse");
+{{ end }}  const github = config.requireObject<GitHubConfig>("github");
+{{ if .Computed.HasArgoCD }}
+  // ArgoCD is optional - use defaults if not configured
+  const argocdBase = config.getObject<Partial<ArgoCDConfig>>("argocd");
+
+  // Vertex AI is optional - for Anthropic models via Google Cloud
+  const vertexaiBase = config.getObject<Partial<VertexAIConfig>>("vertexai");
+
+  // Webhook config defaults
+  const webhookDefaults: ArgoCDWebhookConfig = {
+    enabled: true,
+    allowedOrganizations: [github.organization]
+  };
+
+  // Notifications config defaults
+  const notificationsDefaults: ArgoCDNotificationsConfig = {
+    enabled: false,
+    slackChannel: "#deployments",
+    slackAlertChannel: "#alerts"
+  };
+
+  // Image Updater config defaults
+  const imageUpdaterDefaults: ArgoCDImageUpdaterConfig = {
+    enabled: false,
+    version: "1.0.4",
+    registryPrefix: `${gcpConfig.require("region")}-docker.pkg.dev/${gcpConfig.require("project")}/{{ .Project.Metadata.Name }}`,
+    updateStrategy: "digest",
+    writeBackMethod: "git",
+    writeBackBranch: environment === "production" ? "main" : environment
+  };
+
+  // RBAC config defaults
+  const rbacDefaults: ArgoCDRbacConfig = {
+    defaultPolicy: "role:readonly",
+    adminGroups: ["argocd-admins@{{ .Project.Metadata.Domain }}"],
+    developerGroups: ["developers@{{ .Project.Metadata.Domain }}"],
+    viewerGroups: [],
+    enableGoogleGroups: true
+  };
+
+  // Resource config defaults
+  const serverResourceDefaults: ArgoCDResourceConfig = {
+    requests: { cpu: "100m", memory: "128Mi" },
+    limits: { cpu: "500m", memory: "512Mi" }
+  };
+  const controllerResourceDefaults: ArgoCDResourceConfig = {
+    requests: { cpu: "250m", memory: "256Mi" },
+    limits: { cpu: "1000m", memory: "1Gi" }
+  };
+  const repoServerResourceDefaults: ArgoCDResourceConfig = {
+    requests: { cpu: "100m", memory: "128Mi" },
+    limits: { cpu: "500m", memory: "512Mi" }
+  };
+
+  // ArgoCD repository credentials for private repos
+  // Option 1: GitHub App (recommended)
+  //   Set via: pulumi config set --secret {{ .Project.Metadata.Name }}:github-app-credentials '{"app-id":"...","installation-id":"...","private-key":"..."}'
+  // Option 2: GitHub Token (legacy)
+  //   Set via: pulumi config set --secret {{ .Project.Metadata.Name }}:argocd-github-token <token>
+  const githubAppCredentials =
+    config.getSecretObject<GitHubAppSecretCredentials>(
+      "github-app-credentials"
+    );
+  const argocdGithubToken = config.getSecret("argocd-github-token");
+
+  // Build repository credentials - prefer GitHub App over token
+  // Map hyphenated keys to camelCase for ArgoCD Helm chart compatibility
+  const repositoryCredentials: ArgoCDConfig["repositoryCredentials"] =
+    githubAppCredentials
+      ? ({
+          githubApp: {
+            appId: githubAppCredentials["app-id"],
+            installationId: githubAppCredentials["installation-id"],
+            privateKey: githubAppCredentials["private-key"],
+            clientId: githubAppCredentials["client-id"],
+            clientSecret: githubAppCredentials["client-secret"]
+          }
+        } as unknown as ArgoCDConfig["repositoryCredentials"])
+      : argocdGithubToken
+        ? { githubToken: argocdGithubToken as unknown as string }
+        : undefined;
+
+  const argocd: ArgoCDConfig = {
+    enabled: argocdBase?.enabled ?? false,
+    version: argocdBase?.version ?? "9.4.2",
+    subdomain: argocdBase?.subdomain ?? "argocd",
+    replicas: argocdBase?.replicas ?? 2,
+    enableSso: argocdBase?.enableSso ?? false,
+    allowedRepositories: argocdBase?.allowedRepositories ?? [
+      `https://github.com/${github.organization}/${github.repository}.git`
+    ],
+    enableIap: argocdBase?.enableIap ?? true,
+    useInfraNodes: argocdBase?.useInfraNodes ?? true,
+    webhook: { ...webhookDefaults, ...argocdBase?.webhook },
+    notifications: { ...notificationsDefaults, ...argocdBase?.notifications },
+    imageUpdater: { ...imageUpdaterDefaults, ...argocdBase?.imageUpdater },
+    rbac: { ...rbacDefaults, ...argocdBase?.rbac },
+    repositoryCredentials,
+    serverResources: argocdBase?.serverResources ?? serverResourceDefaults,
+    controllerResources:
+      argocdBase?.controllerResources ?? controllerResourceDefaults,
+    repoServerResources:
+      argocdBase?.repoServerResources ?? repoServerResourceDefaults,
+    applicationSetReplicas: argocdBase?.applicationSetReplicas ?? 1,
+    pdbEnabled: argocdBase?.pdbEnabled ?? false,
+    redisHa: argocdBase?.redisHa ?? false,
+    enableSyncWindows: argocdBase?.enableSyncWindows ?? false,
+    logLevel: argocdBase?.logLevel ?? "info"
+  };
+{{ end }}
   return {
-    name: config.get("environmentName") || stackName,
-    shortName: config.get("environmentShortName") || (isProduction ? "prod" : "stg"),
-    domain: config.get("domain") || (isProduction
-      ? "{{ .Project.Metadata.Domain }}"
-      : `${stackName}.{{ .Project.Metadata.Domain }}`),
-    nodeCount: config.getNumber("nodeCount") || (isProduction ? 3 : 2),
-    machineType: config.get("machineType") || (isProduction ? "e2-standard-4" : "e2-standard-2"),
+    name: environment,
+    envShortName: envShortName,
+    gcpProject: gcpConfig.require("project"),
+    gcpRegion: gcpConfig.require("region"),
+    gcpZone: config.get("zone") || `${gcpConfig.require("region")}-a`,
+    organization: config.get("organization") || "{{ .Project.Metadata.Organization }}",
+
+    // Networking
+    networking: {
+      vpcCidr: networking.vpcCidr,
+      gkeSubnetCidr: networking.gkeSubnetCidr,
+      podsCidr: networking.podsCidr,
+      servicesCidr: networking.servicesCidr,
+      privateServicesCidr: networking.privateServicesCidr,
+      enableCloudNat: networking.enableCloudNat ?? true
+    },
+
+    // GKE
+    gke: {
+      releaseChannel: gke.releaseChannel ?? "REGULAR",
+      kubernetesVersion: gke.kubernetesVersion,
+      enableAutopilot: gke.enableAutopilot ?? false,
+      enablePrivateCluster: gke.enablePrivateCluster ?? true,
+      enablePrivateEndpoint: gke.enablePrivateEndpoint ?? false,
+      masterAuthorizedNetworks: gke.masterAuthorizedNetworks ?? [],
+      enableWorkloadIdentity: gke.enableWorkloadIdentity ?? true,
+      enableBinaryAuthorization: gke.enableBinaryAuthorization ?? false,
+      enableNetworkPolicy: gke.enableNetworkPolicy ?? true,
+      enableVpa: gke.enableVpa ?? true,
+      enableHttpLoadBalancing: gke.enableHttpLoadBalancing ?? true,
+      enableHpa: gke.enableHpa ?? true,
+      nodePools: gke.nodePools,
+      maintenanceWindow: gke.maintenanceWindow
+    },
+
+    // Database
+    database: {
+      tier: database.tier,
+      edition: database.edition ?? "ENTERPRISE",
+      highAvailability: database.highAvailability ?? false,
+      diskSizeGb: database.diskSizeGb ?? 20,
+      diskAutoresize: database.diskAutoresize ?? true,
+      diskAutoresizeLimit: database.diskAutoresizeLimit,
+      postgresVersion: database.postgresVersion ?? "POSTGRES_17",
+      enablePointInTimeRecovery: database.enablePointInTimeRecovery ?? false,
+      backupRetentionDays: database.backupRetentionDays ?? 7,
+      deletionProtection: database.deletionProtection ?? false,
+      databaseFlags: database.databaseFlags,
+      maintenanceWindow: database.maintenanceWindow,
+      insightsConfig: database.insightsConfig
+    },
+{{ if .Computed.HasRedis }}
+    // Redis
+    redis: {
+      tier: redis.tier ?? "BASIC",
+      memorySizeGb: redis.memorySizeGb ?? 1,
+      redisVersion: redis.redisVersion ?? "REDIS_7_0",
+      authEnabled: redis.authEnabled ?? true,
+      transitEncryptionEnabled: redis.transitEncryptionEnabled ?? true,
+      redisConfigs: redis.redisConfigs,
+      maintenanceWindow: redis.maintenanceWindow
+    },
+{{ end }}
+    // Storage
+    storage: {
+      buckets: storage.buckets ?? []
+    },
+
+    // Services (loaded from separate config or defaults)
+    services: config.getObject("services") ?? [],
+
+    // Domain
+    domain: {
+      baseDomain: domain.baseDomain,
+      envSubdomain: domain.envSubdomain,
+      appSubdomain: domain.appSubdomain,
+      apiSubdomain: domain.apiSubdomain,
+      authSubdomain: domain.authSubdomain,
+      tlsEnabled: domain.tlsEnabled ?? true,
+      tlsIssuer: domain.tlsIssuer ?? "letsencrypt-production",
+      tlsSecretName: domain.tlsSecretName,
+      enableHsts: domain.enableHsts ?? false,
+      additionalSubdomains: domain.additionalSubdomains
+    },
+
+    // Certificate
+    certificate: {
+      enabled: certificate.enabled ?? true,
+      name: certificate.name,
+      domains: certificate.domains
+    },
+
+    // Traefik
+    traefik: {
+      replicas: traefik.replicas,
+      resources: traefik.resources,
+      autoscaling: {
+        enabled: traefik.autoscaling?.enabled ?? false,
+        minReplicas: traefik.autoscaling?.minReplicas ?? 2,
+        maxReplicas: traefik.autoscaling?.maxReplicas ?? 5,
+        targetCpuUtilization: traefik.autoscaling?.targetCpuUtilization ?? 60
+      },
+      logLevel: traefik.logLevel ?? "INFO"
+    },
+
+    // DNS
+    dns: {
+      domain: dns.domain,
+      zoneName: dns.zoneName,
+      acmeEmail: dns.acmeEmail,
+      enableDnssec: dns.enableDnssec ?? true,
+      customRecords: dns.customRecords
+    },
+
+    // Security
+    security: {
+      cloudArmor: {
+        enabled: security.cloudArmor?.enabled ?? true,
+        enablePlusTier: security.cloudArmor?.enablePlusTier ?? false,
+        blockedCountries: security.cloudArmor?.blockedCountries,
+        rateLimitPerIp: security.cloudArmor?.rateLimitPerIp ?? 1000,
+        authRateLimitPerIp: security.cloudArmor?.authRateLimitPerIp ?? 30
+      },
+      iap: {
+        enabled: security.iap?.enabled ?? true,
+        supportEmail: security.iap?.supportEmail ?? "",
+        allowedMembers: security.iap?.allowedMembers ?? {},
+        publicServices: security.iap?.publicServices ?? [],
+        protectedServices: security.iap?.protectedServices ?? [],
+        oauth2ProxyVersion: security.iap?.oauth2ProxyVersion ?? "v7.5.1",
+        allowedEmailDomain: security.iap?.allowedEmailDomain ?? "{{ .Project.Metadata.Domain }}",
+        replicas: security.iap?.replicas ?? 1,
+        cookieDomain: security.iap?.cookieDomain ?? `.${domain.baseDomain}`,
+        cookieRefresh: security.iap?.cookieRefresh ?? "1h",
+        cookieExpire: security.iap?.cookieExpire ?? "4h",
+        cookieSameSiteStrict: security.iap?.cookieSameSiteStrict ?? false,
+        enablePodAntiAffinity: security.iap?.enablePodAntiAffinity ?? false,
+        nodeSelector: security.iap?.nodeSelector,
+        tolerations: security.iap?.tolerations,
+        resources: security.iap?.resources ?? {
+          requests: { cpu: "50m", memory: "64Mi" },
+          limits: { cpu: "200m", memory: "128Mi" }
+        }
+      }
+    },
+
+    // Load Balancer
+    loadBalancer: {
+      enabled: loadBalancer.enabled ?? true
+    },
+
+    // Secrets configuration
+    secrets: {
+      enableExternalSecrets: secretsBase?.enableExternalSecrets ?? true,
+      refreshInterval: secretsBase?.refreshInterval ?? "1h",
+      clusterSecretStoreName:
+        secretsBase?.clusterSecretStoreName ?? "gcp-secret-manager",
+      credentials: {
+        "jwt-credentials":
+          config.getSecretObject<JwtCredentials>("jwt-credentials"),
+        "encryption-credentials": config.getSecretObject<EncryptionCredentials>(
+          "encryption-credentials"
+        ),
+{{ if .Computed.HasHasura }}        "hasura-credentials":
+          config.getSecretObject<HasuraCredentials>("hasura-credentials"),
+{{ end }}        "oauth-credentials":
+          config.getSecretObject<OAuthCredentials>("oauth-credentials"),
+        "llm-credentials":
+          config.getSecretObject<LlmCredentials>("llm-credentials"),
+{{ if .Computed.HasLangfuse }}        "langfuse-credentials": config.getSecretObject<LangfuseCredentials>(
+          "langfuse-credentials"
+        ),
+        "langfuse-clickhouse-credentials":
+          config.getSecretObject<LangfuseClickhouseCredentials>(
+            "langfuse-clickhouse-credentials"
+          ),
+{{ end }}        "email-credentials":
+          config.getSecretObject<EmailCredentials>("email-credentials"),
+        "iap-credentials":
+          config.getSecretObject<IapCredentials>("iap-credentials"),
+        "slack-credentials":
+          config.getSecretObject<SlackCredentials>("slack-credentials"),
+{{ if .Computed.HasArgoCD }}        "github-app-credentials":
+          config.getSecretObject<GitHubAppSecretCredentials>(
+            "github-app-credentials"
+          ),
+{{ end }}{{ if .Computed.HasObservability }}        "grafana-credentials":
+          config.getSecretObject<GrafanaCredentials>("grafana-credentials"),
+        "alertmanager-credentials":
+          config.getSecretObject<AlertmanagerCredentials>(
+            "alertmanager-credentials"
+          ),
+{{ end }}      }
+    },
+{{ if .Computed.HasObservability }}
+    // Observability
+    observability: {
+      enableOtel: observability.enableOtel ?? true,
+      enableTempo: observability.enableTempo ?? true,
+      tempoStorageBackend: observability.tempoStorageBackend ?? "local",
+      tempoStorageBucket: observability.tempoStorageBucket,
+      traceRetentionHours: observability.traceRetentionHours ?? 168,
+      enablePrometheus: observability.enablePrometheus ?? false
+    },
+{{ end }}{{ if .Computed.HasLangfuse }}
+    // Langfuse
+    langfuse: {
+      selfHosted: langfuse.selfHosted ?? true,
+      version: langfuse.version,
+      redis: langfuse.redis
+    },
+{{ end }}
+    // GitHub CI/CD (Workload Identity)
+    github: {
+      organization: github.organization,
+      repository: github.repository,
+      allowedBranches: github.allowedBranches
+    },
+{{ if .Computed.HasArgoCD }}
+    // ArgoCD GitOps Controller
+    argocd: argocd,
+
+    // Vertex AI (optional - for Anthropic models via Google Cloud)
+    vertexai: vertexaiBase
+      ? {
+          enabled: vertexaiBase.enabled ?? false,
+          region: vertexaiBase.region ?? "us-east5",
+          billingAccount: vertexaiBase.billingAccount,
+          budget: vertexaiBase.budget
+        }
+      : undefined,
+{{ end }}
+    // Common Labels (GCP-compliant - no slashes, dots, or special chars in keys)
+    commonLabels: {
+      "managed-by": "pulumi",
+      "part-of": "{{ .Project.Metadata.Name }}",
+      environment: environment,
+      team: config.get("team") ?? "platform"
+    },
+
+    deletionProtection:
+      config.getBoolean("deletionProtection") ?? environment === "production"
   };
 }
 
 /**
- * Loads the network configuration from Pulumi config values.
+ * Get a specific config section.
+ * Useful for partial config access without loading the entire configuration.
+ *
+ * @param section - The configuration section key to retrieve
+ * @returns The value of the requested configuration section
  */
-export function loadNetworkConfig(): NetworkConfig {
-  return {
-    vpcName: config.get("vpcName") || `{{ .Project.Metadata.Name }}-${stackName}-vpc`,
-    subnetCidr: config.get("subnetCidr") || "10.0.0.0/20",
-    podCidr: config.get("podCidr") || "10.4.0.0/14",
-    serviceCidr: config.get("serviceCidr") || "10.8.0.0/20",
-  };
+export function getConfigSection<K extends keyof EnvironmentConfig>(
+  section: K
+): EnvironmentConfig[K] {
+  const config = loadConfig();
+  return config[section];
 }
 
 /**
- * Loads the GKE cluster configuration from Pulumi config values.
+ * Validate configuration completeness.
+ * Throws if required fields are missing or have invalid formats.
+ *
+ * @param config - The environment configuration to validate
+ * @throws Error with details of all validation failures
  */
-export function loadGkeConfig(): GkeConfig {
-  const envConfig = loadEnvironmentConfig();
-  const isProduction = stackName === "production" || stackName === "prod";
+export function validateConfig(config: EnvironmentConfig): void {
+  const errors: string[] = [];
 
-  return {
-    clusterName: config.get("clusterName") || `{{ .Project.Metadata.Name }}-${stackName}`,
-    nodePoolName: config.get("nodePoolName") || "default-pool",
-    minNodes: config.getNumber("minNodes") || (isProduction ? 2 : 1),
-    maxNodes: config.getNumber("maxNodes") || (isProduction ? 10 : 5),
-    machineType: envConfig.machineType,
-    diskSizeGb: config.getNumber("diskSizeGb") || (isProduction ? 100 : 50),
-  };
-}
+  // Required fields
+  if (!config.gcpProject) errors.push("gcpProject is required");
+  if (!config.gcpRegion) errors.push("gcpRegion is required");
+  if (!config.networking.vpcCidr) errors.push("networking.vpcCidr is required");
+  if (!config.networking.gkeSubnetCidr)
+    errors.push("networking.gkeSubnetCidr is required");
+  if (!config.gke.nodePools?.length)
+    errors.push("gke.nodePools must have at least one node pool");
+  if (!config.domain.baseDomain) errors.push("domain.baseDomain is required");
+  if (!config.dns.domain) errors.push("dns.domain is required");
+  if (!config.dns.acmeEmail) errors.push("dns.acmeEmail is required");
+  if (!config.github.organization)
+    errors.push("github.organization is required for Workload Identity");
+  if (!config.github.repository)
+    errors.push("github.repository is required for Workload Identity");
 
-/**
- * Loads the database configuration from Pulumi config values.
- */
-export function loadDatabaseConfig(): DatabaseConfig {
-  const isProduction = stackName === "production" || stackName === "prod";
+  // CIDR validations
+  const cidrRegex = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/;
+  if (config.networking.vpcCidr && !cidrRegex.test(config.networking.vpcCidr)) {
+    errors.push(
+      `Invalid CIDR format for networking.vpcCidr: ${config.networking.vpcCidr}`
+    );
+  }
 
-  return {
-    tier: config.get("dbTier") || (isProduction ? "db-custom-2-8192" : "db-custom-1-3840"),
-    storageGb: config.getNumber("dbStorageGb") || (isProduction ? 50 : 20),
-    highAvailability: config.getBoolean("dbHighAvailability") ?? isProduction,
-    databases: config.getObject<string[]>("databases") || ["{{ .Project.Metadata.Name }}"],
-  };
+  // Domain validation
+  const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9-_.]+\.[a-zA-Z]{2,}$/;
+  if (config.domain.baseDomain && !domainRegex.test(config.domain.baseDomain)) {
+    errors.push(`Invalid domain format: ${config.domain.baseDomain}`);
+  }
+
+  // Email validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (config.dns.acmeEmail && !emailRegex.test(config.dns.acmeEmail)) {
+    errors.push(
+      `Invalid email format for dns.acmeEmail: ${config.dns.acmeEmail}`
+    );
+  }
+
+  if (errors.length > 0) {
+    throw new Error(
+      `Configuration validation failed:\n  - ${errors.join("\n  - ")}`
+    );
+  }
 }

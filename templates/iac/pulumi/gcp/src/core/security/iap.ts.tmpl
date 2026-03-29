@@ -1,0 +1,145 @@
+/**
+ * IAP (Identity-Aware Proxy) Infrastructure Module
+ *
+ * Sets up GCP-native IAP IAM policies for protected services.
+ *
+ * IMPORTANT: As of July 2025, the IAP OAuth Admin API is deprecated.
+ * OAuth clients can no longer be created programmatically via Terraform/Pulumi.
+ *
+ * Credentials flow:
+ * 1. Add iap-credentials to _secrets/[env].json (client-id, client-secret, cookie-secret)
+ * 2. Run: ./scripts/pulumi-secret-set.sh -e [env]
+ * 3. Secrets are created by SecretsGenerator in GCP Secret Manager
+ * 4. ExternalSecret syncs them to K8s secret (iap-oauth-credentials)
+ * 5. OAuth2 Proxy deployment uses the K8s secret
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface IapInfraArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** Project number (required for IAM policy) */
+  projectNumber: pulumi.Input<string>;
+}
+
+// =============================================================================
+// IAP Infrastructure Component
+// =============================================================================
+
+/**
+ * IAP Infrastructure for GCP-native IAP IAM policies.
+ *
+ * NOTE: Secret Manager secrets for IAP credentials are now created by
+ * the SecretsGenerator, not this module. This module only handles IAM policies.
+ */
+export class IapInfra extends pulumi.ComponentResource {
+  /** IAM policy for IAP access control */
+  public readonly iamPolicy?: gcp.iap.WebTypeComputeIamPolicy;
+
+  constructor(
+    name: string,
+    args: IapInfraArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:security:IapInfra", name, {}, opts);
+
+    const { config } = args;
+
+    // ==========================================================================
+    // GCP Native IAP - IAM Policy
+    // ==========================================================================
+    // Controls who can access IAP-protected resources (for GCP-native IAP)
+    // This is separate from OAuth2 Proxy which uses Google OAuth for auth
+    const allowedMembers = formatIapMembers({
+      users: config.security.iap.allowedMembers.users,
+      groups: config.security.iap.allowedMembers.groups,
+      domain: config.security.iap.allowedMembers.domain
+    });
+
+    if (allowedMembers.length > 0) {
+      this.iamPolicy = new gcp.iap.WebTypeComputeIamPolicy(
+        `${name}-iam-policy`,
+        {
+          project: config.gcpProject,
+          policyData: pulumi
+            .output(
+              gcp.organizations.getProject({
+                projectId: config.gcpProject
+              })
+            )
+            .apply(() =>
+              JSON.stringify({
+                bindings: [
+                  {
+                    role: "roles/iap.httpsResourceAccessor",
+                    members: allowedMembers
+                  }
+                ]
+              })
+            )
+        },
+        { parent: this }
+      );
+    }
+
+    this.registerOutputs({
+      iamPolicy: this.iamPolicy
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createIapInfra(
+  config: EnvironmentConfig,
+  projectNumber: pulumi.Input<string>,
+  opts?: pulumi.ComponentResourceOptions
+): IapInfra | undefined {
+  if (!config.security.iap.enabled) {
+    return undefined;
+  }
+
+  return new IapInfra(
+    `{{ .Project.Metadata.Name }}-iap-${config.name}`,
+    { config, projectNumber },
+    opts
+  );
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/**
+ * Format allowed members for IAP IAM policy
+ */
+export function formatIapMembers(config: {
+  users?: string[];
+  groups?: string[];
+  domain?: string;
+}): string[] {
+  const members: string[] = [];
+
+  if (config.users) {
+    members.push(...config.users.map((u) => `user:${u}`));
+  }
+
+  if (config.groups) {
+    members.push(...config.groups.map((g) => `group:${g}`));
+  }
+
+  if (config.domain) {
+    members.push(`domain:${config.domain}`);
+  }
+
+  return members;
+}

@@ -1,0 +1,416 @@
+/**
+ * Traefik Ingress Controller Module
+ *
+ * Deploys Traefik as the ingress controller with middlewares and certificates.
+ * Uses a static IP reserved by Pulumi for consistent DNS.
+ */
+
+import * as k8s from "@pulumi/kubernetes";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { k8sLabels } from "../../utils/tags.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface TraefikIngressArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** Kubernetes provider */
+  k8sProvider: k8s.Provider;
+  /** Traefik namespace */
+  namespace: k8s.core.v1.Namespace;
+  /** Application namespace (for middlewares) */
+  appNamespace: k8s.core.v1.Namespace;
+  /** Static IP address for the LoadBalancer (from Pulumi) */
+  staticIp?: pulumi.Input<string>;
+  /** Cloud Armor security policy name */
+  cloudArmorPolicyName?: pulumi.Input<string>;
+}
+
+export interface TraefikIngressOutputs {
+  /** Traefik Helm release */
+  helmRelease: k8s.helm.v3.Release;
+  /** Load balancer IP */
+  loadBalancerIp: pulumi.Output<string>;
+  /** Middlewares */
+  middlewares: Record<string, k8s.apiextensions.CustomResource>;
+  /** Dashboard service for internal access */
+  dashboardService: k8s.core.v1.Service;
+}
+
+// =============================================================================
+// Traefik Ingress Component
+// =============================================================================
+
+export class TraefikIngress extends pulumi.ComponentResource {
+  public readonly helmRelease: k8s.helm.v3.Release;
+  public readonly loadBalancerIp: pulumi.Output<string>;
+  public readonly middlewares: Record<string, k8s.apiextensions.CustomResource>;
+  public readonly dashboardService: k8s.core.v1.Service;
+
+  constructor(
+    name: string,
+    args: TraefikIngressArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:kubernetes:TraefikIngress", name, {}, opts);
+
+    const {
+      config,
+      k8sProvider,
+      namespace,
+      appNamespace,
+      staticIp,
+      cloudArmorPolicyName
+    } = args;
+    const labels = k8sLabels(config, "traefik");
+    // All values from config.traefik - no isProduction checks needed
+    const traefikConfig = config.traefik;
+
+    // Build service annotations
+    const serviceAnnotations: Record<string, string> = {
+      "cloud.google.com/load-balancer-type": "External"
+    };
+
+    // Add BackendConfig annotation if Cloud Armor is enabled
+    if (cloudArmorPolicyName) {
+      serviceAnnotations["cloud.google.com/backend-config"] =
+        '{"default": "traefik-backend-config"}';
+    }
+
+    // ==========================================================================
+    // Deploy Traefik via Helm
+    // ==========================================================================
+    this.helmRelease = new k8s.helm.v3.Release(
+      `${name}-traefik`,
+      {
+        name: "traefik",
+        namespace: namespace.metadata.name,
+        chart: "traefik",
+        repositoryOpts: {
+          repo: "https://traefik.github.io/charts"
+        },
+        version: "26.0.0",
+        values: {
+          // Global args
+          globalArguments: [
+            "--global.checknewversion=false",
+            "--global.sendanonymoususage=false"
+          ],
+          // Additional arguments
+          additionalArguments: [
+            "--providers.kubernetescrd.allowcrossnamespace=true",
+            "--providers.kubernetescrd.allowexternalnameservices=true",
+            "--entrypoints.web.http.redirections.entrypoint.to=websecure",
+            "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+          ],
+          // Ports / entrypoints
+          ports: {
+            web: {
+              port: 8000,
+              exposedPort: 80,
+              expose: true,
+              protocol: "TCP"
+            },
+            websecure: {
+              port: 8443,
+              exposedPort: 443,
+              expose: true,
+              protocol: "TCP",
+              tls: {
+                enabled: true
+              }
+            },
+            traefik: {
+              port: 9000,
+              expose: false
+            }
+          },
+          // Service configuration with static IP
+          service: {
+            enabled: true,
+            type: "LoadBalancer",
+            annotations: serviceAnnotations,
+            // Use static IP if provided (reserved by Pulumi)
+            spec: staticIp
+              ? {
+                  loadBalancerIP: staticIp
+                }
+              : {}
+          },
+          // Deployment configuration
+          deployment: {
+            enabled: true,
+            replicas: traefikConfig.replicas
+          },
+          // Node selector - Traefik runs on infra nodes (stable, non-spot)
+          nodeSelector: {
+            "workload-type": "infra"
+          },
+          // Tolerations for infra node pool
+          tolerations: [
+            {
+              key: "workload-type",
+              operator: "Equal",
+              value: "infra",
+              effect: "NoSchedule"
+            }
+          ],
+          // Resources (from config)
+          resources: traefikConfig.resources,
+          // HPA (from config)
+          autoscaling: {
+            enabled: traefikConfig.autoscaling.enabled,
+            minReplicas: traefikConfig.autoscaling.minReplicas,
+            maxReplicas: traefikConfig.autoscaling.maxReplicas,
+            metrics: [
+              {
+                type: "Resource",
+                resource: {
+                  name: "cpu",
+                  target: {
+                    type: "Utilization",
+                    averageUtilization:
+                      traefikConfig.autoscaling.targetCpuUtilization
+                  }
+                }
+              }
+            ]
+          },
+          // Logs (from config)
+          logs: {
+            general: {
+              level: traefikConfig.logLevel
+            },
+            access: {
+              enabled: true,
+              format: "json"
+            }
+          },
+          // Metrics for Prometheus
+          metrics: {
+            prometheus: {
+              entryPoint: "metrics",
+              addEntryPointsLabels: true,
+              addServicesLabels: true
+            }
+          },
+          // Providers
+          providers: {
+            kubernetesCRD: {
+              enabled: true,
+              allowCrossNamespace: true,
+              allowExternalNameServices: true
+            },
+            kubernetesIngress: {
+              enabled: true,
+              allowExternalNameServices: true,
+              publishedService: {
+                enabled: true
+              }
+            }
+          },
+          // IngressClass
+          ingressClass: {
+            enabled: true,
+            isDefaultClass: true,
+            name: "traefik"
+          },
+          // TLS - use wildcard cert from cert-manager (from config)
+          tlsStore: {
+            default: {
+              defaultCertificate: {
+                secretName: config.domain.tlsSecretName
+              }
+            }
+          }
+        }
+      },
+      { parent: this, provider: k8sProvider }
+    );
+
+    // Store the static IP or a placeholder
+    this.loadBalancerIp = staticIp
+      ? pulumi.output(staticIp)
+      : this.helmRelease.status.apply(() => "pending");
+
+    // ==========================================================================
+    // Dashboard Service (ClusterIP for internal access via Ingress)
+    // ==========================================================================
+    this.dashboardService = new k8s.core.v1.Service(
+      `${name}-dashboard-service`,
+      {
+        metadata: {
+          name: "traefik-dashboard",
+          namespace: namespace.metadata.name,
+          labels: {
+            ...labels,
+            "app.kubernetes.io/component": "dashboard"
+          }
+        },
+        spec: {
+          type: "ClusterIP",
+          selector: {
+            "app.kubernetes.io/name": "traefik",
+            "app.kubernetes.io/instance": "traefik"
+          },
+          ports: [
+            {
+              name: "dashboard",
+              port: 80,
+              targetPort: 9000,
+              protocol: "TCP"
+            }
+          ]
+        }
+      },
+      { parent: this, provider: k8sProvider, dependsOn: [this.helmRelease] }
+    );
+
+    // ==========================================================================
+    // Create Middlewares
+    // ==========================================================================
+    this.middlewares = {};
+
+    // Rate Limit Middleware
+    this.middlewares["rate-limit"] = new k8s.apiextensions.CustomResource(
+      `${name}-rate-limit`,
+      {
+        apiVersion: "traefik.io/v1alpha1",
+        kind: "Middleware",
+        metadata: {
+          name: "rate-limit",
+          namespace: appNamespace.metadata.name,
+          labels: labels
+        },
+        spec: {
+          rateLimit: {
+            average: 100,
+            burst: 200,
+            period: "1s"
+          }
+        }
+      },
+      { parent: this, provider: k8sProvider, dependsOn: [this.helmRelease] }
+    );
+
+    // Strip API Prefix Middleware
+    this.middlewares["strip-api-prefix"] = new k8s.apiextensions.CustomResource(
+      `${name}-strip-api-prefix`,
+      {
+        apiVersion: "traefik.io/v1alpha1",
+        kind: "Middleware",
+        metadata: {
+          name: "strip-api-prefix",
+          namespace: appNamespace.metadata.name,
+          labels: labels
+        },
+        spec: {
+          stripPrefixRegex: {
+            regex: ["^/[^/]+"]
+          }
+        }
+      },
+      { parent: this, provider: k8sProvider, dependsOn: [this.helmRelease] }
+    );
+
+    // Security Headers Middleware
+    this.middlewares["security-headers"] = new k8s.apiextensions.CustomResource(
+      `${name}-security-headers`,
+      {
+        apiVersion: "traefik.io/v1alpha1",
+        kind: "Middleware",
+        metadata: {
+          name: "security-headers",
+          namespace: appNamespace.metadata.name,
+          labels: labels
+        },
+        spec: {
+          headers: {
+            browserXssFilter: true,
+            contentTypeNosniff: true,
+            frameDeny: true,
+            stsIncludeSubdomains: true,
+            stsPreload: true,
+            stsSeconds: 31536000,
+            customFrameOptionsValue: "SAMEORIGIN",
+            referrerPolicy: "strict-origin-when-cross-origin"
+          }
+        }
+      },
+      { parent: this, provider: k8sProvider, dependsOn: [this.helmRelease] }
+    );
+
+    // CORS Middleware
+    this.middlewares["cors"] = new k8s.apiextensions.CustomResource(
+      `${name}-cors`,
+      {
+        apiVersion: "traefik.io/v1alpha1",
+        kind: "Middleware",
+        metadata: {
+          name: "cors",
+          namespace: appNamespace.metadata.name,
+          labels: labels
+        },
+        spec: {
+          headers: {
+            accessControlAllowMethods: [
+              "GET",
+              "POST",
+              "PUT",
+              "DELETE",
+              "OPTIONS",
+              "PATCH"
+            ],
+            accessControlAllowHeaders: ["*"],
+            accessControlAllowOriginList: [
+              `https://${config.domain.appSubdomain}.${config.domain.baseDomain}`,
+              `https://${config.domain.apiSubdomain}.${config.domain.baseDomain}`
+            ],
+            accessControlAllowCredentials: true,
+            accessControlMaxAge: 86400
+          }
+        }
+      },
+      { parent: this, provider: k8sProvider, dependsOn: [this.helmRelease] }
+    );
+
+    this.registerOutputs({
+      helmRelease: this.helmRelease,
+      loadBalancerIp: this.loadBalancerIp,
+      middlewares: this.middlewares,
+      dashboardService: this.dashboardService
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createTraefikIngress(
+  config: EnvironmentConfig,
+  k8sProvider: k8s.Provider,
+  namespace: k8s.core.v1.Namespace,
+  appNamespace: k8s.core.v1.Namespace,
+  options?: {
+    staticIp?: pulumi.Input<string>;
+    cloudArmorPolicyName?: pulumi.Input<string>;
+  },
+  opts?: pulumi.ComponentResourceOptions
+): TraefikIngress {
+  return new TraefikIngress(
+    `{{ .Project.Metadata.Name }}-traefik-${config.name}`,
+    {
+      config,
+      k8sProvider,
+      namespace,
+      appNamespace,
+      staticIp: options?.staticIp,
+      cloudArmorPolicyName: options?.cloudArmorPolicyName
+    },
+    opts
+  );
+}

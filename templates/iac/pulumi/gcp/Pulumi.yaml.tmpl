@@ -1,7 +1,16 @@
-name: {{ .Project.Metadata.Name }}-infra
-runtime: nodejs
-description: Infrastructure for {{ .Project.Metadata.Name }}
+name: {{ .Project.Metadata.Name }}-infrastructure
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+description: {{ .Project.Metadata.Name }} Platform Infrastructure - GCP/GKE
+
 config:
-  pulumi:tags:
-    value:
-      pulumi:template: gcp-typescript
+  # Default GCP configuration
+  gcp:project: ${PULUMI_GCP_PROJECT}
+  gcp:region: us-central1
+  gcp:zone: us-central1-a
+
+  # Project configuration
+  {{ .Project.Metadata.Name }}:organization: {{ .Project.Metadata.Organization }}
+  {{ .Project.Metadata.Name }}:domain: {{ .Project.Metadata.Domain }}

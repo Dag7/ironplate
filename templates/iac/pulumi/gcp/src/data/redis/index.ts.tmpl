@@ -1,0 +1,156 @@
+{{ if .Computed.HasRedis }}/**
+ * Memorystore Redis Module
+ *
+ * Creates a managed Redis instance for caching and session storage
+ * for the {{ .Project.Metadata.Name }} platform.
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { resourceName } from "../../utils/naming.js";
+import { defaultLabels, withLabels } from "../../utils/tags.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface RedisArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** VPC network for private IP */
+  network: gcp.compute.Network;
+}
+
+export interface RedisOutputs {
+  /** Redis instance */
+  instance: gcp.redis.Instance;
+  /** Redis host */
+  host: pulumi.Output<string>;
+  /** Redis port */
+  port: pulumi.Output<number>;
+  /** Auth string (if enabled) */
+  authString: pulumi.Output<string>;
+  /** Connection URL */
+  connectionUrl: pulumi.Output<string>;
+}
+
+// =============================================================================
+// Redis Component
+// =============================================================================
+
+export class RedisInstance extends pulumi.ComponentResource {
+  public readonly instance: gcp.redis.Instance;
+  public readonly host: pulumi.Output<string>;
+  public readonly port: pulumi.Output<number>;
+  public readonly authString: pulumi.Output<string>;
+  public readonly connectionUrl: pulumi.Output<string>;
+
+  constructor(
+    name: string,
+    args: RedisArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:data:RedisInstance", name, {}, opts);
+
+    const { config, network } = args;
+    const instanceName = resourceName("redis", "instance");
+    const labels = withLabels({ component: "redis" });
+    const redisConfig = config.redis;
+
+    // Build maintenance policy
+    const maintenancePolicy = redisConfig.maintenanceWindow
+      ? {
+          weeklyMaintenanceWindows: [
+            {
+              day: redisConfig.maintenanceWindow.day,
+              startTime: {
+                hours: redisConfig.maintenanceWindow.startTime.hours,
+                minutes: redisConfig.maintenanceWindow.startTime.minutes
+              }
+            }
+          ]
+        }
+      : undefined;
+
+    // Create Redis instance
+    this.instance = new gcp.redis.Instance(
+      name,
+      {
+        name: instanceName,
+        project: config.gcpProject,
+        region: config.gcpRegion,
+
+        // Tier and size
+        tier: redisConfig.tier,
+        memorySizeGb: redisConfig.memorySizeGb,
+        redisVersion: redisConfig.redisVersion,
+
+        // Network configuration
+        authorizedNetwork: network.id,
+        connectMode: "PRIVATE_SERVICE_ACCESS",
+
+        // Security
+        authEnabled: redisConfig.authEnabled,
+        transitEncryptionMode: redisConfig.transitEncryptionEnabled
+          ? "SERVER_AUTHENTICATION"
+          : "DISABLED",
+
+        // Redis configuration
+        redisConfigs: redisConfig.redisConfigs,
+
+        // Maintenance
+        maintenancePolicy: maintenancePolicy,
+
+        // Labels
+        labels: labels,
+
+        // Display name
+        displayName: `{{ .Project.Metadata.Name }} ${config.name} Redis`
+      },
+      { parent: this }
+    );
+
+    // Extract outputs
+    this.host = this.instance.host;
+    this.port = this.instance.port;
+    this.authString = this.instance.authString;
+
+    // Build connection URL
+    // Use rediss:// (TLS) when transit encryption is enabled
+    const protocol = redisConfig.transitEncryptionEnabled ? "rediss" : "redis";
+    this.connectionUrl = pulumi
+      .all([this.host, this.port, this.authString])
+      .apply(([host, port, auth]) => {
+        if (auth) {
+          return `${protocol}://:${auth}@${host}:${port}`;
+        }
+        return `${protocol}://${host}:${port}`;
+      });
+
+    this.registerOutputs({
+      instance: this.instance,
+      host: this.host,
+      port: this.port,
+      authString: this.authString,
+      connectionUrl: this.connectionUrl
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createRedisInstance(
+  config: EnvironmentConfig,
+  network: gcp.compute.Network,
+  opts?: pulumi.ComponentResourceOptions
+): RedisInstance {
+  return new RedisInstance(
+    `{{ .Project.Metadata.Name }}-redis-${config.name}`,
+    { config, network },
+    opts
+  );
+}
+{{ end }}

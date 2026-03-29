@@ -1,0 +1,236 @@
+/**
+ * Stack Output Utilities
+ *
+ * Helper functions for creating well-structured Pulumi stack outputs.
+ */
+
+import * as pulumi from "@pulumi/pulumi";
+
+// =============================================================================
+// Output Types
+// =============================================================================
+
+export interface ConnectionInfo {
+  endpoint: pulumi.Output<string>;
+  port?: pulumi.Output<number>;
+  username?: pulumi.Output<string>;
+  passwordSecretRef?: string;
+}
+
+export interface DatabaseOutputs {
+  instanceName: pulumi.Output<string>;
+  connectionName: pulumi.Output<string>;
+  privateIp: pulumi.Output<string>;
+  databases: string[];
+  connectionStrings: Record<string, pulumi.Output<string>>;
+}
+
+export interface GkeOutputs {
+  clusterName: pulumi.Output<string>;
+  clusterEndpoint: pulumi.Output<string>;
+  clusterCaCertificate: pulumi.Output<string>;
+  kubeconfig: pulumi.Output<string>;
+}
+
+export interface NetworkingOutputs {
+  vpcId: pulumi.Output<string>;
+  vpcName: pulumi.Output<string>;
+  subnetIds: Record<string, pulumi.Output<string>>;
+  natIp: pulumi.Output<string>;
+}
+
+export interface RedisOutputs {
+  host: pulumi.Output<string>;
+  port: pulumi.Output<number>;
+  authString: pulumi.Output<string>;
+  connectionUrl: pulumi.Output<string>;
+}
+
+export interface IngressOutputs {
+  loadBalancerIp: pulumi.Output<string>;
+  domains: Record<string, string>;
+}
+
+// =============================================================================
+// Output Formatters
+// =============================================================================
+
+/**
+ * Create a formatted kubeconfig output
+ */
+export function createKubeconfig(
+  clusterName: pulumi.Output<string>,
+  clusterEndpoint: pulumi.Output<string>,
+  clusterCaCertificate: pulumi.Output<string>,
+  gcpProject: string
+): pulumi.Output<string> {
+  return pulumi
+    .all([clusterName, clusterEndpoint, clusterCaCertificate])
+    .apply(([name, endpoint, caCert]) => {
+      return `apiVersion: v1
+kind: Config
+clusters:
+- name: ${name}
+  cluster:
+    certificate-authority-data: ${caCert}
+    server: https://${endpoint}
+contexts:
+- name: ${name}
+  context:
+    cluster: ${name}
+    user: ${name}
+current-context: ${name}
+users:
+- name: ${name}
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1beta1
+      command: gke-gcloud-auth-plugin
+      env:
+        - name: USE_GKE_GCLOUD_AUTH_PLUGIN
+          value: "True"
+      installHint: |
+        Install gke-gcloud-auth-plugin for GKE authentication.
+        See https://cloud.google.com/kubernetes-engine/docs/how-to/cluster-access-for-kubectl
+      provideClusterInfo: true
+`;
+    });
+}
+
+/**
+ * Create a database connection string
+ */
+export function createDatabaseConnectionString(
+  host: pulumi.Output<string>,
+  port: number,
+  database: string,
+  username: string,
+  password: pulumi.Output<string>
+): pulumi.Output<string> {
+  return pulumi.all([host, password]).apply(([h, p]) => {
+    return `postgresql://${username}:${p}@${h}:${port}/${database}`;
+  });
+}
+
+/**
+ * Create a Redis connection URL
+ */
+export function createRedisConnectionUrl(
+  host: pulumi.Output<string>,
+  port: pulumi.Output<number>,
+  authString: pulumi.Output<string>
+): pulumi.Output<string> {
+  return pulumi.all([host, port, authString]).apply(([h, p, auth]) => {
+    if (auth) {
+      return `redis://:${auth}@${h}:${p}`;
+    }
+    return `redis://${h}:${p}`;
+  });
+}
+
+// =============================================================================
+// Output Grouping
+// =============================================================================
+
+/**
+ * Group related outputs into a structured object
+ */
+export function groupOutputs<T extends Record<string, unknown>>(outputs: T): T {
+  return outputs;
+}
+
+/**
+ * Create summary output for easy reference
+ */
+export function createSummary(
+  environment: string,
+  project: string,
+  outputs: {
+    gke?: GkeOutputs;
+    database?: DatabaseOutputs;
+    redis?: RedisOutputs;
+    networking?: NetworkingOutputs;
+    ingress?: IngressOutputs;
+  }
+): pulumi.Output<string> {
+  const parts: pulumi.Output<string>[] = [
+    pulumi.output(`
+=============================================================================
+{{ .Project.Metadata.Name }} Infrastructure - ${environment.toUpperCase()}
+Project: ${project}
+=============================================================================
+`)
+  ];
+
+  if (outputs.gke) {
+    parts.push(
+      outputs.gke.clusterEndpoint.apply(
+        (endpoint) => `
+GKE Cluster:
+  Endpoint: ${endpoint}
+  To connect: gcloud container clusters get-credentials {{ .Project.Metadata.Name }}-${environment}-cluster --region us-central1 --project ${project}
+`
+      )
+    );
+  }
+
+  if (outputs.database) {
+    parts.push(
+      outputs.database.privateIp.apply(
+        (ip) => `
+Cloud SQL PostgreSQL:
+  Private IP: ${ip}
+  Databases: ${outputs.database?.databases.join(", ")}
+`
+      )
+    );
+  }
+
+  if (outputs.redis) {
+    parts.push(
+      pulumi.all([outputs.redis.host, outputs.redis.port]).apply(
+        ([host, port]) => `
+Redis (Memorystore):
+  Host: ${host}
+  Port: ${port}
+`
+      )
+    );
+  }
+
+  if (outputs.ingress) {
+    parts.push(
+      outputs.ingress.loadBalancerIp.apply(
+        (ip) => `
+Ingress:
+  Load Balancer IP: ${ip}
+  Domains: ${Object.entries(outputs.ingress?.domains ?? {})
+    .map(([name, domain]) => `\n    - ${name}: ${domain}`)
+    .join("")}
+`
+      )
+    );
+  }
+
+  return pulumi.all(parts).apply((p) => p.join("\n"));
+}
+
+// =============================================================================
+// Export Helpers
+// =============================================================================
+
+/**
+ * Mark an output as secret
+ */
+export function secretOutput<T>(value: pulumi.Output<T>): pulumi.Output<T> {
+  return pulumi.secret(value) as pulumi.Output<T>;
+}
+
+/**
+ * Create outputs object for stack export
+ */
+export function createStackOutputs(
+  outputs: Record<string, unknown>
+): Record<string, unknown> {
+  return outputs;
+}

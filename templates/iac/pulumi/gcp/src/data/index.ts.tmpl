@@ -1,0 +1,203 @@
+/**
+ * Data Layer Module
+ *
+ * Complete data infrastructure including PostgreSQL,{{ if .Computed.HasRedis }} Redis,{{ end }}{{ if .Computed.HasLangfuse }} Langfuse Redis,{{ end }} Storage, and Artifact Registry
+ * for the {{ .Project.Metadata.Name }} platform.
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../config/types.js";
+import {
+  ArtifactRegistry,
+  createArtifactRegistry
+} from "./artifact-registry/index.js";
+{{ if .Computed.HasLangfuse -}}
+import {
+  LangfuseRedisInstance,
+  createLangfuseRedisInstance
+} from "./langfuse-redis/index.js";
+{{ end -}}
+import { PostgresInstance, createPostgresInstance } from "./postgres/index.js";
+{{ if .Computed.HasRedis -}}
+import { RedisInstance, createRedisInstance } from "./redis/index.js";
+{{ end -}}
+import { StorageBuckets, createStorageBuckets } from "./storage/index.js";
+
+// Re-export components
+export * from "./artifact-registry/index.js";
+{{ if .Computed.HasLangfuse -}}
+export * from "./langfuse-redis/index.js";
+{{ end -}}
+export * from "./postgres/index.js";
+{{ if .Computed.HasRedis -}}
+export * from "./redis/index.js";
+{{ end -}}
+export * from "./storage/index.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface DataLayerArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** VPC network */
+  network: gcp.compute.Network;
+  /** Private service connection */
+  privateServiceConnection: gcp.servicenetworking.Connection;
+}
+
+export interface DataLayerOutputs {
+  /** PostgreSQL instance */
+  postgres: PostgresInstance;
+{{ if .Computed.HasRedis }}  /** Redis instance */
+  redis: RedisInstance;
+{{ end }}{{ if .Computed.HasLangfuse }}  /** Langfuse Redis instance (for Langfuse v3) */
+  langfuseRedis?: LangfuseRedisInstance;
+{{ end }}  /** Storage buckets */
+  storage: StorageBuckets;
+  /** Artifact Registry for Docker images */
+  artifactRegistry: ArtifactRegistry;
+}
+
+// =============================================================================
+// Data Layer Component
+// =============================================================================
+
+/**
+ * Complete data layer for the {{ .Project.Metadata.Name }} platform
+ */
+export class DataLayer extends pulumi.ComponentResource {
+  public readonly postgres: PostgresInstance;
+{{ if .Computed.HasRedis }}  public readonly redis: RedisInstance;
+{{ end }}{{ if .Computed.HasLangfuse }}  public readonly langfuseRedis?: LangfuseRedisInstance;
+{{ end }}  public readonly storage: StorageBuckets;
+  public readonly artifactRegistry: ArtifactRegistry;
+
+  constructor(
+    name: string,
+    args: DataLayerArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:data:DataLayer", name, {}, opts);
+
+    const { config, network, privateServiceConnection } = args;
+
+    // Create PostgreSQL instance
+    this.postgres = createPostgresInstance(
+      config,
+      network,
+      privateServiceConnection,
+      {
+        parent: this
+      }
+    );
+{{ if .Computed.HasRedis }}
+    // Create Redis instance
+    this.redis = createRedisInstance(config, network, {
+      parent: this
+    });
+{{ end }}{{ if .Computed.HasLangfuse }}
+    // Create Langfuse Redis instance (for Langfuse v3)
+    // Only created if langfuse.redis config is provided
+    this.langfuseRedis = createLangfuseRedisInstance(config, network, {
+      parent: this
+    });
+{{ end }}
+    // Create storage buckets
+    this.storage = createStorageBuckets(config, { parent: this });
+
+    // Create Artifact Registry for Docker images
+    this.artifactRegistry = createArtifactRegistry(config, { parent: this });
+
+    this.registerOutputs({
+      postgres: this.postgres,
+{{ if .Computed.HasRedis }}      redis: this.redis,
+{{ end }}{{ if .Computed.HasLangfuse }}      langfuseRedis: this.langfuseRedis,
+{{ end }}      storage: this.storage,
+      artifactRegistry: this.artifactRegistry
+    });
+  }
+
+  /**
+   * Get database connection strings using private IP (direct connection).
+   *
+   * Uses private IP instead of 127.0.0.1 because our workloads (Hasura, Langfuse)
+   * connect directly to Cloud SQL via VPC peering, not via Cloud SQL Proxy sidecar.
+   *
+   * Note: Langfuse uses Prisma which supports connection_limit and pool_timeout params.
+   * Hasura uses standard libpq which does NOT support these params.
+   */
+  getDatabaseConnectionStrings(): Record<string, pulumi.Output<string>> {
+    return {
+      // Standard connection strings for Hasura (no Prisma params)
+      {{ .Project.Metadata.Name }}: this.postgres.getDirectConnectionString("{{ .Project.Metadata.Name }}"),
+      hasuraMetadata:
+        this.postgres.getDirectConnectionString("hasura_metadata"),
+{{ if .Computed.HasLangfuse }}      // Prisma-compatible connection string for Langfuse (with pool params)
+      langfuse: this.postgres.getPrismaConnectionString("langfuse", {
+        useSidecar: false,
+        connectionLimit: 50,
+        poolTimeout: 20
+      }),
+{{ end }}    };
+  }
+{{ if .Computed.HasRedis }}
+  /**
+   * Get Redis connection URL
+   */
+  getRedisConnectionUrl(): pulumi.Output<string> {
+    return this.redis.connectionUrl;
+  }
+{{ end }}{{ if .Computed.HasLangfuse }}
+  /**
+   * Get Langfuse Redis connection URL (for Langfuse v3)
+   */
+  getLangfuseRedisConnectionUrl(): pulumi.Output<string> | undefined {
+    return this.langfuseRedis?.connectionUrl;
+  }
+
+  /**
+   * Get Langfuse Redis auth string (for Langfuse v3)
+   */
+  getLangfuseRedisAuthString(): pulumi.Output<string> | undefined {
+    return this.langfuseRedis?.authString;
+  }
+{{ end }}
+  /**
+   * Get all resources for dependency management
+   */
+  dependsOn(): pulumi.Resource[] {
+    const deps: pulumi.Resource[] = [
+      this.postgres.instance,
+{{ if .Computed.HasRedis }}      this.redis.instance,
+{{ end }}      ...Object.values(this.storage.buckets),
+      this.artifactRegistry.repository
+    ];
+{{ if .Computed.HasLangfuse }}    if (this.langfuseRedis) {
+      deps.push(this.langfuseRedis.instance);
+    }
+{{ end }}    return deps;
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+/**
+ * Create complete data layer
+ */
+export function createDataLayer(
+  config: EnvironmentConfig,
+  network: gcp.compute.Network,
+  privateServiceConnection: gcp.servicenetworking.Connection,
+  opts?: pulumi.ComponentResourceOptions
+): DataLayer {
+  return new DataLayer(
+    `{{ .Project.Metadata.Name }}-data-${config.name}`,
+    { config, network, privateServiceConnection },
+    opts
+  );
+}

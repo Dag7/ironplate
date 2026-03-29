@@ -1,0 +1,128 @@
+/**
+ * Cloud Storage Module
+ *
+ * Creates GCS buckets for artifacts, traces, and backups
+ * for the {{ .Project.Metadata.Name }} platform.
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type {
+  EnvironmentConfig,
+  StorageBucketConfig
+} from "../../config/types.js";
+import { resourceName } from "../../utils/naming.js";
+import { defaultLabels, withLabels } from "../../utils/tags.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface StorageArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+}
+
+export interface StorageOutputs {
+  /** Created buckets */
+  buckets: Record<string, gcp.storage.Bucket>;
+}
+
+// =============================================================================
+// Storage Component
+// =============================================================================
+
+export class StorageBuckets extends pulumi.ComponentResource {
+  public readonly buckets: Record<string, gcp.storage.Bucket>;
+
+  constructor(
+    name: string,
+    args: StorageArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:data:StorageBuckets", name, {}, opts);
+
+    const { config } = args;
+    this.buckets = {};
+
+    for (const bucketConfig of config.storage.buckets) {
+      const bucket = this.createBucket(name, config, bucketConfig);
+      this.buckets[bucketConfig.nameSuffix] = bucket;
+    }
+
+    this.registerOutputs({
+      buckets: this.buckets
+    });
+  }
+
+  private createBucket(
+    parentName: string,
+    config: EnvironmentConfig,
+    bucketConfig: StorageBucketConfig
+  ): gcp.storage.Bucket {
+    const name = `${config.gcpProject}-${config.name}-${bucketConfig.nameSuffix}`;
+    const labels = withLabels({
+      component: "storage",
+      bucket: bucketConfig.nameSuffix
+    });
+
+    // Build lifecycle rules
+    const lifecycleRules = bucketConfig.lifecycleRules?.map((rule) => ({
+      action: rule.action,
+      condition: rule.condition
+    }));
+
+    return new gcp.storage.Bucket(
+      `${parentName}-${bucketConfig.nameSuffix}`,
+      {
+        name: name,
+        project: config.gcpProject,
+        location: bucketConfig.location,
+        storageClass: bucketConfig.storageClass,
+
+        // Versioning
+        versioning: {
+          enabled: bucketConfig.versioning
+        },
+
+        // Uniform bucket-level access
+        uniformBucketLevelAccess: bucketConfig.uniformBucketLevelAccess,
+
+        // Lifecycle rules
+        lifecycleRules: lifecycleRules,
+
+        // CORS configuration (for browser uploads via signed URLs)
+        cors: bucketConfig.cors,
+
+        // Prevent accidental deletion in production
+        forceDestroy: config.name !== "production",
+
+        // Labels
+        labels: labels
+      },
+      { parent: this }
+    );
+  }
+
+  /**
+   * Get a bucket by name suffix
+   */
+  getBucket(nameSuffix: string): gcp.storage.Bucket | undefined {
+    return this.buckets[nameSuffix];
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createStorageBuckets(
+  config: EnvironmentConfig,
+  opts?: pulumi.ComponentResourceOptions
+): StorageBuckets {
+  return new StorageBuckets(
+    `{{ .Project.Metadata.Name }}-storage-${config.name}`,
+    { config },
+    opts
+  );
+}

@@ -1,0 +1,104 @@
+/**
+ * Project Module
+ *
+ * Handles GCP project setup including API enablement and IAM configuration
+ * for the {{ .Project.Metadata.Name }} platform.
+ */
+
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { ApiEnabler, createApiEnabler } from "./apis.js";
+import { IamSetup, createIamSetup, type ServiceAccountConfig } from "./iam.js";
+
+// Re-export components
+export * from "./apis.js";
+export * from "./iam.js";
+export * from "./github-workload-identity.js";
+export * from "./vertex-budget.js";
+{{- if .Computed.HasArgoCD }}
+export * from "./argocd-image-updater-iam.js";
+{{- end }}
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface ProjectSetupArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** Additional APIs to enable */
+  additionalApis?: string[];
+  /** Additional service accounts to create */
+  additionalServiceAccounts?: ServiceAccountConfig[];
+}
+
+export interface ProjectSetupOutputs {
+  /** API enabler component */
+  apiEnabler: ApiEnabler;
+  /** IAM setup component */
+  iamSetup: IamSetup;
+}
+
+// =============================================================================
+// Project Setup Component
+// =============================================================================
+
+/**
+ * Complete project setup including APIs and IAM
+ */
+export class ProjectSetup extends pulumi.ComponentResource {
+  public readonly apiEnabler: ApiEnabler;
+  public readonly iamSetup: IamSetup;
+
+  constructor(
+    name: string,
+    args: ProjectSetupArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:core:ProjectSetup", name, {}, opts);
+
+    const {
+      config,
+      additionalApis = [],
+      additionalServiceAccounts = []
+    } = args;
+
+    // Enable APIs first
+    this.apiEnabler = createApiEnabler(config.gcpProject, { parent: this });
+
+    // Setup IAM (depends on APIs)
+    this.iamSetup = createIamSetup(config, additionalServiceAccounts, {
+      parent: this,
+      dependsOn: this.apiEnabler.dependsOn()
+    });
+
+    this.registerOutputs({
+      apiEnabler: this.apiEnabler,
+      iamSetup: this.iamSetup
+    });
+  }
+
+  /**
+   * Get dependency resources for other modules
+   */
+  dependsOn(): pulumi.Resource[] {
+    return [
+      ...this.apiEnabler.dependsOn(),
+      ...Object.values(this.iamSetup.serviceAccounts)
+    ];
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+/**
+ * Create complete project setup
+ */
+export function createProjectSetup(
+  config: EnvironmentConfig,
+  opts?: pulumi.ComponentResourceOptions
+): ProjectSetup {
+  return new ProjectSetup(`{{ .Project.Metadata.Name }}-project-${config.name}`, { config }, opts);
+}

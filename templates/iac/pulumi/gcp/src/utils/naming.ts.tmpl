@@ -1,77 +1,311 @@
 /**
- * Naming utilities for {{ .Project.Metadata.Name }} infrastructure.
+ * Resource Naming Utilities
  *
- * Provides consistent resource naming, label formatting, and
- * per-environment domain generation across the stack.
+ * Consistent naming conventions across all infrastructure resources.
+ * Follows GCP naming best practices and length limits.
  */
 
-import * as pulumi from "@pulumi/pulumi";
+import type { Environment } from "../config/types.js";
 
-const PROJECT_PREFIX = "{{ .Project.Metadata.Name }}";
+// =============================================================================
+// Naming Configuration
+// =============================================================================
+
+const ORGANIZATION = "{{ .Project.Metadata.Organization }}";
+
+// GCP resource name limits
+const NAME_LIMITS = {
+  gcsBucket: 63,
+  sqlInstance: 84,
+  gkeCluster: 40,
+  nodePool: 40,
+  vpc: 63,
+  subnet: 63,
+  firewall: 63,
+  serviceAccount: 30,
+  secretManager: 255,
+  redis: 40,
+  default: 63
+} as const;
+
+// =============================================================================
+// Core Naming Functions
+// =============================================================================
 
 /**
- * Generates a cloud resource name with the project prefix.
- *
- * @param base - Resource type or category (e.g. "sql", "gke", "gcs")
- * @param suffix - Specific resource identifier (e.g. "instance", "main")
- * @returns A hyphen-delimited resource name
- *
- * @example
- * resourceName("sql", "instance") // "{{ .Project.Metadata.Name }}-sql-instance"
+ * Generate a resource name following the pattern: {org}-{env}-{resource}
  */
-export function resourceName(base: string, suffix: string): string {
-  const env = pulumi.getStack();
-  return `${PROJECT_PREFIX}-${base}-${suffix}-${env}`;
-}
-
-/**
- * Generates a short resource name without the stack suffix.
- * Useful for resources with tight character limits.
- *
- * @param base - Resource type or category
- * @param suffix - Specific resource identifier
- * @returns A hyphen-delimited resource name without the environment suffix
- */
-export function shortResourceName(base: string, suffix: string): string {
-  return `${PROJECT_PREFIX}-${base}-${suffix}`;
-}
-
-/**
- * Converts a string to a Kubernetes-safe label value.
- *
- * Label values must be 63 characters or fewer, begin and end with an
- * alphanumeric character, and contain only alphanumerics, hyphens,
- * underscores, and dots.
- *
- * @param s - The input string
- * @returns A sanitized label value
- */
-export function toLabel(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]/g, "-")
-    .replace(/^[^a-z0-9]+/, "")
-    .replace(/[^a-z0-9]+$/, "")
-    .slice(0, 63);
-}
-
-/**
- * Generates a per-environment domain name.
- *
- * Production uses the base domain directly; other environments get a
- * subdomain prefix.
- *
- * @param env - Environment name (e.g. "staging", "production")
- * @param baseDomain - Base domain (e.g. "{{ .Project.Metadata.Domain }}")
- * @returns The environment-specific domain
- *
- * @example
- * envDomain("production", "example.com") // "example.com"
- * envDomain("staging", "example.com")    // "staging.example.com"
- */
-export function envDomain(env: string, baseDomain: string): string {
-  if (env === "production" || env === "prod") {
-    return baseDomain;
+export function resourceName(
+  environment: Environment,
+  resource: string,
+  suffix?: string
+): string {
+  const parts = [ORGANIZATION, environment, resource];
+  if (suffix) {
+    parts.push(suffix);
   }
-  return `${env}.${baseDomain}`;
+  return parts.join("-").toLowerCase();
+}
+
+/**
+ * Generate a short resource name for length-constrained resources
+ * @param envShortName - Short environment name from config (e.g., "stg", "prd", "tst")
+ */
+export function shortResourceName(
+  envShortName: string,
+  resource: string
+): string {
+  return `${ORGANIZATION}-${envShortName}-${resource}`.toLowerCase();
+}
+
+/**
+ * Generate a GCS bucket name (globally unique, so includes project)
+ *
+ * Note: Since our GCP projects already include the environment
+ * (e.g., {{ .Project.Metadata.Name }}-staging, {{ .Project.Metadata.Name }}-production),
+ * we don't add it again.
+ */
+export function bucketName(
+  project: string,
+  _environment: Environment,
+  purpose: string
+): string {
+  const name = `${project}-${purpose}`.toLowerCase();
+  return truncateName(name, NAME_LIMITS.gcsBucket);
+}
+
+/**
+ * Generate a Cloud SQL instance name
+ */
+export function sqlInstanceName(
+  environment: Environment,
+  purpose: string = "postgres"
+): string {
+  const name = resourceName(environment, purpose);
+  return truncateName(name, NAME_LIMITS.sqlInstance);
+}
+
+/**
+ * Generate a GKE cluster name
+ */
+export function gkeClusterName(environment: Environment): string {
+  const name = resourceName(environment, "cluster");
+  return truncateName(name, NAME_LIMITS.gkeCluster);
+}
+
+/**
+ * Generate a node pool name
+ */
+export function nodePoolName(
+  environment: Environment,
+  poolName: string
+): string {
+  const name = resourceName(environment, poolName);
+  return truncateName(name, NAME_LIMITS.nodePool);
+}
+
+/**
+ * Generate a VPC name
+ */
+export function vpcName(environment: Environment): string {
+  return truncateName(resourceName(environment, "vpc"), NAME_LIMITS.vpc);
+}
+
+/**
+ * Generate a subnet name
+ */
+export function subnetName(environment: Environment, purpose: string): string {
+  return truncateName(
+    resourceName(environment, purpose, "subnet"),
+    NAME_LIMITS.subnet
+  );
+}
+
+/**
+ * Generate a firewall rule name
+ */
+export function firewallName(
+  environment: Environment,
+  purpose: string
+): string {
+  return truncateName(
+    resourceName(environment, purpose, "fw"),
+    NAME_LIMITS.firewall
+  );
+}
+
+/**
+ * Generate a service account name
+ * @param envShortName - Short environment name from config (e.g., "stg", "prd", "tst")
+ * @param purpose - Service account purpose (e.g., "files", "tempo", "gke-nodes")
+ */
+export function serviceAccountName(
+  envShortName: string,
+  purpose: string
+): string {
+  const name = `${purpose}-${envShortName}-sa`.toLowerCase();
+  return truncateName(name, NAME_LIMITS.serviceAccount);
+}
+
+/**
+ * Generate a service account email
+ * @param project - GCP project ID
+ * @param envShortName - Short environment name from config (e.g., "stg", "prd", "tst")
+ * @param purpose - Service account purpose (e.g., "files", "tempo", "gke-nodes")
+ */
+export function serviceAccountEmail(
+  project: string,
+  envShortName: string,
+  purpose: string
+): string {
+  const saName = serviceAccountName(envShortName, purpose);
+  return `${saName}@${project}.iam.gserviceaccount.com`;
+}
+
+/**
+ * Generate a Secret Manager secret name
+ *
+ * Since each GCP project IS the environment ({{ .Project.Metadata.Name }}-staging, {{ .Project.Metadata.Name }}-production),
+ * we don't need environment in the secret name.
+ *
+ * Format: {group}-{key} (e.g., jwt-credentials-jwt-secret)
+ */
+export function secretName(group: string, key: string): string {
+  const name = `${group}-${key}`.toLowerCase().replace(/_/g, "-");
+  return truncateName(name, NAME_LIMITS.secretManager);
+}
+
+/**
+ * Generate a Secret Manager secret name (legacy - for group blobs)
+ * @deprecated Use secretName(group, key) for individual secrets
+ */
+export function secretGroupName(
+  environment: Environment,
+  groupName: string
+): string {
+  const name = `${ORGANIZATION}-${environment}-${groupName}`
+    .toLowerCase()
+    .replace(/_/g, "-");
+  return truncateName(name, NAME_LIMITS.secretManager);
+}
+
+/**
+ * Generate a Redis instance name
+ */
+export function redisInstanceName(environment: Environment): string {
+  return truncateName(resourceName(environment, "redis"), NAME_LIMITS.redis);
+}
+
+/**
+ * Generate a Cloud NAT name
+ */
+export function natName(environment: Environment): string {
+  return resourceName(environment, "nat");
+}
+
+/**
+ * Generate a Cloud Router name
+ */
+export function routerName(environment: Environment): string {
+  return resourceName(environment, "router");
+}
+
+/**
+ * Generate a KMS key ring name
+ */
+export function kmsKeyRingName(environment: Environment): string {
+  return resourceName(environment, "keyring");
+}
+
+/**
+ * Generate a KMS crypto key name
+ */
+export function kmsCryptoKeyName(
+  environment: Environment,
+  purpose: string
+): string {
+  return resourceName(environment, purpose, "key");
+}
+
+// =============================================================================
+// Kubernetes Resource Names
+// =============================================================================
+
+/**
+ * Generate a Kubernetes namespace name
+ */
+export function k8sNamespace(purpose: string): string {
+  return purpose.toLowerCase();
+}
+
+/**
+ * Generate a Kubernetes service name
+ */
+export function k8sServiceName(service: string): string {
+  return service.toLowerCase();
+}
+
+/**
+ * Generate a Kubernetes deployment name
+ */
+export function k8sDeploymentName(service: string): string {
+  return service.toLowerCase();
+}
+
+/**
+ * Generate a Kubernetes config map name
+ */
+export function k8sConfigMapName(service: string, purpose: string): string {
+  return `${service}-${purpose}`.toLowerCase();
+}
+
+/**
+ * Generate a Kubernetes secret name
+ */
+export function k8sSecretName(purpose: string): string {
+  return purpose.toLowerCase().replace(/_/g, "-");
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+/**
+ * Truncate name to max length, preserving prefix
+ */
+function truncateName(name: string, maxLength: number): string {
+  if (name.length <= maxLength) {
+    return name;
+  }
+
+  return name.slice(0, maxLength);
+}
+
+/**
+ * Sanitize a name to be GCP-compliant
+ * - lowercase
+ * - alphanumeric and hyphens only
+ * - must start with letter
+ * - must end with alphanumeric
+ */
+export function sanitizeName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/^[^a-z]+/, "")
+    .replace(/-+$/, "")
+    .replace(/--+/g, "-");
+}
+
+/**
+ * Generate a unique identifier suffix (for globally unique names)
+ */
+export function uniqueSuffix(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    const char = seed.charCodeAt(i);
+    hash = (hash << 5) - hash + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(36).slice(0, 8);
 }

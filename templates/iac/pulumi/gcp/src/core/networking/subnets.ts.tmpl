@@ -1,0 +1,259 @@
+/**
+ * Subnet Configuration Module
+ *
+ * Creates subnets for GKE, private services, and other components
+ * within the {{ .Project.Metadata.Name }} VPC. Each subnet is purpose-built
+ * with appropriate secondary ranges and access configuration.
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { resourceName } from "../../utils/naming.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/** Arguments for creating the Subnets component */
+export interface SubnetsArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** VPC network to create subnets in */
+  network: gcp.compute.Network;
+}
+
+/** Outputs exposed by the Subnets component */
+export interface SubnetsOutputs {
+  /** GKE node subnet with secondary ranges for pods and services */
+  gkeSubnet: gcp.compute.Subnetwork;
+  /** Private services subnet for managed services (Cloud SQL, Redis) */
+  privateServicesSubnet: gcp.compute.Subnetwork;
+  /** All subnets indexed by logical name */
+  subnets: Record<string, gcp.compute.Subnetwork>;
+}
+
+// =============================================================================
+// Subnets Component
+// =============================================================================
+
+/**
+ * Subnets ComponentResource for the {{ .Project.Metadata.Name }} platform.
+ *
+ * Creates two subnets:
+ * - **GKE subnet**: Primary range for nodes, secondary ranges for pods and
+ *   services. Flow logs enabled for network troubleshooting.
+ * - **Private services subnet**: Dedicated range for managed GCP services
+ *   (Cloud SQL, Memorystore) accessed via private IP.
+ *
+ * Both subnets enable Private Google Access so VMs without external IPs
+ * can reach Google APIs and services.
+ *
+ * @example
+ * ```ts
+ * const subnets = createSubnets(config, vpc.network, { dependsOn: [vpc] });
+ * // subnets.gkeSubnet for GKE cluster creation
+ * ```
+ */
+export class Subnets extends pulumi.ComponentResource {
+  public readonly gkeSubnet: gcp.compute.Subnetwork;
+  public readonly privateServicesSubnet: gcp.compute.Subnetwork;
+  public readonly subnets: Record<string, gcp.compute.Subnetwork>;
+
+  constructor(
+    name: string,
+    args: SubnetsArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:networking:Subnets", name, {}, opts);
+
+    const { config, network } = args;
+    this.subnets = {};
+
+    // =========================================================================
+    // GKE Subnet (with secondary ranges for pods and services)
+    // =========================================================================
+    const gkeSubnetResourceName = resourceName("subnet", "gke");
+    this.gkeSubnet = new gcp.compute.Subnetwork(
+      `${name}-gke`,
+      {
+        name: gkeSubnetResourceName,
+        project: config.gcpProject,
+        region: config.gcpRegion,
+        network: network.selfLink,
+        ipCidrRange: config.networking.gkeSubnetCidr,
+        privateIpGoogleAccess: true, // Allow VMs to reach Google APIs via private IP
+        description: `GKE nodes subnet for {{ .Project.Metadata.Name }} ${config.name}`,
+        secondaryIpRanges: [
+          {
+            rangeName: "pods",
+            ipCidrRange: config.networking.podsCidr,
+          },
+          {
+            rangeName: "services",
+            ipCidrRange: config.networking.servicesCidr,
+          },
+        ],
+        logConfig: {
+          aggregationInterval: "INTERVAL_5_SEC",
+          flowSampling: 0.5,
+          metadata: "INCLUDE_ALL_METADATA",
+        },
+      },
+      { parent: this }
+    );
+    this.subnets["gke"] = this.gkeSubnet;
+
+    // =========================================================================
+    // Private Services Subnet (for Cloud SQL, Redis via private IP)
+    // =========================================================================
+    const privateServicesSubnetResourceName = resourceName(
+      "subnet",
+      "private-services"
+    );
+    this.privateServicesSubnet = new gcp.compute.Subnetwork(
+      `${name}-private-services`,
+      {
+        name: privateServicesSubnetResourceName,
+        project: config.gcpProject,
+        region: config.gcpRegion,
+        network: network.selfLink,
+        ipCidrRange: config.networking.privateServicesCidr,
+        privateIpGoogleAccess: true,
+        description: `Private services subnet for {{ .Project.Metadata.Name }} ${config.name}`,
+        purpose: "PRIVATE", // Regular subnet, not for PSC
+      },
+      { parent: this }
+    );
+    this.subnets["private-services"] = this.privateServicesSubnet;
+
+    this.registerOutputs({
+      gkeSubnet: this.gkeSubnet,
+      privateServicesSubnet: this.privateServicesSubnet,
+      subnets: this.subnets,
+    });
+  }
+}
+
+// =============================================================================
+// Private Service Connection
+// =============================================================================
+
+/** Arguments for creating a Private Service Connection */
+export interface PrivateServiceConnectionArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** VPC network to peer with Google-managed services */
+  network: gcp.compute.Network;
+}
+
+/**
+ * Private Service Connection ComponentResource.
+ *
+ * Allocates an internal IP range and creates a VPC peering connection
+ * to Google's service networking. This enables private IP connectivity
+ * to managed services like Cloud SQL and Memorystore Redis without
+ * traversing the public internet.
+ *
+ * @example
+ * ```ts
+ * const psc = createPrivateServiceConnection(config, vpc.network);
+ * // psc.connection is a dependency for Cloud SQL and Redis
+ * ```
+ */
+export class PrivateServiceConnection extends pulumi.ComponentResource {
+  public readonly addressRange: gcp.compute.GlobalAddress;
+  public readonly connection: gcp.servicenetworking.Connection;
+
+  constructor(
+    name: string,
+    args: PrivateServiceConnectionArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super(
+      "{{ .Project.Metadata.Name }}:networking:PrivateServiceConnection",
+      name,
+      {},
+      opts
+    );
+
+    const { config, network } = args;
+
+    // Allocate an IP range for private services (VPC peering)
+    this.addressRange = new gcp.compute.GlobalAddress(
+      `${name}-address`,
+      {
+        name: `{{ .Project.Metadata.Name }}-${config.name}-private-service-range`,
+        project: config.gcpProject,
+        purpose: "VPC_PEERING",
+        addressType: "INTERNAL",
+        prefixLength: 16,
+        network: network.id,
+      },
+      { parent: this }
+    );
+
+    // Create the private connection to Google service networking
+    this.connection = new gcp.servicenetworking.Connection(
+      `${name}-connection`,
+      {
+        network: network.id,
+        service: "servicenetworking.googleapis.com",
+        reservedPeeringRanges: [this.addressRange.name],
+      },
+      { parent: this, dependsOn: [this.addressRange] }
+    );
+
+    this.registerOutputs({
+      addressRange: this.addressRange,
+      connection: this.connection,
+    });
+  }
+}
+
+// =============================================================================
+// Factory Functions
+// =============================================================================
+
+/**
+ * Creates subnets for the given environment and VPC.
+ *
+ * @param config - Environment configuration
+ * @param network - VPC network to create subnets in
+ * @param opts - Pulumi component resource options
+ * @returns A fully configured Subnets component
+ */
+export function createSubnets(
+  config: EnvironmentConfig,
+  network: gcp.compute.Network,
+  opts?: pulumi.ComponentResourceOptions
+): Subnets {
+  return new Subnets(
+    `{{ .Project.Metadata.Name }}-subnets-${config.name}`,
+    { config, network },
+    opts
+  );
+}
+
+/**
+ * Creates a private service connection for managed GCP services.
+ *
+ * Required before provisioning Cloud SQL instances or Memorystore Redis
+ * with private IP connectivity.
+ *
+ * @param config - Environment configuration
+ * @param network - VPC network to peer
+ * @param opts - Pulumi component resource options
+ * @returns A PrivateServiceConnection component
+ */
+export function createPrivateServiceConnection(
+  config: EnvironmentConfig,
+  network: gcp.compute.Network,
+  opts?: pulumi.ComponentResourceOptions
+): PrivateServiceConnection {
+  return new PrivateServiceConnection(
+    `{{ .Project.Metadata.Name }}-psc-${config.name}`,
+    { config, network },
+    opts
+  );
+}

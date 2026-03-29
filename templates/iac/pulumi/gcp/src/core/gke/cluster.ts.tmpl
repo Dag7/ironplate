@@ -1,187 +1,224 @@
+/**
+ * GKE Cluster Configuration Module
+ *
+ * Creates the Google Kubernetes Engine cluster for the {{ .Project.Metadata.Name }} platform.
+ */
+
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
-import { projectId, region, stackName } from "../../config/loader";
-import { GkeConfig } from "../../config/types";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { gkeClusterName } from "../../utils/naming.js";
+import { gkeLabels } from "../../utils/tags.js";
 
-export interface ClusterOutputs {
-  /** GKE cluster */
-  cluster: gcp.container.Cluster;
-  /** Default node pool */
-  nodePool: gcp.container.NodePool;
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface GkeClusterArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** GKE subnet */
+  subnet: gcp.compute.Subnetwork;
+  /** VPC network */
+  network: gcp.compute.Network;
+  /** Node service account email */
+  nodeServiceAccountEmail?: pulumi.Output<string>;
 }
 
-/**
- * Creates a GKE cluster with a managed node pool for the
- * {{ .Project.Metadata.Name }} project.
- *
- * Features:
- * - Private cluster with master authorized networks
- * - Workload Identity enabled
- * - Release channel: REGULAR
- * - Network policy enabled
- * - Configurable autoscaling
- * - Logging and monitoring
- */
-export function createCluster(
-  gkeConfig: GkeConfig,
+export interface GkeClusterOutputs {
+  /** GKE cluster */
+  cluster: gcp.container.Cluster;
+  /** Cluster name */
+  clusterName: pulumi.Output<string>;
+  /** Cluster endpoint */
+  endpoint: pulumi.Output<string>;
+  /** Cluster CA certificate */
+  caCertificate: pulumi.Output<string>;
+}
+
+// =============================================================================
+// GKE Cluster Component
+// =============================================================================
+
+export class GkeCluster extends pulumi.ComponentResource {
+  public readonly cluster: gcp.container.Cluster;
+  public readonly clusterName: pulumi.Output<string>;
+  public readonly endpoint: pulumi.Output<string>;
+  public readonly caCertificate: pulumi.Output<string>;
+
+  constructor(
+    name: string,
+    args: GkeClusterArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:gke:GkeCluster", name, {}, opts);
+
+    const { config, subnet, network, nodeServiceAccountEmail } = args;
+    const clusterName = gkeClusterName(config.name);
+    const labels = gkeLabels(config);
+
+    // Build master authorized networks config
+    const masterAuthorizedNetworks =
+      config.gke.masterAuthorizedNetworks.length > 0
+        ? {
+            cidrBlocks: config.gke.masterAuthorizedNetworks.map((n) => ({
+              cidrBlock: n.cidrBlock,
+              displayName: n.displayName
+            }))
+          }
+        : undefined;
+
+    // Build maintenance window config
+    const maintenancePolicy = config.gke.maintenanceWindow
+      ? {
+          recurringWindow: {
+            startTime: config.gke.maintenanceWindow.startTime,
+            endTime: config.gke.maintenanceWindow.endTime,
+            recurrence: config.gke.maintenanceWindow.recurrence
+          }
+        }
+      : undefined;
+
+    // Create GKE cluster
+    this.cluster = new gcp.container.Cluster(
+      name,
+      {
+        name: clusterName,
+        project: config.gcpProject,
+        location: config.gcpRegion, // Regional cluster for HA
+        network: network.selfLink,
+        subnetwork: subnet.selfLink,
+
+        // We'll manage node pools separately
+        initialNodeCount: 1,
+        removeDefaultNodePool: true,
+
+        // Release channel
+        releaseChannel: {
+          channel: config.gke.releaseChannel
+        },
+
+        // Private cluster configuration
+        privateClusterConfig: config.gke.enablePrivateCluster
+          ? {
+              enablePrivateNodes: true,
+              enablePrivateEndpoint: config.gke.enablePrivateEndpoint,
+              masterIpv4CidrBlock: "10.0.0.0/28"
+            }
+          : undefined,
+
+        // Master authorized networks
+        masterAuthorizedNetworksConfig: masterAuthorizedNetworks,
+
+        // IP allocation policy (for VPC-native cluster)
+        ipAllocationPolicy: {
+          clusterSecondaryRangeName: "pods",
+          servicesSecondaryRangeName: "services"
+        },
+
+        // Workload Identity
+        workloadIdentityConfig: config.gke.enableWorkloadIdentity
+          ? {
+              workloadPool: `${config.gcpProject}.svc.id.goog`
+            }
+          : undefined,
+
+        // Binary Authorization
+        binaryAuthorization: config.gke.enableBinaryAuthorization
+          ? { evaluationMode: "PROJECT_SINGLETON_POLICY_ENFORCE" }
+          : undefined,
+
+        // Network Policy
+        networkPolicy: config.gke.enableNetworkPolicy
+          ? {
+              enabled: true,
+              provider: "CALICO"
+            }
+          : undefined,
+
+        // Addons configuration
+        addonsConfig: {
+          httpLoadBalancing: {
+            disabled: !config.gke.enableHttpLoadBalancing
+          },
+          horizontalPodAutoscaling: {
+            disabled: !config.gke.enableHpa
+          },
+          gcePersistentDiskCsiDriverConfig: {
+            enabled: true
+          },
+          gcsFuseCsiDriverConfig: {
+            enabled: true
+          },
+          dnsCacheConfig: {
+            enabled: true
+          }
+        },
+
+        // Vertical Pod Autoscaler
+        verticalPodAutoscaling: {
+          enabled: config.gke.enableVpa
+        },
+
+        // Maintenance window
+        maintenancePolicy: maintenancePolicy,
+
+        // Logging and monitoring
+        loggingConfig: {
+          enableComponents: ["SYSTEM_COMPONENTS", "WORKLOADS"]
+        },
+        monitoringConfig: {
+          enableComponents: ["SYSTEM_COMPONENTS"],
+          managedPrometheus: {
+            enabled: config.observability.enablePrometheus
+          }
+        },
+
+        // Security
+        masterAuth: {
+          clientCertificateConfig: {
+            issueClientCertificate: false
+          }
+        },
+
+        // Deletion protection
+        deletionProtection: config.deletionProtection,
+
+        // Resource labels
+        resourceLabels: labels
+      },
+      { parent: this }
+    );
+
+    this.clusterName = this.cluster.name;
+    this.endpoint = this.cluster.endpoint;
+    this.caCertificate = this.cluster.masterAuth.apply(
+      (auth) => auth.clusterCaCertificate
+    );
+
+    this.registerOutputs({
+      cluster: this.cluster,
+      clusterName: this.clusterName,
+      endpoint: this.endpoint,
+      caCertificate: this.caCertificate
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createGkeCluster(
+  config: EnvironmentConfig,
   network: gcp.compute.Network,
   subnet: gcp.compute.Subnetwork,
-  nodeServiceAccountEmail: pulumi.Output<string>,
-  dependsOn: pulumi.Resource[] = [],
-): ClusterOutputs {
-  const config = new pulumi.Config();
-  const useAutopilot = config.getBoolean("gkeAutopilot") ?? false;
-
-  // ── GKE Cluster ───────────────────────────────────────────────────
-  const cluster = new gcp.container.Cluster("gke-cluster", {
-    name: gkeConfig.clusterName,
-    project: projectId,
-    location: region,
-    network: network.id,
-    subnetwork: subnet.id,
-
-    // Use Autopilot if configured, otherwise Standard mode
-    enableAutopilot: useAutopilot,
-
-    // Remove default node pool for Standard mode (we manage our own)
-    ...(!useAutopilot && {
-      removeDefaultNodePool: true,
-      initialNodeCount: 1,
-    }),
-
-    // Private cluster configuration
-    privateClusterConfig: {
-      enablePrivateNodes: true,
-      enablePrivateEndpoint: false,
-      masterIpv4CidrBlock: "172.16.0.0/28",
-    },
-
-    // Master authorized networks
-    masterAuthorizedNetworksConfig: {
-      cidrBlocks: [
-        {
-          cidrBlock: "0.0.0.0/0",
-          displayName: "All networks (restrict in production)",
-        },
-      ],
-    },
-
-    // Workload Identity
-    workloadIdentityConfig: {
-      workloadPool: pulumi.interpolate`${projectId}.svc.id.goog`,
-    },
-
-    // Release channel
-    releaseChannel: {
-      channel: "REGULAR",
-    },
-
-    // IP allocation policy (use secondary ranges from subnet)
-    ipAllocationPolicy: {
-      clusterSecondaryRangeName: "pods",
-      servicesSecondaryRangeName: "services",
-    },
-
-    // Network policy
-    networkPolicy: {
-      enabled: true,
-      provider: "CALICO",
-    },
-
-    // Addons
-    addonsConfig: {
-      httpLoadBalancing: { disabled: false },
-      horizontalPodAutoscaling: { disabled: false },
-      networkPolicyConfig: { disabled: false },
-      dnsCacheConfig: { enabled: true },
-    },
-
-    // Logging and monitoring
-    loggingConfig: {
-      enableComponents: [
-        "SYSTEM_COMPONENTS",
-        "WORKLOADS",
-      ],
-    },
-    monitoringConfig: {
-      enableComponents: [
-        "SYSTEM_COMPONENTS",
-      ],
-      managedPrometheus: {
-        enabled: true,
-      },
-    },
-
-    // Maintenance window (2 AM - 6 AM UTC on weekends)
-    maintenancePolicy: {
-      recurringWindow: {
-        startTime: "2024-01-01T02:00:00Z",
-        endTime: "2024-01-01T06:00:00Z",
-        recurrence: "FREQ=WEEKLY;BYDAY=SA,SU",
-      },
-    },
-
-    // Resource labels
-    resourceLabels: {
-      project: "{{ .Project.Metadata.Name }}",
-      environment: stackName,
-      "managed-by": "pulumi",
-    },
-  }, { dependsOn });
-
-  // ── Default Node Pool (Standard mode only) ────────────────────────
-  const nodePool = new gcp.container.NodePool("default-node-pool", {
-    name: gkeConfig.nodePoolName,
-    project: projectId,
-    location: region,
-    cluster: cluster.name,
-
-    // Autoscaling
-    autoscaling: {
-      minNodeCount: gkeConfig.minNodes,
-      maxNodeCount: gkeConfig.maxNodes,
-    },
-
-    // Node configuration
-    nodeConfig: {
-      machineType: gkeConfig.machineType,
-      diskSizeGb: gkeConfig.diskSizeGb,
-      diskType: "pd-standard",
-      imageType: "COS_CONTAINERD",
-
-      // Use the dedicated GKE node service account
-      serviceAccount: nodeServiceAccountEmail,
-      oauthScopes: [
-        "https://www.googleapis.com/auth/cloud-platform",
-      ],
-
-      // Workload Identity on nodes
-      workloadMetadataConfig: {
-        mode: "GKE_METADATA",
-      },
-
-      // Shielded instance
-      shieldedInstanceConfig: {
-        enableSecureBoot: true,
-        enableIntegrityMonitoring: true,
-      },
-
-      labels: {
-        project: "{{ .Project.Metadata.Name }}",
-        environment: stackName,
-      },
-
-      tags: [
-        `{{ .Project.Metadata.Name }}-${stackName}-gke-node`,
-      ],
-    },
-
-    // Management
-    management: {
-      autoRepair: true,
-      autoUpgrade: true,
-    },
-  });
-
-  return { cluster, nodePool };
+  nodeServiceAccountEmail?: pulumi.Output<string>,
+  opts?: pulumi.ComponentResourceOptions
+): GkeCluster {
+  return new GkeCluster(
+    `{{ .Project.Metadata.Name }}-gke-${config.name}`,
+    { config, network, subnet, nodeServiceAccountEmail },
+    opts
+  );
 }

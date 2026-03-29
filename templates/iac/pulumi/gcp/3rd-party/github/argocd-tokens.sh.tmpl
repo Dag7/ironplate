@@ -1,0 +1,214 @@
+#!/bin/bash
+# =============================================================================
+# ArgoCD Token Generator
+# =============================================================================
+# Generates ArgoCD API tokens for GitHub Actions CI/CD.
+#
+# Usage:
+#   ./argocd-tokens.sh -e staging     # Generate token for staging
+#   ./argocd-tokens.sh -e production  # Generate token for production
+#   ./argocd-tokens.sh -e prod        # Alias for production
+#
+# Prerequisites:
+#   - gcloud CLI authenticated
+#   - kubectl installed
+#   - argocd CLI installed (brew install argocd)
+#   - ArgoCD must be running (port-forward will be used if TLS not ready)
+# =============================================================================
+
+set -e
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Configuration
+PORT_FORWARD_LOCAL_PORT=28080
+
+# Default values
+ENVIRONMENT=""
+USE_PORT_FORWARD=false
+
+# =============================================================================
+# Functions
+# =============================================================================
+
+usage() {
+  echo "Usage: $0 -e <environment> [options]"
+  echo ""
+  echo "Options:"
+  echo "  -e, --env        Environment: staging, production (or prod)"
+  echo "  -p, --port-forward  Force use of port-forward instead of direct URL"
+  echo "  -h, --help       Show this help message"
+  echo ""
+  echo "Examples:"
+  echo "  $0 -e staging"
+  echo "  $0 -e prod"
+  echo "  $0 -e production -p"
+  exit 1
+}
+
+log_info() {
+  echo -e "${BLUE}i${NC} $1"
+}
+
+log_success() {
+  echo -e "${GREEN}✓${NC} $1"
+}
+
+log_warn() {
+  echo -e "${YELLOW}!${NC} $1"
+}
+
+log_error() {
+  echo -e "${RED}x${NC} $1"
+}
+
+# =============================================================================
+# Parse Arguments
+# =============================================================================
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -e|--env)
+      ENVIRONMENT="$2"
+      shift 2
+      ;;
+    -p|--port-forward)
+      USE_PORT_FORWARD=true
+      shift
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      log_error "Unknown option: $1"
+      usage
+      ;;
+  esac
+done
+
+# Validate environment
+if [[ -z "$ENVIRONMENT" ]]; then
+  log_error "Environment is required"
+  usage
+fi
+
+# Normalize environment name
+case "$ENVIRONMENT" in
+  staging|stg)
+    ENVIRONMENT="staging"
+    GCP_PROJECT="{{ .Project.Metadata.Name }}-staging"
+    GKE_CLUSTER="{{ .Project.Metadata.Name }}-staging-cluster"
+    GCP_REGION="{{ .Project.Spec.Cloud.Region }}"
+    ARGOCD_SERVER="argocd.staging.{{ .Project.Metadata.Domain }}"
+    GITHUB_SECRET_NAME="ARGOCD_TOKEN_STAGING"
+    ;;
+  production|prod)
+    ENVIRONMENT="production"
+    GCP_PROJECT="{{ .Project.Metadata.Name }}-production"
+    GKE_CLUSTER="{{ .Project.Metadata.Name }}-production-cluster"
+    GCP_REGION="{{ .Project.Spec.Cloud.Region }}"
+    ARGOCD_SERVER="argocd.{{ .Project.Metadata.Domain }}"
+    GITHUB_SECRET_NAME="ARGOCD_TOKEN_PRODUCTION"
+    ;;
+  *)
+    log_error "Invalid environment: $ENVIRONMENT"
+    log_error "Valid options: staging, production (or stg, prod)"
+    exit 1
+    ;;
+esac
+
+# =============================================================================
+# Main
+# =============================================================================
+
+echo ""
+echo "=========================================="
+echo " ArgoCD Token Generator - ${ENVIRONMENT^^}"
+echo "=========================================="
+echo ""
+
+# Step 1: Set kubectl context
+log_info "Setting kubectl context to ${GKE_CLUSTER}..."
+CONTEXT="gke_${GCP_PROJECT}_${GCP_REGION}_${GKE_CLUSTER}"
+
+if ! kubectl config use-context "$CONTEXT" 2>/dev/null; then
+  log_warn "Context not found. Fetching credentials..."
+  gcloud container clusters get-credentials "$GKE_CLUSTER" \
+    --region "$GCP_REGION" \
+    --project "$GCP_PROJECT"
+fi
+log_success "Context set to: $CONTEXT"
+
+# Step 2: Get admin password from GCP Secret Manager
+log_info "Fetching ArgoCD admin password from GCP Secret Manager..."
+ADMIN_PASSWORD=$(gcloud secrets versions access latest \
+  --secret="argocd-admin-password" \
+  --project="$GCP_PROJECT" 2>/dev/null)
+
+if [[ -z "$ADMIN_PASSWORD" ]]; then
+  log_error "Failed to get admin password from Secret Manager"
+  log_error "Make sure the secret 'argocd-admin-password' exists in project '$GCP_PROJECT'"
+  exit 1
+fi
+log_success "Admin password retrieved"
+
+# Step 3: Use kubectl exec approach
+# This runs argocd CLI inside the cluster, bypassing IAP and network issues
+log_info "Using kubectl exec to run argocd CLI inside the cluster..."
+
+# Get ArgoCD server pod name
+log_info "Finding ArgoCD server pod..."
+ARGOCD_POD=$(kubectl get pods -n argocd -l app.kubernetes.io/name=argocd-server -o jsonpath='{.items[0].metadata.name}')
+
+if [[ -z "$ARGOCD_POD" ]]; then
+  log_error "Could not find ArgoCD server pod"
+  exit 1
+fi
+log_success "Found ArgoCD pod: $ARGOCD_POD"
+
+# Step 4: Login to ArgoCD from inside the pod
+log_info "Logging in to ArgoCD from inside the pod..."
+
+kubectl exec -n argocd "$ARGOCD_POD" -- argocd login localhost:8080 \
+  --username admin \
+  --password "$ADMIN_PASSWORD" \
+  --insecure \
+  --plaintext
+
+log_success "Logged in successfully"
+
+# Step 5: Generate token from inside the pod
+# Use 10 years expiry (87600h) since "0" or "never" aren't supported
+log_info "Generating API token (10-year expiry)..."
+TOKEN=$(kubectl exec -n argocd "$ARGOCD_POD" -- argocd account generate-token --account admin --expires-in 87600h)
+
+if [[ -z "$TOKEN" ]]; then
+  log_error "Failed to generate token"
+  exit 1
+fi
+
+# Step 6: Output
+echo ""
+echo "=========================================="
+echo -e "${GREEN} TOKEN GENERATED SUCCESSFULLY${NC}"
+echo "=========================================="
+echo ""
+echo -e "${YELLOW}GitHub Secret Name:${NC} ${GITHUB_SECRET_NAME}"
+echo ""
+echo -e "${YELLOW}Token Value:${NC}"
+echo ""
+echo "$TOKEN"
+echo ""
+echo "=========================================="
+echo ""
+echo -e "${BLUE}Next Steps:${NC}"
+echo "1. Copy the token above"
+echo "2. Go to: https://github.com/{{ .Project.Metadata.Organization }}/{{ .Project.Metadata.Name }}/settings/secrets/actions"
+echo "3. Create/update secret: ${GITHUB_SECRET_NAME}"
+echo "4. Paste the token value"
+echo ""

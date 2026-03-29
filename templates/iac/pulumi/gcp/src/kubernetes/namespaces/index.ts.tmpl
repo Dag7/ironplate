@@ -1,0 +1,119 @@
+/**
+ * Kubernetes Namespaces Module
+ *
+ * Creates and manages namespaces for the {{ .Project.Metadata.Name }} platform.
+ */
+
+import * as k8s from "@pulumi/kubernetes";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { k8sLabels } from "../../utils/tags.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface NamespacesArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** Kubernetes provider */
+  k8sProvider: k8s.Provider;
+}
+
+export interface NamespacesOutputs {
+  /** Created namespaces */
+  namespaces: Record<string, k8s.core.v1.Namespace>;
+}
+
+// =============================================================================
+// Standard Namespaces
+// =============================================================================
+
+const STANDARD_NAMESPACES = [
+  {
+    name: "{{ .Project.Metadata.Name }}",
+    description: "Main application and infrastructure namespace"
+  },
+{{ if .Computed.HasExternalSecrets }}  {
+    name: "external-secrets",
+    description: "External Secrets Operator"
+  },
+{{ end }}  {
+    name: "traefik-system",
+    description: "Traefik Ingress Controller"
+  },
+{{ if .Computed.HasArgoCD }}  {
+    name: "argocd",
+    description: "ArgoCD GitOps Controller"
+  },
+{{ end }}{{ if .Computed.HasObservability }}  {
+    name: "monitoring",
+    description: "Observability stack (Prometheus, Grafana, Alertmanager, Tempo)"
+  },
+{{ end }}];
+
+// =============================================================================
+// Namespaces Component
+// =============================================================================
+
+export class Namespaces extends pulumi.ComponentResource {
+  public readonly namespaces: Record<string, k8s.core.v1.Namespace>;
+
+  constructor(
+    name: string,
+    args: NamespacesArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:kubernetes:Namespaces", name, {}, opts);
+
+    const { config, k8sProvider } = args;
+    this.namespaces = {};
+
+    for (const ns of STANDARD_NAMESPACES) {
+      const labels = k8sLabels(config, ns.name);
+
+      const namespace = new k8s.core.v1.Namespace(
+        `${name}-${ns.name}`,
+        {
+          metadata: {
+            name: ns.name,
+            labels: labels,
+            annotations: {
+              description: ns.description
+            }
+          }
+        },
+        { parent: this, provider: k8sProvider }
+      );
+
+      this.namespaces[ns.name] = namespace;
+    }
+
+    this.registerOutputs({
+      namespaces: this.namespaces
+    });
+  }
+
+  /**
+   * Get a namespace by name
+   */
+  getNamespace(name: string): k8s.core.v1.Namespace | undefined {
+    return this.namespaces[name];
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createNamespaces(
+  config: EnvironmentConfig,
+  k8sProvider: k8s.Provider,
+  opts?: pulumi.ComponentResourceOptions
+): Namespaces {
+  return new Namespaces(
+    `{{ .Project.Metadata.Name }}-namespaces-${config.name}`,
+    { config, k8sProvider },
+    opts
+  );
+}

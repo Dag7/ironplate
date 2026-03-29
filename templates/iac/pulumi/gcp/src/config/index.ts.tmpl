@@ -1,0 +1,16 @@
+/**
+ * Configuration Module
+ *
+ * Exports configuration types and the config loader.
+ * Configuration is loaded from Pulumi stack files (Pulumi.<stack>.yaml).
+ *
+ * IMPORTANT: All environment-specific values are in:
+ *   - Pulumi.staging.yaml
+ *   - Pulumi.production.yaml
+ *
+ * Do NOT hardcode configs in TypeScript files!
+ */
+
+export { getConfigSection, loadConfig, validateConfig } from "./loader.js";
+export * from "./services.js";
+export * from "./types.js";

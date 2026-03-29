@@ -1,0 +1,455 @@
+/**
+ * Identity-Aware Proxy (IAP) Module
+ *
+ * Deploys OAuth2 Proxy with Traefik ForwardAuth middleware for protecting
+ * internal services like ArgoCD, Hasura, Grafana, etc.
+ *
+ * Architecture:
+ *   User -> Traefik -> iap-auth middleware -> OAuth2 Proxy -> Backend Service
+ *
+ * Components:
+ * - ExternalSecret: Syncs OAuth credentials from GCP Secret Manager
+ * - Middleware (iap-auth): Traefik ForwardAuth that calls OAuth2 Proxy
+ * - Deployment: OAuth2 Proxy pods
+ * - Service: ClusterIP service for the proxy
+ * - PDB: Pod Disruption Budget (when replicas > 1)
+ * - IngressRoute: For /oauth2/* callback paths
+ *
+ * Prerequisites:
+ * - External Secrets Operator deployed with ClusterSecretStore
+ * - GCP Secret Manager secrets created by Pulumi (iap-credentials-*)
+ * - Traefik Ingress Controller deployed
+ * - TLS certificates available
+ *
+ * @see https://oauth2-proxy.github.io/oauth2-proxy/
+ */
+
+import * as k8s from "@pulumi/kubernetes";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig, IapConfig } from "../../config/types.js";
+import { k8sLabels } from "../../utils/tags.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface IAPArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** IAP configuration (from security.iap) */
+  iapConfig: IapConfig;
+  /** Kubernetes provider */
+  k8sProvider: k8s.Provider;
+  /** Application namespace ({{ .Project.Metadata.Name }}) */
+  appNamespace: k8s.core.v1.Namespace;
+  /** TLS secret name for certificates */
+  tlsSecretName: string;
+  /** ClusterSecretStore name for External Secrets */
+  clusterSecretStoreName: string;
+}
+
+// =============================================================================
+// IAP Component
+// =============================================================================
+
+export class IAP extends pulumi.ComponentResource {
+  /** ExternalSecret for OAuth credentials */
+  public readonly externalSecret: k8s.apiextensions.CustomResource;
+  /** ForwardAuth middleware */
+  public readonly middleware: k8s.apiextensions.CustomResource;
+  /** Errors middleware to redirect 401s to sign-in */
+  public readonly errorsMiddleware: k8s.apiextensions.CustomResource;
+  /** OAuth2 Proxy deployment */
+  public readonly deployment: k8s.apps.v1.Deployment;
+  /** OAuth2 Proxy service */
+  public readonly service: k8s.core.v1.Service;
+  /** Pod Disruption Budget (when replicas > 1) */
+  public readonly pdb?: k8s.policy.v1.PodDisruptionBudget;
+  /** IngressRoute for OAuth2 callbacks */
+  public readonly ingressRoute: k8s.apiextensions.CustomResource;
+
+  constructor(
+    name: string,
+    args: IAPArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:kubernetes:IAP", name, {}, opts);
+
+    const {
+      config,
+      iapConfig,
+      k8sProvider,
+      appNamespace,
+      tlsSecretName,
+      clusterSecretStoreName
+    } = args;
+
+    const labels = k8sLabels(config, "iap");
+
+    // All values from config - no hardcoded environment checks
+    const {
+      replicas,
+      oauth2ProxyVersion,
+      cookieDomain,
+      cookieRefresh,
+      cookieExpire,
+      cookieSameSiteStrict,
+      allowedEmailDomain,
+      enablePodAntiAffinity,
+      nodeSelector,
+      tolerations,
+      resources
+    } = iapConfig;
+
+    // Build FQDN for protected hosts using domain config
+    const baseDomain = config.domain.baseDomain;
+    const envPrefix = config.domain.envSubdomain
+      ? `${config.domain.envSubdomain}.`
+      : "";
+
+    // Build protected hosts from protectedServices config
+    const protectedHosts = iapConfig.protectedServices.map(
+      (service) => `${service}.${envPrefix}${baseDomain}`
+    );
+
+    // =========================================================================
+    // ExternalSecret - Sync OAuth credentials from GCP Secret Manager
+    // =========================================================================
+    this.externalSecret = new k8s.apiextensions.CustomResource(
+      `${name}-external-secret`,
+      {
+        apiVersion: "external-secrets.io/v1beta1",
+        kind: "ExternalSecret",
+        metadata: {
+          name: "iap-oauth-credentials",
+          namespace: appNamespace.metadata.name,
+          labels: labels
+        },
+        spec: {
+          refreshInterval: config.secrets.refreshInterval,
+          secretStoreRef: {
+            name: clusterSecretStoreName,
+            kind: "ClusterSecretStore"
+          },
+          target: {
+            name: "iap-oauth-credentials",
+            creationPolicy: "Owner"
+          },
+          data: [
+            {
+              secretKey: "client-id",
+              remoteRef: { key: "iap-credentials-client-id" }
+            },
+            {
+              secretKey: "client-secret",
+              remoteRef: { key: "iap-credentials-client-secret" }
+            },
+            {
+              secretKey: "cookie-secret",
+              remoteRef: { key: "iap-credentials-cookie-secret" }
+            }
+          ]
+        }
+      },
+      { parent: this, provider: k8sProvider }
+    );
+
+    // =========================================================================
+    // Traefik ForwardAuth Middleware
+    // =========================================================================
+    this.middleware = new k8s.apiextensions.CustomResource(
+      `${name}-middleware`,
+      {
+        apiVersion: "traefik.io/v1alpha1",
+        kind: "Middleware",
+        metadata: {
+          name: "iap-auth",
+          namespace: appNamespace.metadata.name,
+          labels: labels
+        },
+        spec: {
+          forwardAuth: {
+            address:
+              "http://oauth2-proxy.{{ .Project.Metadata.Name }}.svc.cluster.local:4180/oauth2/auth",
+            trustForwardHeader: true,
+            authResponseHeaders: [
+              "X-Auth-Request-User",
+              "X-Auth-Request-Email",
+              "X-Auth-Request-Groups"
+            ]
+          }
+        }
+      },
+      { parent: this, provider: k8sProvider }
+    );
+
+    // =========================================================================
+    // OAuth2 Proxy Deployment
+    // =========================================================================
+    const oauth2ProxyArgs = [
+      "--provider=google",
+      `--email-domain=${allowedEmailDomain}`,
+      "--upstream=static://200",
+      "--http-address=0.0.0.0:4180",
+      "--reverse-proxy=true",
+      "--skip-provider-button=true",
+      "--cookie-secure=true",
+      `--cookie-domain=${cookieDomain}`,
+      `--whitelist-domain=${cookieDomain}`,
+      "--set-xauthrequest=true",
+      "--pass-access-token=true",
+      "--pass-authorization-header=true",
+      `--cookie-refresh=${cookieRefresh}`,
+      `--cookie-expire=${cookieExpire}`,
+      `--cookie-samesite=${cookieSameSiteStrict ? "strict" : "lax"}`
+    ];
+
+    this.deployment = new k8s.apps.v1.Deployment(
+      `${name}-deployment`,
+      {
+        metadata: {
+          name: "oauth2-proxy",
+          namespace: appNamespace.metadata.name,
+          labels: { ...labels, app: "oauth2-proxy" }
+        },
+        spec: {
+          replicas: replicas,
+          selector: {
+            matchLabels: { app: "oauth2-proxy" }
+          },
+          template: {
+            metadata: {
+              labels: { ...labels, app: "oauth2-proxy" }
+            },
+            spec: {
+              ...(enablePodAntiAffinity && {
+                affinity: {
+                  podAntiAffinity: {
+                    preferredDuringSchedulingIgnoredDuringExecution: [
+                      {
+                        weight: 100,
+                        podAffinityTerm: {
+                          labelSelector: {
+                            matchLabels: { app: "oauth2-proxy" }
+                          },
+                          topologyKey: "kubernetes.io/hostname"
+                        }
+                      }
+                    ]
+                  }
+                }
+              }),
+              ...(nodeSelector && { nodeSelector }),
+              ...(tolerations && tolerations.length > 0 && { tolerations }),
+              containers: [
+                {
+                  name: "oauth2-proxy",
+                  image: `quay.io/oauth2-proxy/oauth2-proxy:${oauth2ProxyVersion}`,
+                  args: oauth2ProxyArgs,
+                  env: [
+                    {
+                      name: "OAUTH2_PROXY_CLIENT_ID",
+                      valueFrom: {
+                        secretKeyRef: {
+                          name: "iap-oauth-credentials",
+                          key: "client-id"
+                        }
+                      }
+                    },
+                    {
+                      name: "OAUTH2_PROXY_CLIENT_SECRET",
+                      valueFrom: {
+                        secretKeyRef: {
+                          name: "iap-oauth-credentials",
+                          key: "client-secret"
+                        }
+                      }
+                    },
+                    {
+                      name: "OAUTH2_PROXY_COOKIE_SECRET",
+                      valueFrom: {
+                        secretKeyRef: {
+                          name: "iap-oauth-credentials",
+                          key: "cookie-secret"
+                        }
+                      }
+                    }
+                  ],
+                  ports: [{ containerPort: 4180, name: "http" }],
+                  resources: resources,
+                  readinessProbe: {
+                    httpGet: { path: "/ping", port: 4180 },
+                    initialDelaySeconds: 5,
+                    periodSeconds: 10
+                  },
+                  livenessProbe: {
+                    httpGet: { path: "/ping", port: 4180 },
+                    initialDelaySeconds: 10,
+                    periodSeconds: 30
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        parent: this,
+        provider: k8sProvider,
+        dependsOn: [this.externalSecret]
+      }
+    );
+
+    // =========================================================================
+    // OAuth2 Proxy Service
+    // =========================================================================
+    this.service = new k8s.core.v1.Service(
+      `${name}-service`,
+      {
+        metadata: {
+          name: "oauth2-proxy",
+          namespace: appNamespace.metadata.name,
+          labels: { ...labels, app: "oauth2-proxy" }
+        },
+        spec: {
+          selector: { app: "oauth2-proxy" },
+          ports: [{ name: "http", port: 4180, targetPort: 4180 }],
+          type: "ClusterIP"
+        }
+      },
+      { parent: this, provider: k8sProvider }
+    );
+
+    // =========================================================================
+    // Traefik Errors Middleware - Redirects 401s to OAuth2 sign-in
+    // =========================================================================
+    this.errorsMiddleware = new k8s.apiextensions.CustomResource(
+      `${name}-errors-middleware`,
+      {
+        apiVersion: "traefik.io/v1alpha1",
+        kind: "Middleware",
+        metadata: {
+          name: "iap-errors",
+          namespace: appNamespace.metadata.name,
+          labels: labels
+        },
+        spec: {
+          errors: {
+            status: ["401", "403"],
+            service: {
+              name: "oauth2-proxy",
+              port: 4180
+            },
+            query: "/oauth2/sign_in"
+          }
+        }
+      },
+      { parent: this, provider: k8sProvider, dependsOn: [this.service] }
+    );
+
+    // =========================================================================
+    // Pod Disruption Budget (when replicas > 1)
+    // =========================================================================
+    if (replicas > 1) {
+      this.pdb = new k8s.policy.v1.PodDisruptionBudget(
+        `${name}-pdb`,
+        {
+          metadata: {
+            name: "oauth2-proxy-pdb",
+            namespace: appNamespace.metadata.name,
+            labels: labels
+          },
+          spec: {
+            minAvailable: 1,
+            selector: {
+              matchLabels: { app: "oauth2-proxy" }
+            }
+          }
+        },
+        { parent: this, provider: k8sProvider }
+      );
+    }
+
+    // =========================================================================
+    // IngressRoute for OAuth2 callback paths
+    // =========================================================================
+    const oauth2Routes = protectedHosts.map((host) => ({
+      match: `Host(\`${host}\`) && PathPrefix(\`/oauth2\`)`,
+      kind: "Rule",
+      services: [
+        {
+          name: "oauth2-proxy",
+          namespace: appNamespace.metadata.name,
+          port: 4180
+        }
+      ]
+    }));
+
+    this.ingressRoute = new k8s.apiextensions.CustomResource(
+      `${name}-ingress-route`,
+      {
+        apiVersion: "traefik.io/v1alpha1",
+        kind: "IngressRoute",
+        metadata: {
+          name: "oauth2-proxy",
+          namespace: appNamespace.metadata.name,
+          labels: labels
+        },
+        spec: {
+          entryPoints: ["websecure"],
+          routes: oauth2Routes,
+          tls: {
+            secretName: tlsSecretName
+          }
+        }
+      },
+      {
+        parent: this,
+        provider: k8sProvider,
+        dependsOn: [this.service]
+      }
+    );
+
+    this.registerOutputs({
+      externalSecret: this.externalSecret,
+      middleware: this.middleware,
+      errorsMiddleware: this.errorsMiddleware,
+      deployment: this.deployment,
+      service: this.service,
+      ingressRoute: this.ingressRoute
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createIAP(
+  config: EnvironmentConfig,
+  k8sProvider: k8s.Provider,
+  appNamespace: k8s.core.v1.Namespace,
+  tlsSecretName: string,
+  clusterSecretStoreName: string,
+  opts?: pulumi.ComponentResourceOptions
+): IAP | undefined {
+  const iapConfig = config.security.iap;
+
+  if (!iapConfig.enabled) {
+    pulumi.log.info("IAP is disabled, skipping deployment");
+    return undefined;
+  }
+
+  return new IAP(
+    `{{ .Project.Metadata.Name }}-iap-${config.name}`,
+    {
+      config,
+      iapConfig,
+      k8sProvider,
+      appNamespace,
+      tlsSecretName,
+      clusterSecretStoreName
+    },
+    opts
+  );
+}

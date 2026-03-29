@@ -1,0 +1,231 @@
+/**
+ * Firewall Rules Configuration Module
+ *
+ * Creates comprehensive firewall rules for the {{ .Project.Metadata.Name }} VPC network.
+ * Rules follow the principle of least privilege with explicit allow rules
+ * and a catch-all deny at the lowest priority.
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { resourceName } from "../../utils/naming.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+/** Arguments for creating the Firewall component */
+export interface FirewallArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** VPC network to attach firewall rules to */
+  network: gcp.compute.Network;
+}
+
+/** Outputs exposed by the Firewall component */
+export interface FirewallOutputs {
+  /** All firewall rules indexed by logical name */
+  rules: Record<string, gcp.compute.Firewall>;
+}
+
+// =============================================================================
+// Firewall Component
+// =============================================================================
+
+/**
+ * Firewall ComponentResource for the {{ .Project.Metadata.Name }} platform.
+ *
+ * Creates the following rules (ordered by priority):
+ *
+ * | Rule | Priority | Purpose |
+ * |------|----------|---------|
+ * | allow-internal | 1000 | VPC, pod, and service CIDR communication |
+ * | allow-health-checks | 1000 | GCP load balancer health probes |
+ * | allow-iap | 1000 | SSH/RDP via Identity-Aware Proxy |
+ * | allow-gke-master | 1000 | GKE control plane to node communication |
+ * | allow-webhooks | 1000 | Admission controller webhooks from control plane |
+ * | deny-all-ingress | 65534 | Catch-all deny for unmatched traffic |
+ *
+ * @example
+ * ```ts
+ * const firewall = createFirewall(config, vpc.network);
+ * // firewall.rules["allow-internal"] for dependency references
+ * ```
+ */
+export class Firewall extends pulumi.ComponentResource {
+  public readonly rules: Record<string, gcp.compute.Firewall>;
+
+  constructor(
+    name: string,
+    args: FirewallArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:networking:Firewall", name, {}, opts);
+
+    const { config, network } = args;
+    this.rules = {};
+
+    // =========================================================================
+    // Allow Internal Communication
+    // Permits all TCP, UDP, and ICMP traffic between VPC nodes, pods,
+    // and services for unrestricted intra-cluster communication.
+    // =========================================================================
+    this.rules["allow-internal"] = new gcp.compute.Firewall(
+      `${name}-allow-internal`,
+      {
+        name: resourceName("fw", "allow-internal"),
+        project: config.gcpProject,
+        network: network.selfLink,
+        description: "Allow internal communication between all instances",
+        direction: "INGRESS",
+        priority: 1000,
+        sourceRanges: [
+          config.networking.vpcCidr,
+          config.networking.podsCidr,
+          config.networking.servicesCidr,
+        ],
+        allows: [
+          { protocol: "tcp", ports: ["0-65535"] },
+          { protocol: "udp", ports: ["0-65535"] },
+          { protocol: "icmp" },
+        ],
+      },
+      { parent: this }
+    );
+
+    // =========================================================================
+    // Allow Health Checks from GCP Load Balancers
+    // Required for backend health probing by Google Cloud load balancers
+    // and Ingress controllers.
+    // =========================================================================
+    this.rules["allow-health-checks"] = new gcp.compute.Firewall(
+      `${name}-allow-health-checks`,
+      {
+        name: resourceName("fw", "allow-health-checks"),
+        project: config.gcpProject,
+        network: network.selfLink,
+        description: "Allow health checks from GCP load balancers",
+        direction: "INGRESS",
+        priority: 1000,
+        // GCP health check IP ranges
+        sourceRanges: ["130.211.0.0/22", "35.191.0.0/16"],
+        targetTags: ["gke-node", "allow-health-check"],
+        allows: [{ protocol: "tcp" }],
+      },
+      { parent: this }
+    );
+
+    // =========================================================================
+    // Allow IAP Tunneling (for debugging/maintenance)
+    // Enables SSH and RDP access through Identity-Aware Proxy without
+    // exposing instances to the public internet.
+    // =========================================================================
+    this.rules["allow-iap"] = new gcp.compute.Firewall(
+      `${name}-allow-iap`,
+      {
+        name: resourceName("fw", "allow-iap"),
+        project: config.gcpProject,
+        network: network.selfLink,
+        description: "Allow SSH and RDP via Identity-Aware Proxy",
+        direction: "INGRESS",
+        priority: 1000,
+        // IAP forwarding CIDR range
+        sourceRanges: ["35.235.240.0/20"],
+        allows: [{ protocol: "tcp", ports: ["22", "3389"] }],
+      },
+      { parent: this }
+    );
+
+    // =========================================================================
+    // Allow GKE Master to Node Communication
+    // Required for the GKE control plane to communicate with kubelets
+    // and the Kubernetes API server on nodes.
+    // =========================================================================
+    this.rules["allow-gke-master"] = new gcp.compute.Firewall(
+      `${name}-allow-gke-master`,
+      {
+        name: resourceName("fw", "allow-gke-master"),
+        project: config.gcpProject,
+        network: network.selfLink,
+        description: "Allow GKE master to communicate with nodes",
+        direction: "INGRESS",
+        priority: 1000,
+        // GKE master CIDR (default private cluster range)
+        sourceRanges: ["10.0.0.0/28"],
+        targetTags: ["gke-node"],
+        allows: [{ protocol: "tcp", ports: ["443", "10250"] }],
+      },
+      { parent: this }
+    );
+
+    // =========================================================================
+    // Allow Webhook Traffic (for admission controllers)
+    // Enables the GKE control plane to reach webhook endpoints running
+    // on nodes (cert-manager, Istio, policy controllers, etc.).
+    // =========================================================================
+    this.rules["allow-webhooks"] = new gcp.compute.Firewall(
+      `${name}-allow-webhooks`,
+      {
+        name: resourceName("fw", "allow-webhooks"),
+        project: config.gcpProject,
+        network: network.selfLink,
+        description: "Allow webhook traffic from GKE master",
+        direction: "INGRESS",
+        priority: 1000,
+        sourceRanges: ["10.0.0.0/28"],
+        targetTags: ["gke-node"],
+        allows: [{ protocol: "tcp", ports: ["8443", "9443", "15017"] }],
+      },
+      { parent: this }
+    );
+
+    // =========================================================================
+    // Deny All Ingress (catch-all, lowest priority)
+    // Ensures any traffic not explicitly allowed above is dropped.
+    // Priority 65534 is just below the GCP implied deny at 65535.
+    // =========================================================================
+    this.rules["deny-all-ingress"] = new gcp.compute.Firewall(
+      `${name}-deny-all-ingress`,
+      {
+        name: resourceName("fw", "deny-all-ingress"),
+        project: config.gcpProject,
+        network: network.selfLink,
+        description: "Deny all other ingress traffic",
+        direction: "INGRESS",
+        priority: 65534,
+        sourceRanges: ["0.0.0.0/0"],
+        denies: [{ protocol: "all" }],
+      },
+      { parent: this }
+    );
+
+    this.registerOutputs({
+      rules: this.rules,
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+/**
+ * Creates firewall rules for the given environment and VPC.
+ *
+ * @param config - Environment configuration
+ * @param network - VPC network to attach rules to
+ * @param opts - Pulumi component resource options
+ * @returns A fully configured Firewall component
+ */
+export function createFirewall(
+  config: EnvironmentConfig,
+  network: gcp.compute.Network,
+  opts?: pulumi.ComponentResourceOptions
+): Firewall {
+  return new Firewall(
+    `{{ .Project.Metadata.Name }}-firewall-${config.name}`,
+    { config, network },
+    opts
+  );
+}

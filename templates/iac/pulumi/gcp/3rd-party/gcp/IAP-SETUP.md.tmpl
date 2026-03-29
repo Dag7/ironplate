@@ -1,0 +1,216 @@
+# IAP (Identity-Aware Proxy) Setup Guide
+
+## Overview
+
+IAP protects internal services (ArgoCD, Grafana, etc.) with Google OAuth authentication. Only users from your allowed domain can access these services.
+
+## Why Manual Setup is Required
+
+**Google deprecated the IAP OAuth Admin APIs** in July 2025. OAuth clients can no longer be created programmatically via Terraform/Pulumi/gcloud. You must create them manually in the GCP Console.
+
+> The APIs will be permanently shut down on **March 19, 2026**.
+
+## How It Works
+
+```
+User → Browser → Traefik → iap-auth middleware → OAuth2 Proxy → Protected Service
+                              ↓
+                    If not authenticated:
+                    Redirect to Google OAuth
+```
+
+## Setup Instructions
+
+### Step 1: Create OAuth Credentials in GCP Console
+
+1. Go to [GCP Console → APIs & Services → Credentials](https://console.cloud.google.com/apis/credentials)
+2. Select your project ({{ .Project.Metadata.Name }}-staging or {{ .Project.Metadata.Name }}-production)
+3. Click **"Create Credentials"** → **"OAuth client ID"**
+4. Application type: **"Web application"**
+5. Name: `{{ .Project.Metadata.Name }} IAP Staging` (or Production)
+
+### Step 2: Configure OAuth Client
+
+**Authorized JavaScript origins:**
+
+For **staging**:
+
+```
+https://staging.{{ .Project.Metadata.Domain }}
+```
+
+For **production**:
+
+```
+https://{{ .Project.Metadata.Domain }}
+```
+
+**Authorized redirect URIs:**
+
+For **staging**:
+
+```
+https://traefik.staging.{{ .Project.Metadata.Domain }}/oauth2/callback
+https://grafana.staging.{{ .Project.Metadata.Domain }}/oauth2/callback
+https://k8s-dashboard.staging.{{ .Project.Metadata.Domain }}/oauth2/callback
+https://argocd.staging.{{ .Project.Metadata.Domain }}/oauth2/callback
+```
+
+For **production**:
+
+```
+https://traefik.{{ .Project.Metadata.Domain }}/oauth2/callback
+https://grafana.{{ .Project.Metadata.Domain }}/oauth2/callback
+https://k8s-dashboard.{{ .Project.Metadata.Domain }}/oauth2/callback
+https://argocd.{{ .Project.Metadata.Domain }}/oauth2/callback
+```
+
+6. Click **"Create"**
+7. Download the JSON file or copy the **Client ID** and **Client Secret**
+
+### Step 3: Add Credentials to Secrets JSON
+
+Add `iap-credentials` to your secrets file:
+
+```bash
+# Edit the appropriate environment file
+vim src/_secrets/staging.json    # or production.json
+```
+
+Add this section (generate cookie-secret with `openssl rand -base64 32`):
+
+```json
+{
+  "iap-credentials": {
+    "client-id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
+    "client-secret": "GOCSPX-your-secret",
+    "cookie-secret": "YOUR_32_BYTE_BASE64_COOKIE_SECRET="
+  }
+}
+```
+
+### Step 4: Sync Secrets to Pulumi Config
+
+```bash
+cd /workspaces/{{ .Project.Metadata.Name }}/iac/pulumi
+
+# For staging:
+./scripts/pulumi-secret-set.sh -e staging
+
+# For production:
+./scripts/pulumi-secret-set.sh -e production
+```
+
+### Step 5: Deploy IAP
+
+```bash
+pulumi up -s staging  # or production
+```
+
+Pulumi will now deploy the OAuth2 Proxy and iap-auth middleware.
+
+## Verification
+
+After deployment, try accessing a protected service:
+
+1. Go to https://argocd.staging.{{ .Project.Metadata.Domain }}
+2. You should be redirected to Google sign-in
+3. After signing in with a @{{ .Project.Metadata.Domain }} account, you should see ArgoCD
+
+## Troubleshooting
+
+### "redirect_uri_mismatch" error
+
+- Check that all redirect URIs are added to the OAuth client
+- Ensure there are no trailing slashes
+- Wait a few minutes for changes to propagate
+
+### "access_denied" error
+
+- Verify your email domain is in the allowed list (`{{ .Project.Metadata.Domain }}`)
+- Check the `allowedMembers` config in Pulumi
+
+### OAuth2 Proxy pods not starting
+
+- Check if ExternalSecret synced: `kubectl get externalsecret -n {{ .Project.Metadata.Name }}`
+- Check if secret exists: `kubectl get secret iap-oauth-credentials -n {{ .Project.Metadata.Name }}`
+- Check GCP Secret Manager has values: `gcloud secrets versions list iap-credentials-client-id --project={{ .Project.Metadata.Name }}-staging`
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        GCP Secret Manager                        │
+│  iap-credentials-client-id, iap-credentials-client-secret,      │
+│  iap-credentials-cookie-secret                                   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼ (ExternalSecret sync)
+┌─────────────────────────────────────────────────────────────────┐
+│                    K8s Secret: iap-oauth-credentials             │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       OAuth2 Proxy Deployment                    │
+│  - Reads credentials from secret                                 │
+│  - Handles Google OAuth flow                                     │
+│  - Sets X-Auth-Request-* headers                                 │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              Traefik Middleware: iap-auth (ForwardAuth)          │
+│  - Calls OAuth2 Proxy /oauth2/auth for every request            │
+│  - If 401, redirects to Google sign-in                          │
+│  - If 200, forwards request with auth headers                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Configuration Reference
+
+### Secrets JSON Structure
+
+Add to `src/_secrets/staging.json` or `src/_secrets/production.json`:
+
+```json
+{
+  "iap-credentials": {
+    "client-id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
+    "client-secret": "GOCSPX-your-secret",
+    "cookie-secret": "YOUR_32_BYTE_BASE64_COOKIE_SECRET="
+  }
+}
+```
+
+Generate a cookie secret:
+
+```bash
+openssl rand -base64 32
+```
+
+### Environment Config (Pulumi.{env}.yaml)
+
+```yaml
+{{ .Project.Metadata.Name }}:security:
+  iap:
+    enabled: true
+    supportEmail: admin@{{ .Project.Metadata.Domain }}
+    allowedMembers:
+      domain: {{ .Project.Metadata.Domain }}
+    protectedServices:
+      - traefik
+      - grafana
+      - k8s-dashboard
+      - argocd
+    oauth2ProxyVersion: "v7.5.1"
+    cookieDomain: .staging.{{ .Project.Metadata.Domain }} # or .{{ .Project.Metadata.Domain }} for prod
+    # ... other settings
+```
+
+## Notes
+
+- Cookie secret should be 32+ bytes, base64 encoded (generate with `openssl rand -base64 32`)
+- All IAP credentials are stored in GCP Secret Manager and synced to K8s via ExternalSecret
+- If `iap-credentials` is not configured, Pulumi will skip IAP deployment with a warning
+- Services remain accessible without auth until IAP is configured

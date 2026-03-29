@@ -1,126 +1,107 @@
+/**
+ * VPC Configuration Module
+ *
+ * Creates the Virtual Private Cloud network for the {{ .Project.Metadata.Name }} platform.
+ * Uses custom subnet mode for explicit control over IP addressing and
+ * regional routing for optimal latency within a single region.
+ */
+
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
-import { projectId, region, stackName } from "../../config/loader";
-import { NetworkConfig } from "../../config/types";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { resourceName } from "../../utils/naming.js";
 
-export interface NetworkOutputs {
-  /** VPC network */
-  network: gcp.compute.Network;
-  /** Primary subnet */
-  subnet: gcp.compute.Subnetwork;
-  /** Cloud Router */
-  router: gcp.compute.Router;
-  /** Cloud NAT */
-  nat: gcp.compute.RouterNat;
+// =============================================================================
+// Types
+// =============================================================================
+
+/** Arguments for creating a VPC component */
+export interface VpcArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
 }
 
+/** Outputs exposed by the VPC component */
+export interface VpcOutputs {
+  /** VPC network resource */
+  network: gcp.compute.Network;
+  /** VPC network ID */
+  networkId: pulumi.Output<string>;
+  /** VPC network self link for cross-resource references */
+  networkSelfLink: pulumi.Output<string>;
+}
+
+// =============================================================================
+// VPC Component
+// =============================================================================
+
 /**
- * Creates the VPC network, subnet with secondary ranges, Cloud NAT,
- * Cloud Router, and firewall rules for the {{ .Project.Metadata.Name }} project.
+ * VPC ComponentResource for the {{ .Project.Metadata.Name }} platform.
+ *
+ * Creates a custom-mode VPC with regional routing. Subnets are managed
+ * separately by the Subnets component, allowing independent lifecycle
+ * management and fine-grained CIDR control.
+ *
+ * @example
+ * ```ts
+ * const vpc = createVpc(config);
+ * // Use vpc.network for subnet and firewall references
+ * ```
  */
-export function createNetwork(
-  networkConfig: NetworkConfig,
-  dependsOn: pulumi.Resource[] = [],
-): NetworkOutputs {
-  // ── VPC Network ───────────────────────────────────────────────────
-  const network = new gcp.compute.Network("vpc", {
-    name: networkConfig.vpcName,
-    project: projectId,
-    autoCreateSubnetworks: false,
-    routingMode: "REGIONAL",
-  }, { dependsOn });
+export class Vpc extends pulumi.ComponentResource {
+  public readonly network: gcp.compute.Network;
+  public readonly networkId: pulumi.Output<string>;
+  public readonly networkSelfLink: pulumi.Output<string>;
 
-  // ── Subnet with secondary ranges for GKE ──────────────────────────
-  const subnet = new gcp.compute.Subnetwork("subnet", {
-    name: `{{ .Project.Metadata.Name }}-${stackName}-subnet`,
-    project: projectId,
-    region,
-    network: network.id,
-    ipCidrRange: networkConfig.subnetCidr,
-    privateIpGoogleAccess: true,
-    secondaryIpRanges: [
+  constructor(
+    name: string,
+    args: VpcArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:networking:Vpc", name, {}, opts);
+
+    const { config } = args;
+    const vpcResourceName = resourceName("vpc", "network");
+
+    // Create VPC network with custom subnet mode
+    this.network = new gcp.compute.Network(
+      name,
       {
-        rangeName: "pods",
-        ipCidrRange: networkConfig.podCidr,
+        name: vpcResourceName,
+        project: config.gcpProject,
+        autoCreateSubnetworks: false, // Subnets managed by the Subnets component
+        routingMode: "REGIONAL",
+        deleteDefaultRoutesOnCreate: false,
+        description: `{{ .Project.Metadata.Name }} ${config.name} environment VPC`,
       },
-      {
-        rangeName: "services",
-        ipCidrRange: networkConfig.serviceCidr,
-      },
-    ],
-  });
+      { parent: this }
+    );
 
-  // ── Cloud Router ──────────────────────────────────────────────────
-  const router = new gcp.compute.Router("router", {
-    name: `{{ .Project.Metadata.Name }}-${stackName}-router`,
-    project: projectId,
-    region,
-    network: network.id,
-  });
+    this.networkId = this.network.id;
+    this.networkSelfLink = this.network.selfLink;
 
-  // ── Cloud NAT ─────────────────────────────────────────────────────
-  const nat = new gcp.compute.RouterNat("nat", {
-    name: `{{ .Project.Metadata.Name }}-${stackName}-nat`,
-    project: projectId,
-    region,
-    router: router.name,
-    natIpAllocateOption: "AUTO_ONLY",
-    sourceSubnetworkIpRangesToNat: "ALL_SUBNETWORKS_ALL_IP_RANGES",
-    logConfig: {
-      enable: true,
-      filter: "ERRORS_ONLY",
-    },
-  });
+    this.registerOutputs({
+      network: this.network,
+      networkId: this.networkId,
+      networkSelfLink: this.networkSelfLink,
+    });
+  }
+}
 
-  // ── Firewall: Allow internal communication ────────────────────────
-  new gcp.compute.Firewall("allow-internal", {
-    name: `{{ .Project.Metadata.Name }}-${stackName}-allow-internal`,
-    project: projectId,
-    network: network.id,
-    direction: "INGRESS",
-    priority: 1000,
-    allows: [
-      { protocol: "tcp", ports: ["0-65535"] },
-      { protocol: "udp", ports: ["0-65535"] },
-      { protocol: "icmp" },
-    ],
-    sourceRanges: [
-      networkConfig.subnetCidr,
-      networkConfig.podCidr,
-      networkConfig.serviceCidr,
-    ],
-  });
+// =============================================================================
+// Factory Function
+// =============================================================================
 
-  // ── Firewall: Allow health checks from GCP load balancers ─────────
-  new gcp.compute.Firewall("allow-health-checks", {
-    name: `{{ .Project.Metadata.Name }}-${stackName}-allow-health-checks`,
-    project: projectId,
-    network: network.id,
-    direction: "INGRESS",
-    priority: 1000,
-    allows: [
-      { protocol: "tcp" },
-    ],
-    sourceRanges: [
-      "130.211.0.0/22",   // GCP health check range
-      "35.191.0.0/16",    // GCP health check range
-    ],
-  });
-
-  // ── Firewall: Allow SSH from Identity-Aware Proxy ─────────────────
-  new gcp.compute.Firewall("allow-iap-ssh", {
-    name: `{{ .Project.Metadata.Name }}-${stackName}-allow-iap-ssh`,
-    project: projectId,
-    network: network.id,
-    direction: "INGRESS",
-    priority: 1000,
-    allows: [
-      { protocol: "tcp", ports: ["22"] },
-    ],
-    sourceRanges: [
-      "35.235.240.0/20",  // IAP forwarding range
-    ],
-  });
-
-  return { network, subnet, router, nat };
+/**
+ * Creates a VPC for the given environment.
+ *
+ * @param config - Environment configuration
+ * @param opts - Pulumi component resource options
+ * @returns A fully configured VPC component
+ */
+export function createVpc(
+  config: EnvironmentConfig,
+  opts?: pulumi.ComponentResourceOptions
+): Vpc {
+  return new Vpc(`{{ .Project.Metadata.Name }}-vpc-${config.name}`, { config }, opts);
 }

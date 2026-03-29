@@ -1,87 +1,1211 @@
 /**
- * Infrastructure configuration types for {{ .Project.Metadata.Name }}.
+ * {{ .Project.Metadata.Name }} Infrastructure Configuration Types
  *
- * These interfaces define the shape of all infrastructure configuration
- * used across the Pulumi GCP stack.
+ * These interfaces define the complete configuration schema for the
+ * {{ .Project.Metadata.Name }} platform infrastructure on GCP.
+ * They follow the Interface Segregation Principle -- each config section
+ * is independent and can evolve without affecting other sections.
  */
 
-export interface EnvironmentConfig {
-  /** Environment name (e.g. "staging", "production") */
+import type * as pulumi from "@pulumi/pulumi";
+
+// =============================================================================
+// Environment Types
+// =============================================================================
+
+/**
+ * Environment name -- not hardcoded to specific values.
+ * Can be any string: "staging", "production", "test", "dev", etc.
+ */
+export type Environment = string;
+
+/** GKE release channel determines automatic upgrade cadence */
+export type GkeReleaseChannel = "RAPID" | "REGULAR" | "STABLE";
+
+/** Redis tier -- BASIC (no replication) or STANDARD_HA (cross-zone replication) */
+export type RedisTier = "BASIC" | "STANDARD_HA";
+
+/** TLS certificate issuer -- staging for testing, production for real certs */
+export type TlsIssuer = "letsencrypt-staging" | "letsencrypt-production";
+
+// =============================================================================
+// Networking Configuration
+// =============================================================================
+
+/** VPC and subnet CIDR configuration for the GCP project */
+export interface NetworkingConfig {
+  /** VPC CIDR block (e.g., 10.0.0.0/16) */
+  vpcCidr: string;
+  /** GKE subnet CIDR (e.g., 10.0.0.0/20) */
+  gkeSubnetCidr: string;
+  /** Pod IP range (secondary range for GKE pods) */
+  podsCidr: string;
+  /** Services IP range (secondary range for GKE services) */
+  servicesCidr: string;
+  /** Private services subnet for Cloud SQL, Redis, etc. */
+  privateServicesCidr: string;
+  /** Enable Cloud NAT for egress from private nodes */
+  enableCloudNat: boolean;
+}
+
+// =============================================================================
+// GKE Configuration
+// =============================================================================
+
+/** Configuration for a single GKE node pool */
+export interface NodePoolConfig {
+  /** Node pool name */
   name: string;
-  /** Short environment name (e.g. "stg", "prod") */
-  shortName: string;
-  /** Domain for this environment (e.g. "staging.{{ .Project.Metadata.Domain }}") */
-  domain: string;
-  /** Default node count for GKE node pools */
-  nodeCount: number;
-  /** Default machine type for GKE nodes */
+  /** Machine type (e.g., e2-standard-4) */
   machineType: string;
-}
-
-export interface NetworkConfig {
-  /** Name of the VPC network */
-  vpcName: string;
-  /** Primary subnet CIDR range */
-  subnetCidr: string;
-  /** Secondary range CIDR for GKE pods */
-  podCidr: string;
-  /** Secondary range CIDR for GKE services */
-  serviceCidr: string;
-}
-
-export interface GkeConfig {
-  /** Name of the GKE cluster */
-  clusterName: string;
-  /** Name of the default node pool */
-  nodePoolName: string;
-  /** Minimum number of nodes for autoscaling */
+  /** Minimum number of nodes (autoscaler lower bound) */
   minNodes: number;
-  /** Maximum number of nodes for autoscaling */
+  /** Maximum number of nodes (autoscaler upper bound) */
   maxNodes: number;
-  /** Machine type for cluster nodes */
-  machineType: string;
-  /** Disk size in GB for each node */
+  /** Initial number of nodes at creation */
+  initialNodes: number;
+  /** Disk size in GB */
   diskSizeGb: number;
+  /** Disk type (pd-standard, pd-ssd, pd-balanced) */
+  diskType: "pd-standard" | "pd-ssd" | "pd-balanced";
+  /** Use spot/preemptible VMs for cost savings */
+  spot: boolean;
+  /** Node labels applied to all nodes in the pool */
+  labels: Record<string, string>;
+  /** Node taints for workload isolation */
+  taints?: Array<{
+    key: string;
+    value: string;
+    effect: "NO_SCHEDULE" | "PREFER_NO_SCHEDULE" | "NO_EXECUTE";
+  }>;
+  /** OAuth scopes granted to nodes */
+  oauthScopes?: string[];
 }
 
+/** GKE cluster configuration */
+export interface GkeConfig {
+  /** GKE release channel for automatic upgrades */
+  releaseChannel: GkeReleaseChannel;
+  /** Kubernetes version (optional, uses release channel default if not set) */
+  kubernetesVersion?: string;
+  /** Enable GKE Autopilot mode (Google manages node pools) */
+  enableAutopilot: boolean;
+  /** Enable private cluster (no public IPs on nodes) */
+  enablePrivateCluster: boolean;
+  /** Enable private endpoint (control plane not accessible from internet) */
+  enablePrivateEndpoint: boolean;
+  /** Master authorized networks allowed to access the control plane */
+  masterAuthorizedNetworks: Array<{
+    displayName: string;
+    cidrBlock: string;
+  }>;
+  /** Node pools configuration */
+  nodePools: NodePoolConfig[];
+  /** Enable Workload Identity for pod-level IAM */
+  enableWorkloadIdentity: boolean;
+  /** Enable Binary Authorization for image validation */
+  enableBinaryAuthorization: boolean;
+  /** Enable network policy enforcement (Calico) */
+  enableNetworkPolicy: boolean;
+  /** Enable Vertical Pod Autoscaling */
+  enableVpa: boolean;
+  /** Enable HTTP load balancing addon (GCE ingress) */
+  enableHttpLoadBalancing: boolean;
+  /** Enable Horizontal Pod Autoscaling */
+  enableHpa: boolean;
+  /** Maintenance window schedule (RFC 3339 format) */
+  maintenanceWindow?: {
+    startTime: string;
+    endTime: string;
+    recurrence: string;
+  };
+}
+
+// =============================================================================
+// Database Configuration
+// =============================================================================
+
+/** Cloud SQL PostgreSQL instance configuration */
 export interface DatabaseConfig {
-  /** Cloud SQL instance tier (e.g. "db-custom-2-8192") */
+  /** Cloud SQL tier (e.g., db-custom-4-15360, db-f1-micro) */
   tier: string;
-  /** Storage size in GB */
-  storageGb: number;
-  /** Whether to enable high availability (regional) */
+  /** Cloud SQL edition: ENTERPRISE (standard) or ENTERPRISE_PLUS (advanced) */
+  edition: "ENTERPRISE" | "ENTERPRISE_PLUS";
+  /** Enable high availability (regional instance with failover replica) */
   highAvailability: boolean;
-  /** List of database names to create */
-  databases: string[];
+  /** Disk size in GB */
+  diskSizeGb: number;
+  /** Enable automatic disk size increase */
+  diskAutoresize: boolean;
+  /** Maximum disk size in GB for autoresize (prevents runaway growth) */
+  diskAutoresizeLimit?: number;
+  /** PostgreSQL major version (e.g., "POSTGRES_16") */
+  postgresVersion: string;
+  /** Enable point-in-time recovery via WAL archiving */
+  enablePointInTimeRecovery: boolean;
+  /** Number of days to retain automated backups */
+  backupRetentionDays: number;
+  /** Prevent accidental instance deletion */
+  deletionProtection: boolean;
+  /** Database flags (key-value pairs applied to the instance) */
+  databaseFlags?: Record<string, string>;
+  /** Preferred maintenance window */
+  maintenanceWindow?: {
+    /** Day of week (1 = Monday, 7 = Sunday) */
+    day: number;
+    /** Hour of day in UTC (0-23) */
+    hour: number;
+  };
+  /** Query insights configuration for performance monitoring */
+  insightsConfig?: {
+    /** Enable query insights */
+    queryInsightsEnabled: boolean;
+    /** Maximum query string length stored (default: 1024) */
+    queryStringLength: number;
+    /** Record application tags in query insights */
+    recordApplicationTags: boolean;
+    /** Record client IP address in query insights */
+    recordClientAddress: boolean;
+  };
 }
 
-export interface InfraOutputs {
-  /** GCP project ID */
-  projectId: string;
-  /** GCP region */
-  region: string;
-  /** VPC network self-link */
-  networkSelfLink: string;
-  /** Subnet self-link */
-  subnetSelfLink: string;
-  /** GKE cluster name */
-  clusterName: string;
-  /** GKE cluster endpoint */
-  clusterEndpoint: string;
-  /** GKE cluster CA certificate */
-  clusterCaCertificate: string;
-  /** GKE node service account email */
-  nodeServiceAccountEmail: string;
-  /** Application service account email */
-  appServiceAccountEmail: string;
-  /** CI/CD service account email */
-  cicdServiceAccountEmail: string;
-  /** Static IP address for the load balancer */
-  staticIpAddress: string;
-  /** Cloud DNS managed zone name */
-  dnsZoneName: string;
-  /** Cloud DNS name servers */
-  dnsNameServers: string[];{{ if hasItem .Project.Spec.Infrastructure.Components "observability" }}
-  /** Whether observability APIs are enabled */
-  observabilityEnabled: boolean;{{ end }}
+// =============================================================================
+// Redis Configuration
+// =============================================================================
+{{ if .Computed.HasRedis }}
+/** Cloud Memorystore Redis instance configuration */
+export interface RedisConfig {
+  /** Redis tier -- BASIC (standalone) or STANDARD_HA (replicated) */
+  tier: RedisTier;
+  /** Memory size in GB */
+  memorySizeGb: number;
+  /** Redis version (e.g., "REDIS_7_0") */
+  redisVersion: string;
+  /** Enable AUTH command for client authentication */
+  authEnabled: boolean;
+  /** Enable in-transit encryption (TLS) */
+  transitEncryptionEnabled: boolean;
+  /** Redis configuration parameters (e.g., maxmemory-policy) */
+  redisConfigs?: Record<string, string>;
+  /** Preferred maintenance window */
+  maintenanceWindow?: {
+    /** Day of the week (e.g., "TUESDAY") */
+    day: string;
+    startTime: {
+      /** Hour in UTC (0-23) */
+      hours: number;
+      /** Minute (0-59) */
+      minutes: number;
+    };
+  };
 }
+{{ end }}
+// =============================================================================
+// Kafka Configuration
+// =============================================================================
+{{ if .Computed.HasKafka }}
+// NOTE: Kafka is deployed via Helm (Strimzi), NOT Pulumi.
+// Configuration is in: k8s/helm/strimzi-kafka/values-{env}.yaml
+// This interface exists only for reference -- Pulumi does NOT manage Kafka.
+
+/** Kafka cluster configuration (managed by Strimzi Helm chart, not Pulumi) */
+export interface KafkaConfig {
+  /** Number of Kafka broker replicas */
+  replicas: number;
+  /** Storage size per broker in GB */
+  storageGb: number;
+  /** Kafka version */
+  version: string;
+  /** Resource requests and limits per broker */
+  resources: {
+    requests: { memory: string; cpu: string };
+    limits: { memory: string; cpu: string };
+  };
+  /** Topic configurations */
+  topics: Array<{
+    name: string;
+    partitions: number;
+    replicas: number;
+    config: Record<string, string>;
+  }>;
+  /** Enable Kafka UI for topic inspection */
+  enableKafkaUi: boolean;
+}
+{{ end }}
+// =============================================================================
+// Storage Configuration
+// =============================================================================
+
+/** Configuration for a single GCS bucket */
+export interface StorageBucketConfig {
+  /** Bucket name suffix (prefixed with project-env at creation time) */
+  nameSuffix: string;
+  /** Storage class determines pricing and availability */
+  storageClass: "STANDARD" | "NEARLINE" | "COLDLINE" | "ARCHIVE";
+  /** Location (region or multi-region, e.g., "US", "us-central1") */
+  location: string;
+  /** Enable object versioning for recovery */
+  versioning: boolean;
+  /** Lifecycle rules for automatic object management */
+  lifecycleRules?: Array<{
+    action: { type: string; storageClass?: string };
+    condition: { age?: number; withState?: string };
+  }>;
+  /** Enable uniform bucket-level access (recommended over per-object ACLs) */
+  uniformBucketLevelAccess: boolean;
+  /** CORS configuration for browser-based uploads */
+  cors?: Array<{
+    origins: string[];
+    methods: string[];
+    responseHeaders?: string[];
+    maxAgeSeconds?: number;
+  }>;
+}
+
+/** Storage configuration with all GCS buckets */
+export interface StorageConfig {
+  /** Storage buckets to create */
+  buckets: StorageBucketConfig[];
+}
+
+// =============================================================================
+// Service Configuration
+// =============================================================================
+
+/** Resource requests and limits for a service container */
+export interface ServiceResourceConfig {
+  /** Resource requests (guaranteed allocation) */
+  requests: { memory: string; cpu: string };
+  /** Resource limits (maximum allowed) */
+  limits: { memory: string; cpu: string };
+}
+
+/** Horizontal Pod Autoscaler configuration for a service */
+export interface ServiceHpaConfig {
+  /** Enable HPA for this service */
+  enabled: boolean;
+  /** Minimum number of replicas */
+  minReplicas: number;
+  /** Maximum number of replicas */
+  maxReplicas: number;
+  /** Target CPU utilization percentage (0-100) */
+  targetCpuUtilization?: number;
+  /** Target memory utilization percentage (0-100) */
+  targetMemoryUtilization?: number;
+  /** Custom metrics for scaling decisions */
+  customMetrics?: Array<{
+    name: string;
+    targetValue: string;
+    targetType: "Value" | "AverageValue" | "Utilization";
+  }>;
+  /** Stabilization window for scale-down decisions (seconds) */
+  scaleDownStabilizationWindowSeconds?: number;
+  /** Stabilization window for scale-up decisions (seconds) */
+  scaleUpStabilizationWindowSeconds?: number;
+}
+
+/** Full configuration for a deployed service */
+export interface ServiceConfig {
+  /** Service name (used for deployment, service, and HPA naming) */
+  name: string;
+  /** Number of replicas (ignored if HPA is enabled) */
+  replicas: number;
+  /** Container resource configuration */
+  resources: ServiceResourceConfig;
+  /** Horizontal Pod Autoscaler configuration */
+  hpa: ServiceHpaConfig;
+  /** Node selector labels for pod placement */
+  nodeSelector?: Record<string, string>;
+  /** Tolerations for scheduling on tainted nodes */
+  tolerations?: Array<{
+    key: string;
+    operator: "Exists" | "Equal";
+    value?: string;
+    effect: "NoSchedule" | "PreferNoSchedule" | "NoExecute";
+  }>;
+  /** Environment variables (non-secret, injected into container) */
+  env?: Record<string, string>;
+  /** Secret references mounted as environment variables */
+  secretRefs?: string[];
+  /** ConfigMap references mounted as environment variables */
+  configMapRefs?: string[];
+  /** Kubernetes Service type */
+  serviceType: "ClusterIP" | "NodePort" | "LoadBalancer";
+  /** Service port (external) */
+  port: number;
+  /** Target port (container port) */
+  targetPort: number;
+  /** Health check probe configuration */
+  healthCheck: {
+    /** HTTP path for readiness probe */
+    readinessPath: string;
+    /** HTTP path for liveness probe */
+    livenessPath: string;
+    /** Seconds to wait before starting probes */
+    initialDelaySeconds: number;
+    /** Seconds between probe checks */
+    periodSeconds: number;
+  };
+}
+
+// =============================================================================
+// Domain & TLS Configuration
+// =============================================================================
+
+/** Domain routing and TLS configuration */
+export interface DomainConfig {
+  /** Base domain (e.g., {{ .Project.Metadata.Domain }}) */
+  baseDomain: string;
+  /** Environment subdomain prefix (e.g., "staging" for staging.{{ .Project.Metadata.Domain }}, empty for production) */
+  envSubdomain?: string;
+  /** Application subdomain (e.g., "app") */
+  appSubdomain: string;
+  /** API subdomain (e.g., "api") */
+  apiSubdomain: string;
+  /** Auth subdomain (e.g., "auth") */
+  authSubdomain: string;
+  /** Enable TLS termination */
+  tlsEnabled: boolean;
+  /** TLS certificate issuer for cert-manager */
+  tlsIssuer: TlsIssuer;
+  /** TLS secret name for wildcard certificate */
+  tlsSecretName: string;
+  /** Enable HTTP Strict Transport Security headers */
+  enableHsts: boolean;
+  /** Additional subdomains beyond the standard app/api/auth */
+  additionalSubdomains?: Array<{
+    /** Subdomain name */
+    name: string;
+    /** Backend service name */
+    service: string;
+    /** Backend service port */
+    port: number;
+  }>;
+}
+
+// =============================================================================
+// Certificate Configuration
+// =============================================================================
+
+/** cert-manager Certificate resource configuration */
+export interface CertificateConfig {
+  /** Enable cert-manager certificate provisioning */
+  enabled: boolean;
+  /** Certificate resource name (e.g., {{ .Project.Metadata.Name }}-staging-wildcard) */
+  name: string;
+  /** Domains to include in the certificate (e.g., ["staging.{{ .Project.Metadata.Domain }}", "*.staging.{{ .Project.Metadata.Domain }}"]) */
+  domains: string[];
+}
+
+// =============================================================================
+// Traefik Ingress Configuration
+// =============================================================================
+
+/** Traefik resource requests and limits */
+export interface TraefikResourceConfig {
+  requests: { cpu: string; memory: string };
+  limits: { cpu: string; memory: string };
+}
+
+/** Traefik ingress controller configuration */
+export interface TraefikConfig {
+  /** Number of Traefik replicas */
+  replicas: number;
+  /** Resource requests and limits */
+  resources: TraefikResourceConfig;
+  /** HorizontalPodAutoscaler settings */
+  autoscaling: {
+    /** Enable HPA for Traefik */
+    enabled: boolean;
+    /** Minimum replicas */
+    minReplicas: number;
+    /** Maximum replicas */
+    maxReplicas: number;
+    /** Target CPU utilization percentage */
+    targetCpuUtilization: number;
+  };
+  /** Log level for Traefik */
+  logLevel: "DEBUG" | "INFO" | "WARN" | "ERROR";
+}
+
+// =============================================================================
+// Secrets Configuration
+// =============================================================================
+
+/**
+ * Secret credential groups -- each maps 1:1 with:
+ * - JSON files in _secrets/{env}/*.json
+ * - Kubernetes Secret resources
+ * - GCP Secret Manager secrets
+ */
+export type SecretCredentialGroup =
+  | "jwt-credentials"
+  | "encryption-credentials"
+  | "oauth-credentials"
+  | "llm-credentials"
+  | "email-credentials"
+  | "iap-credentials"
+  | "github-app-credentials"{{ if .Computed.HasHasura }}
+  | "hasura-credentials"{{ end }}{{ if .Computed.HasLangfuse }}
+  | "langfuse-credentials"
+  | "langfuse-clickhouse-credentials"
+  | "langfuse-redis-credentials"
+  | "langfuse-otel-credentials"{{ end }}{{ if .Computed.HasObservability }}
+  | "grafana-credentials"
+  | "alertmanager-credentials"{{ end }}{{ if .Computed.HasArgoCD }}
+  | "slack-credentials"{{ end }};
+
+// =============================================================================
+// Typed Credential Interfaces
+// =============================================================================
+
+/** JWT signing and verification credentials */
+export interface JwtCredentials {
+  /** JWT signing secret (HMAC) or private key (RSA/ECDSA) */
+  "jwt-secret": string;
+  /** JWT issuer claim (iss) */
+  "jwt-issuer": string;
+  /** JWT audience claim (aud) */
+  "jwt-audience": string;
+}
+
+/** Symmetric encryption credentials for data at rest */
+export interface EncryptionCredentials {
+  /** AES-256 encryption key (base64 encoded) */
+  "encryption-key": string;
+}
+
+/** OAuth provider credentials for authentication */
+export interface OAuthCredentials {
+  /** Google OAuth Client ID */
+  "google-client-id": string;
+  /** Google OAuth Client Secret */
+  "google-client-secret": string;
+  /** Google OAuth authorization endpoint URL */
+  "google-authorization-url": string;
+  /** Google OAuth token endpoint URL */
+  "google-token-url": string;
+  /** Google userinfo endpoint URL */
+  "google-user-url": string;
+  /** GitHub OAuth Client ID (optional) */
+  "github-client-id"?: string;
+  /** GitHub OAuth Client Secret (optional) */
+  "github-client-secret"?: string;
+}
+
+/** LLM provider API credentials */
+export interface LlmCredentials {
+  /** OpenAI API key */
+  "openai-api-key"?: string;
+  /** Anthropic API key */
+  "anthropic-api-key"?: string;
+  /** Google AI API key */
+  "google-api-key"?: string;
+  /** Ollama base URL for self-hosted models */
+  "ollama-base-url"?: string;
+}
+
+/** Email service credentials */
+export interface EmailCredentials {
+  /** Resend API key for transactional email */
+  "resend-api-key": string;
+}
+
+/** Identity-Aware Proxy credentials for OAuth2 Proxy */
+export interface IapCredentials {
+  /** Google OAuth Client ID (for IAP/OAuth2 Proxy) */
+  "client-id": string;
+  /** Google OAuth Client Secret */
+  "client-secret": string;
+  /** Cookie secret for OAuth2 Proxy session (32+ bytes, base64 encoded) */
+  "cookie-secret": string;
+}
+
+/**
+ * GitHub App credentials for repository access.
+ * Used by ArgoCD to clone private repositories via GitHub App authentication.
+ */
+export interface GitHubAppSecretCredentials {
+  /** GitHub App ID (from app settings page) */
+  "app-id": string;
+  /** GitHub App Installation ID (from installation URL) */
+  "installation-id": string;
+  /** GitHub App Private Key (contents of the .pem file) */
+  "private-key": string;
+  /** GitHub App Client ID (optional -- for OAuth flows) */
+  "client-id"?: string;
+  /** GitHub App Client Secret (optional -- for OAuth flows) */
+  "client-secret"?: string;
+}
+{{ if .Computed.HasHasura }}
+/** Hasura GraphQL Engine credentials */
+export interface HasuraCredentials {
+  /** Hasura admin secret for console and metadata API access */
+  "hasura-admin-secret": string;
+  /** JWT secret configuration for Hasura (JSON-encoded JWKS or HMAC config) */
+  "hasura-graphql-jwt-secret": string;
+  /** Webhook secret for Hasura event triggers */
+  "hasura-webhook-secret": string;
+}
+{{ end }}
+{{ if .Computed.HasLangfuse }}
+/** Langfuse core application credentials */
+export interface LangfuseCredentials {
+  /** NextAuth.js session secret */
+  "langfuse-nextauth-secret": string;
+  /** Salt for hashing sensitive values */
+  "langfuse-salt": string;
+  /** Encryption key for stored credentials */
+  "langfuse-encryption-key": string;
+  /** Langfuse public API key (for client SDKs) */
+  "langfuse-public-key": string;
+  /** Langfuse secret API key (for server SDKs) */
+  "langfuse-secret-key": string;
+  /** Langfuse base URL */
+  "langfuse-base-url": string;
+  /** Initial admin user password */
+  "langfuse-init-user-password": string;
+}
+
+/** Langfuse ClickHouse credentials for analytics storage */
+export interface LangfuseClickhouseCredentials {
+  /** ClickHouse username */
+  "clickhouse-user": string;
+  /** ClickHouse password */
+  "clickhouse-password": string;
+}
+
+/**
+ * Langfuse Redis credentials (for Langfuse v3 dedicated Redis).
+ * Generated dynamically from the Memorystore instance, not from JSON files.
+ */
+export interface LangfuseRedisCredentials {
+  /** Redis connection URL (rediss://...) */
+  "redis-url": string;
+  /** Redis auth string */
+  "redis-auth-string": string;
+}
+
+/**
+ * Langfuse OTEL credentials (for OTEL Collector to Langfuse OTLP endpoint).
+ * The auth-header is base64(public_key:secret_key).
+ * Computed from langfuse-credentials, NOT loaded from JSON files.
+ */
+export interface LangfuseOtelCredentials {
+  /** Base64 encoded auth header for Langfuse OTLP endpoint */
+  "auth-header": string;
+}
+{{ end }}
+{{ if .Computed.HasObservability }}
+/** Grafana admin credentials */
+export interface GrafanaCredentials {
+  /** Grafana admin username */
+  "admin-user": string;
+  /** Grafana admin password */
+  "admin-password": string;
+}
+
+/** Alertmanager notification credentials */
+export interface AlertmanagerCredentials {
+  /** Slack webhook URL for alert notifications */
+  "slack-webhook-url": string;
+  /** PagerDuty service key for critical alerts (optional) */
+  "pagerduty-service-key"?: string;
+}
+{{ end }}
+{{ if .Computed.HasArgoCD }}
+/** Slack credentials for ArgoCD deployment notifications */
+export interface SlackCredentials {
+  /** Slack Bot Token (xoxb-...) */
+  "slack-bot-token": string;
+}
+{{ end }}
+/**
+ * Map of credential group names to their typed interfaces.
+ * Used for type-safe secret loading via Pulumi config.
+ */
+export interface CredentialGroupTypes {
+  "jwt-credentials": JwtCredentials;
+  "encryption-credentials": EncryptionCredentials;
+  "oauth-credentials": OAuthCredentials;
+  "llm-credentials": LlmCredentials;
+  "email-credentials": EmailCredentials;
+  "iap-credentials": IapCredentials;
+  "github-app-credentials": GitHubAppSecretCredentials;{{ if .Computed.HasHasura }}
+  "hasura-credentials": HasuraCredentials;{{ end }}{{ if .Computed.HasLangfuse }}
+  "langfuse-credentials": LangfuseCredentials;
+  "langfuse-clickhouse-credentials": LangfuseClickhouseCredentials;
+  "langfuse-redis-credentials": LangfuseRedisCredentials;
+  "langfuse-otel-credentials": LangfuseOtelCredentials;{{ end }}{{ if .Computed.HasObservability }}
+  "grafana-credentials": GrafanaCredentials;
+  "alertmanager-credentials": AlertmanagerCredentials;{{ end }}{{ if .Computed.HasArgoCD }}
+  "slack-credentials": SlackCredentials;{{ end }}
+}
+
+/**
+ * Nested secrets configuration.
+ * Structure: {{ .Project.Metadata.Name }}:secrets:{group}:{key} = value
+ *
+ * Example in Pulumi.staging.yaml:
+ *   {{ .Project.Metadata.Name }}:secrets:jwt-credentials:
+ *     jwt-secret:
+ *       secure: v1:encrypted...
+ *
+ * NOTE: Credentials are loaded via getSecretObject() which returns
+ * pulumi.Output<T> to ensure values are marked as secrets and not logged.
+ */
+export type SecretsCredentials = {
+  [K in SecretCredentialGroup]?:
+    | pulumi.Output<CredentialGroupTypes[K]>
+    | undefined;
+};
+
+/** External Secrets Operator and credential configuration */
+export interface SecretsConfig {
+  /** Enable External Secrets Operator for syncing secrets from GCP Secret Manager */
+  enableExternalSecrets: boolean;
+  /** Secret refresh interval (e.g., "1h", "30m") */
+  refreshInterval: string;
+  /** ClusterSecretStore name (referenced by ExternalSecret resources) */
+  clusterSecretStoreName: string;
+  /** Credential groups with their key-value pairs (as Pulumi secret outputs) */
+  credentials?: SecretsCredentials;
+}
+
+// =============================================================================
+// Observability Configuration
+// =============================================================================
+{{ if .Computed.HasObservability }}
+/** Observability stack configuration (OTel, Tempo, Prometheus) */
+export interface ObservabilityConfig {
+  /** Enable OpenTelemetry Collector */
+  enableOtel: boolean;
+  /** Enable Tempo for distributed trace storage */
+  enableTempo: boolean;
+  /** Tempo storage backend (local disk or GCS bucket) */
+  tempoStorageBackend: "local" | "gcs";
+  /** GCS bucket name for Tempo storage (required if backend is "gcs") */
+  tempoStorageBucket?: string;
+  /** Trace retention period in hours */
+  traceRetentionHours: number;
+  /** Enable Prometheus for metrics collection */
+  enablePrometheus: boolean;
+}
+{{ end }}
+// =============================================================================
+// DNS Configuration
+// =============================================================================
+
+/** Custom DNS record for email verification, SPF, DKIM, etc. */
+export interface DnsCustomRecord {
+  /** DNS record type */
+  type: "A" | "AAAA" | "CNAME" | "TXT" | "MX";
+  /** Subdomain name (empty string for apex/root domain) */
+  name: string;
+  /** Record value or values (multiple for round-robin or TXT records) */
+  value: string | string[];
+  /** TTL in seconds (default: 300) */
+  ttl?: number;
+  /** Priority (required for MX records) */
+  priority?: number;
+  /** Human-readable description for documentation */
+  description?: string;
+}
+
+/** Cloud DNS zone and record configuration */
+export interface DnsConfig {
+  /** Base domain (e.g., {{ .Project.Metadata.Domain }}) */
+  domain: string;
+  /** DNS zone name in Cloud DNS (auto-generated if not provided) */
+  zoneName?: string;
+  /** Email for Let's Encrypt certificate notifications */
+  acmeEmail: string;
+  /** Enable DNSSEC for zone signing */
+  enableDnssec: boolean;
+  /**
+   * Custom DNS records (email verification, SPF, DKIM, DMARC, etc.).
+   * Added to the managed zone on top of the default A/CNAME records.
+   */
+  customRecords?: DnsCustomRecord[];
+}
+
+// =============================================================================
+// Security Configuration
+// =============================================================================
+
+/** Google Cloud Armor WAF configuration */
+export interface CloudArmorConfig {
+  /** Enable Cloud Armor security policies */
+  enabled: boolean;
+  /** Enable Cloud Armor Plus tier (paid) -- WAF rules, threat intel, adaptive protection */
+  enablePlusTier: boolean;
+  /** Blocked countries (ISO 3166-1 alpha-2 codes, e.g., ["CN", "RU"]) */
+  blockedCountries?: string[];
+  /** General rate limit (requests per minute per IP) */
+  rateLimitPerIp: number;
+  /** Auth endpoint rate limit (stricter to prevent brute-force) */
+  authRateLimitPerIp: number;
+}
+
+/** Identity-Aware Proxy configuration for internal service protection */
+export interface IapConfig {
+  /** Enable IAP for internal services */
+  enabled: boolean;
+  /** Support email displayed on OAuth consent screen */
+  supportEmail: string;
+  /** Allowed members (users, groups, or domain) */
+  allowedMembers: {
+    users?: string[];
+    groups?: string[];
+    domain?: string;
+  };
+  /** Services exposed directly to internet (no IAP protection) */
+  publicServices: string[];
+  /** Services protected by IAP (requires Google authentication) */
+  protectedServices: string[];
+  /** OAuth2 Proxy container image version */
+  oauth2ProxyVersion: string;
+  /** Email domain allowed for OAuth login (e.g., "{{ .Project.Metadata.Domain }}") */
+  allowedEmailDomain: string;
+  /** Number of OAuth2 Proxy replicas */
+  replicas: number;
+  /** Cookie domain (e.g., .staging.{{ .Project.Metadata.Domain }}) */
+  cookieDomain: string;
+  /** Cookie refresh interval (e.g., "30m", "1h") */
+  cookieRefresh: string;
+  /** Cookie expiry time (e.g., "2h", "4h") */
+  cookieExpire: string;
+  /** Enable strict SameSite cookie policy (recommended for production) */
+  cookieSameSiteStrict: boolean;
+  /** Enable pod anti-affinity to spread replicas across nodes */
+  enablePodAntiAffinity: boolean;
+  /** Node selector labels for pod placement */
+  nodeSelector?: Record<string, string>;
+  /** Tolerations for scheduling on tainted nodes */
+  tolerations?: Array<{
+    key: string;
+    operator: string;
+    value: string;
+    effect: string;
+  }>;
+  /** Resource requests and limits */
+  resources: {
+    requests: { cpu: string; memory: string };
+    limits: { cpu: string; memory: string };
+  };
+}
+
+/** Security configuration combining WAF and IAP */
+export interface SecurityConfig {
+  /** Cloud Armor WAF configuration */
+  cloudArmor: CloudArmorConfig;
+  /** Identity-Aware Proxy configuration */
+  iap: IapConfig;
+}
+
+// =============================================================================
+// Load Balancer Configuration
+// =============================================================================
+
+/** Global HTTP(S) Load Balancer configuration */
+export interface LoadBalancerConfig {
+  /** Enable Global HTTP(S) Load Balancer */
+  enabled: boolean;
+  // NOTE: CDN is configured via K8s BackendConfig annotations, not Pulumi
+}
+
+// =============================================================================
+// Langfuse Configuration
+// =============================================================================
+{{ if .Computed.HasLangfuse }}
+/**
+ * Langfuse Redis configuration for v3.
+ * Langfuse requires maxmemory-policy=noeviction for reliable queue processing.
+ */
+export interface LangfuseRedisConfig {
+  /** Redis tier (BASIC or STANDARD_HA) */
+  tier: RedisTier;
+  /** Memory size in GB */
+  memorySizeGb: number;
+  /** Redis version */
+  redisVersion: string;
+  /** Enable AUTH for client authentication */
+  authEnabled: boolean;
+  /** Enable in-transit encryption (TLS) */
+  transitEncryptionEnabled: boolean;
+  /** Redis configuration parameters (e.g., maxmemory-policy) */
+  redisConfigs?: Record<string, string>;
+}
+
+/** Langfuse observability platform configuration */
+export interface LangfuseConfig {
+  /** Self-host Langfuse instead of using the SaaS offering */
+  selfHosted: boolean;
+  /** Langfuse version (if self-hosted) */
+  version?: string;
+  /** Dedicated Redis configuration for Langfuse v3 queue processing */
+  redis?: LangfuseRedisConfig;
+}
+{{ end }}
+// =============================================================================
+// GitHub CI/CD Configuration
+// =============================================================================
+
+/** GitHub repository configuration for Workload Identity Federation */
+export interface GitHubConfig {
+  /** GitHub organization name (e.g., "{{ .Project.Metadata.Organization }}") */
+  organization: string;
+  /** GitHub repository name (e.g., "{{ .Project.Metadata.Name }}") */
+  repository: string;
+  /**
+   * Restrict Workload Identity to specific branches.
+   * If not provided, allows all branches.
+   * Example: ["main", "staging", "production"]
+   */
+  allowedBranches?: string[];
+}
+
+// =============================================================================
+// ArgoCD Configuration
+// =============================================================================
+{{ if .Computed.HasArgoCD }}
+/** ArgoCD notification channel configuration */
+export interface ArgoCDNotificationsConfig {
+  /** Enable deployment notifications */
+  enabled: boolean;
+  /** Slack webhook URL (stored in Secret Manager) */
+  slackWebhookUrl?: string;
+  /** Slack channel for deployment success notifications */
+  slackChannel?: string;
+  /** Slack channel for deployment failure alerts */
+  slackAlertChannel?: string;
+}
+
+/**
+ * Authentication strategy for ArgoCD Image Updater to access container registries.
+ *
+ * - "workload-identity-script": Uses external script to fetch tokens from GKE metadata server.
+ *   Best for: GKE with Workload Identity enabled + org policies blocking SA keys.
+ *   Requires: GCP SA with artifactregistry.reader role + Workload Identity binding.
+ *
+ * - "workload-identity-native": Uses argocd-image-updater's native 'gcp' credential type.
+ *   Best for: GCR (gcr.io) registries. May not work with Artifact Registry (pkg.dev).
+ *   Requires: GCP SA with storage.objectViewer role + Workload Identity binding.
+ *
+ * - "pull-secret": Uses Docker pull secret synced via External Secrets from GCP Secret Manager.
+ *   Best for: Environments where SA keys are allowed and External Secrets is deployed.
+ *   Requires: GCP SA key stored in Secret Manager + ExternalSecret.
+ */
+export type ImageUpdaterAuthStrategy =
+  | "workload-identity-script"
+  | "workload-identity-native"
+  | "pull-secret";
+
+/** ArgoCD Image Updater configuration for automatic image promotion */
+export interface ArgoCDImageUpdaterConfig {
+  /** Enable Image Updater sidecar */
+  enabled: boolean;
+  /** Image Updater version */
+  version: string;
+  /** Artifact Registry prefix (e.g., us-central1-docker.pkg.dev/project/repo) */
+  registryPrefix: string;
+  /** Image update strategy */
+  updateStrategy: "semver" | "latest" | "digest";
+  /** Git write-back method for recording image updates */
+  writeBackMethod: "git" | "argocd";
+  /** Branch for write-back commits (if using git method) */
+  writeBackBranch?: string;
+  /**
+   * Authentication strategy for registry access.
+   * @default "workload-identity-script"
+   */
+  authStrategy?: ImageUpdaterAuthStrategy;
+}
+
+/** ArgoCD RBAC configuration with Google Groups integration */
+export interface ArgoCDRbacConfig {
+  /** Default policy for unauthenticated users */
+  defaultPolicy: "role:readonly" | "role:admin" | "";
+  /** Groups granted admin role */
+  adminGroups: string[];
+  /** Groups granted developer role (read-only + sync) */
+  developerGroups: string[];
+  /** Groups granted viewer role (read-only) */
+  viewerGroups: string[];
+  /** Enable Google Groups RBAC via OIDC claims */
+  enableGoogleGroups: boolean;
+}
+
+/** ArgoCD webhook configuration for GitHub push events */
+export interface ArgoCDWebhookConfig {
+  /** Enable GitHub webhook receiver */
+  enabled: boolean;
+  /** GitHub organizations allowed to trigger webhooks */
+  allowedOrganizations: string[];
+}
+
+/**
+ * GitHub App credentials for ArgoCD repository access.
+ * Preferred over Personal Access Tokens for production -- not tied to a user account.
+ */
+export interface GitHubAppCredentials {
+  /** GitHub App ID (from app settings page) */
+  appId: string;
+  /** GitHub App Installation ID (from installation URL) */
+  installationId: string;
+  /** GitHub App Private Key (contents of the .pem file) */
+  privateKey: string;
+  /** GitHub App Client ID (optional -- for OAuth flows) */
+  clientId?: string;
+  /** GitHub App Client Secret (optional -- for OAuth flows) */
+  clientSecret?: string;
+}
+
+/** ArgoCD repository credential configuration */
+export interface ArgoCDRepositoryCredentials {
+  /**
+   * GitHub Personal Access Token for private repository access.
+   * Required permissions: Contents (read-only)
+   * @deprecated Use githubApp instead for production
+   */
+  githubToken?: string;
+  /**
+   * GitHub App credentials for private repository access.
+   * Preferred method -- not tied to a personal account.
+   */
+  githubApp?: GitHubAppCredentials;
+}
+
+/** ArgoCD component resource requests and limits */
+export interface ArgoCDResourceConfig {
+  requests: { cpu: string; memory: string };
+  limits: { cpu: string; memory: string };
+}
+
+/** Full ArgoCD GitOps configuration */
+export interface ArgoCDConfig {
+  /** Enable ArgoCD installation */
+  enabled: boolean;
+  /** ArgoCD Helm chart version */
+  version: string;
+  /** ArgoCD subdomain (e.g., "argocd" for argocd.{{ .Project.Metadata.Domain }}) */
+  subdomain: string;
+  /** Number of replicas for HA (server, controller, repo-server) */
+  replicas: number;
+  /** Enable SSO with Google OAuth (uses existing OAuth credentials) */
+  enableSso: boolean;
+  /** GitHub repositories allowed for ArgoCD Application sources */
+  allowedRepositories: string[];
+  /** Enable IAP protection for ArgoCD UI (recommended for production) */
+  enableIap: boolean;
+  /** Schedule ArgoCD pods on infrastructure-dedicated nodes */
+  useInfraNodes: boolean;
+  /** Webhook configuration for GitHub push events */
+  webhook: ArgoCDWebhookConfig;
+  /** Deployment notification configuration */
+  notifications: ArgoCDNotificationsConfig;
+  /** Automatic image update configuration */
+  imageUpdater: ArgoCDImageUpdaterConfig;
+  /** Role-based access control configuration */
+  rbac: ArgoCDRbacConfig;
+  /** Repository credentials for private repo access (optional) */
+  repositoryCredentials?: ArgoCDRepositoryCredentials;
+  /** ArgoCD Server resource configuration */
+  serverResources: ArgoCDResourceConfig;
+  /** ArgoCD Application Controller resource configuration */
+  controllerResources: ArgoCDResourceConfig;
+  /** ArgoCD Repo Server resource configuration */
+  repoServerResources: ArgoCDResourceConfig;
+  /** Number of ApplicationSet controller replicas */
+  applicationSetReplicas: number;
+  /** Enable Pod Disruption Budget for HA */
+  pdbEnabled: boolean;
+  /** Use Redis HA (redis-ha) instead of single Redis instance */
+  redisHa: boolean;
+  /** Enable sync windows (restrict deployments to business hours in production) */
+  enableSyncWindows: boolean;
+  /** Log level for ArgoCD components */
+  logLevel: "debug" | "info" | "warn" | "error";
+}
+{{ end }}
+// =============================================================================
+// Vertex AI Configuration
+// =============================================================================
+
+/** Vertex AI budget alert configuration */
+export interface VertexAIBudgetConfig {
+  /**
+   * Disable budget creation (keeps config but skips resource creation).
+   * Useful when GCP Billing Budget API has issues with service ID format.
+   */
+  disabled?: boolean;
+  /** Monthly spending limit in USD */
+  monthlyLimitUsd: number;
+  /** Alert thresholds as decimals (e.g., [0.5, 0.8, 1.0] for 50%, 80%, 100%) */
+  alertThresholds: number[];
+  /** Email addresses to notify when thresholds are reached */
+  notificationEmails: string[];
+}
+
+/** Vertex AI platform configuration */
+export interface VertexAIConfig {
+  /** Enable Vertex AI integration */
+  enabled: boolean;
+  /** Vertex AI region (e.g., "us-east5" for Anthropic models) */
+  region: string;
+  /** GCP billing account ID (required for budget alerts, format: XXXXXX-XXXXXX-XXXXXX) */
+  billingAccount?: string;
+  /** Budget configuration (optional, requires billingAccount) */
+  budget?: VertexAIBudgetConfig;
+}
+
+// =============================================================================
+// Main Environment Configuration
+// =============================================================================
+
+/**
+ * Complete environment configuration for the {{ .Project.Metadata.Name }} platform.
+ * Combines all infrastructure sections into a single typed configuration object.
+ */
+export interface EnvironmentConfig {
+  /** Environment name (e.g., "staging", "production", "test") */
+  name: Environment;
+  /**
+   * Short environment name for resource naming (e.g., "stg", "prd", "tst").
+   * Used in service account names and other length-constrained resources.
+   * Must be 3-4 characters to respect GCP SA naming limits.
+   */
+  envShortName: string;
+  /** GCP project ID */
+  gcpProject: string;
+  /** GCP region (e.g., "us-central1") */
+  gcpRegion: string;
+  /** GCP zone for zonal resources (e.g., "us-central1-a") */
+  gcpZone: string;
+  /** Organization name for resource naming prefixes */
+  organization: string;
+
+  /** Networking configuration (VPC, subnets, NAT) */
+  networking: NetworkingConfig;
+
+  /** GKE cluster configuration */
+  gke: GkeConfig;
+
+  /** Cloud SQL PostgreSQL configuration */
+  database: DatabaseConfig;
+{{ if .Computed.HasRedis }}
+  /** Cloud Memorystore Redis configuration */
+  redis: RedisConfig;
+{{ end }}
+{{ if .Computed.HasKafka }}
+  /**
+   * Kafka configuration (OPTIONAL -- Kafka is managed by Helm/Tilt, not Pulumi)
+   * @deprecated Kafka is deployed via Strimzi Helm chart. See k8s/helm/strimzi-kafka/
+   */
+  kafka?: KafkaConfig;
+{{ end }}
+  /** GCS storage bucket configuration */
+  storage: StorageConfig;
+
+  /** Service deployment configurations */
+  services: ServiceConfig[];
+
+  /** Domain routing and TLS configuration */
+  domain: DomainConfig;
+
+  /** cert-manager certificate configuration */
+  certificate: CertificateConfig;
+
+  /** Traefik ingress controller configuration */
+  traefik: TraefikConfig;
+
+  /** Cloud DNS configuration */
+  dns: DnsConfig;
+
+  /** Security configuration (Cloud Armor, IAP) */
+  security: SecurityConfig;
+
+  /** Global HTTP(S) Load Balancer configuration */
+  loadBalancer: LoadBalancerConfig;
+
+  /** Secrets and credentials configuration */
+  secrets: SecretsConfig;
+{{ if .Computed.HasObservability }}
+  /** Observability stack configuration (OTel, Tempo, Prometheus) */
+  observability: ObservabilityConfig;
+{{ end }}
+{{ if .Computed.HasLangfuse }}
+  /** Langfuse observability platform configuration */
+  langfuse: LangfuseConfig;
+{{ end }}
+  /** GitHub CI/CD configuration (for Workload Identity Federation) */
+  github: GitHubConfig;
+{{ if .Computed.HasArgoCD }}
+  /** ArgoCD GitOps configuration */
+  argocd: ArgoCDConfig;
+{{ end }}
+  /** Vertex AI configuration (optional) */
+  vertexai?: VertexAIConfig;
+
+  /** Common labels applied to all GCP and Kubernetes resources */
+  commonLabels: Record<string, string>;
+
+  /** Enable deletion protection for critical resources (databases, buckets, etc.) */
+  deletionProtection: boolean;
+}
+
+// =============================================================================
+// GCP API Configuration
+// =============================================================================
+
+/** All GCP APIs that must be enabled for the {{ .Project.Metadata.Name }} infrastructure stack */
+export const REQUIRED_GCP_APIS = [
+  // Compute & Containers
+  "compute.googleapis.com",
+  "container.googleapis.com",
+  "containerregistry.googleapis.com",
+  "artifactregistry.googleapis.com",
+
+  // Databases
+  "sqladmin.googleapis.com",{{ if .Computed.HasRedis }}
+  "redis.googleapis.com",{{ end }}
+
+  // Networking
+  "dns.googleapis.com",
+  "servicenetworking.googleapis.com",
+  "vpcaccess.googleapis.com",
+
+  // Security
+  "secretmanager.googleapis.com",
+  "cloudkms.googleapis.com",
+  "iam.googleapis.com",
+  "iamcredentials.googleapis.com",
+  "iap.googleapis.com",
+
+  // Monitoring & Logging
+  "monitoring.googleapis.com",
+  "logging.googleapis.com",
+  "cloudtrace.googleapis.com",
+
+  // Cloud Build & Resource Manager
+  "cloudbuild.googleapis.com",
+  "cloudresourcemanager.googleapis.com",
+
+  // Certificate Manager
+  "certificatemanager.googleapis.com",
+
+  // Google Workspace APIs (for OAuth integrations)
+  "gmail.googleapis.com",
+  "calendar-json.googleapis.com",
+  "drive.googleapis.com",
+  "sheets.googleapis.com",
+
+  // AI/ML
+  "aiplatform.googleapis.com",
+
+  // Billing (for budget alerts)
+  "billingbudgets.googleapis.com",
+] as const;
+
+/** Union type of all required GCP API service names */
+export type GcpApi = (typeof REQUIRED_GCP_APIS)[number];

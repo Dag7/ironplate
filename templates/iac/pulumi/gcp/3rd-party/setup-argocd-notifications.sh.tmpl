@@ -1,0 +1,147 @@
+#!/bin/bash
+# =============================================================================
+# Setup ArgoCD Notifications Secrets
+# =============================================================================
+# This script configures Slack webhook for ArgoCD notifications.
+#
+# Prerequisites:
+#   - Slack App with Incoming Webhooks enabled
+#   - Slack Webhook URL
+#   - gcloud CLI authenticated
+#
+# Usage:
+#   ./setup-argocd-notifications.sh -e staging -w <slack-webhook-url>
+#   ./setup-argocd-notifications.sh -e production -w <slack-webhook-url>
+# =============================================================================
+
+set -euo pipefail
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Default values
+ENVIRONMENT=""
+SLACK_WEBHOOK_URL=""
+
+# Parse arguments
+while getopts "e:w:h" opt; do
+  case $opt in
+    e) ENVIRONMENT="$OPTARG" ;;
+    w) SLACK_WEBHOOK_URL="$OPTARG" ;;
+    h)
+      echo "Usage: $0 -e <environment> -w <slack-webhook-url>"
+      echo "  -e  Environment (staging|production)"
+      echo "  -w  Slack Incoming Webhook URL"
+      echo ""
+      echo "To get a Slack webhook URL:"
+      echo "  1. Go to https://api.slack.com/apps"
+      echo "  2. Create a new app or select existing"
+      echo "  3. Enable 'Incoming Webhooks'"
+      echo "  4. Add a new webhook to your workspace"
+      echo "  5. Copy the webhook URL"
+      exit 0
+      ;;
+    *)
+      echo "Invalid option: -$OPTARG" >&2
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$ENVIRONMENT" ]]; then
+  echo -e "${RED}Error: Environment (-e) is required${NC}"
+  exit 1
+fi
+
+if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
+  echo -e "${RED}Error: Slack webhook URL (-w) is required${NC}"
+  echo "Run with -h for help on getting a webhook URL"
+  exit 1
+fi
+
+if [[ "$ENVIRONMENT" != "staging" && "$ENVIRONMENT" != "production" ]]; then
+  echo -e "${RED}Error: Environment must be 'staging' or 'production'${NC}"
+  exit 1
+fi
+
+# Validate webhook URL format
+if [[ ! "$SLACK_WEBHOOK_URL" =~ ^https://hooks\.slack\.com/services/ ]]; then
+  echo -e "${RED}Error: Invalid Slack webhook URL format${NC}"
+  echo "Expected format: https://hooks.slack.com/services/T.../B.../..."
+  exit 1
+fi
+
+echo -e "${GREEN}Setting up ArgoCD Slack notifications for ${ENVIRONMENT}...${NC}"
+
+# Get GCP project from Pulumi
+cd "$(dirname "$0")/.."
+GCP_PROJECT=$(pulumi config get gcp:project -s "$ENVIRONMENT" 2>/dev/null || echo "")
+
+if [[ -z "$GCP_PROJECT" ]]; then
+  echo -e "${RED}Error: Could not get GCP project from Pulumi${NC}"
+  exit 1
+fi
+
+echo "GCP Project: $GCP_PROJECT"
+
+# Create or update the secret
+SECRET_NAME="argocd-slack-webhook"
+
+echo "Creating/updating secret in GCP Secret Manager..."
+
+# Check if secret exists
+if gcloud secrets describe "$SECRET_NAME" --project="$GCP_PROJECT" &>/dev/null; then
+  echo "Secret exists, adding new version..."
+  echo -n "$SLACK_WEBHOOK_URL" | gcloud secrets versions add "$SECRET_NAME" \
+    --project="$GCP_PROJECT" \
+    --data-file=-
+else
+  echo "Creating new secret..."
+  echo -n "$SLACK_WEBHOOK_URL" | gcloud secrets create "$SECRET_NAME" \
+    --project="$GCP_PROJECT" \
+    --replication-policy="automatic" \
+    --labels="component=argocd,managed-by=script" \
+    --data-file=-
+fi
+
+echo -e "${GREEN}✓ Secret stored in GCP Secret Manager${NC}"
+
+# Now create the Kubernetes secret in the argocd namespace
+echo "Creating Kubernetes secret for ArgoCD notifications..."
+
+# Get kubeconfig
+GKE_CLUSTER=$(pulumi stack output gkeClusterName -s "$ENVIRONMENT" 2>/dev/null || echo "")
+GKE_REGION=$(pulumi config get gcp:region -s "$ENVIRONMENT" 2>/dev/null || echo "us-central1")
+
+if [[ -n "$GKE_CLUSTER" ]]; then
+  echo "Fetching GKE credentials..."
+  gcloud container clusters get-credentials "$GKE_CLUSTER" \
+    --region "$GKE_REGION" \
+    --project "$GCP_PROJECT"
+
+  # Create or update the secret
+  kubectl create secret generic argocd-notifications-secret \
+    --namespace argocd \
+    --from-literal=slack-token="$SLACK_WEBHOOK_URL" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+  echo -e "${GREEN}✓ Kubernetes secret created/updated${NC}"
+else
+  echo -e "${YELLOW}Warning: Could not get GKE cluster. Kubernetes secret not created.${NC}"
+  echo "You may need to manually create the secret after deploying ArgoCD."
+fi
+
+echo ""
+echo -e "${GREEN}==================================================${NC}"
+echo -e "${GREEN}ArgoCD Slack notifications setup complete!${NC}"
+echo -e "${GREEN}==================================================${NC}"
+echo ""
+echo "Notifications will be sent to the channels configured in Pulumi:"
+echo "  - Deployment notifications: Check {{ .Project.Metadata.Name }}:argocd.notifications.slackChannel"
+echo "  - Alert notifications: Check {{ .Project.Metadata.Name }}:argocd.notifications.slackAlertChannel"
+echo ""
+echo "To test, trigger a sync in ArgoCD and check your Slack channels."
+echo ""

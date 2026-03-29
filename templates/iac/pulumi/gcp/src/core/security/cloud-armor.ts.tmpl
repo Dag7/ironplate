@@ -1,120 +1,329 @@
+/**
+ * Cloud Armor Security Policies
+ *
+ * Provides WAF and DDoS protection at the load balancer level.
+ *
+ * TIER INFORMATION:
+ *   - Standard tier (free): Basic rules, rate limiting, custom expressions
+ *   - Plus tier (paid): Threat intelligence, preconfigured WAF rules, adaptive protection
+ *
+ * By default, only standard tier features are enabled to avoid costs.
+ * Set `enablePlusTier: true` to enable advanced features (requires Cloud Armor Plus subscription).
+ */
+
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
-import { projectId, stackName } from "../../config/loader";
 
-export interface SecurityPolicyOutputs {
-  /** Cloud Armor security policy */
-  securityPolicy: gcp.compute.SecurityPolicy;
+export interface CloudArmorConfig {
+  /** GCP Project ID */
+  project: string;
+  /** Environment (staging, production) */
+  environment: string;
+  /** Enable Cloud Armor Plus features (paid tier) - threat intel, WAF rules, adaptive protection */
+  enablePlusTier?: boolean;
+  /** Blocked countries (ISO 3166-1 alpha-2 codes) */
+  blockedCountries?: string[];
+  /** Rate limit requests per IP (requests per minute) */
+  rateLimitPerIp?: number;
+  /** Rate limit for auth endpoints (stricter) */
+  authRateLimitPerIp?: number;
+}
+
+export class CloudArmorPolicy extends pulumi.ComponentResource {
+  public readonly policy: gcp.compute.SecurityPolicy;
+  public readonly policyName: pulumi.Output<string>;
+
+  constructor(
+    name: string,
+    config: CloudArmorConfig,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:security:CloudArmorPolicy", name, {}, opts);
+
+    const rules: gcp.types.input.compute.SecurityPolicyRule[] = [];
+    let priority = 1000;
+
+    // ==========================================================================
+    // PLUS TIER FEATURES (paid - disabled by default)
+    // ==========================================================================
+    if (config.enablePlusTier) {
+      // Rule: Block known bad actors (threat intelligence)
+      rules.push({
+        action: "deny(403)",
+        priority: priority++,
+        description: "Block known malicious IPs (threat intelligence)",
+        match: {
+          expr: {
+            expression:
+              "evaluateThreatIntelligence('iplist-known-malicious-ips')"
+          }
+        }
+      });
+
+      // Rule: OWASP Top 10 - SQL Injection
+      rules.push({
+        action: "deny(403)",
+        priority: priority++,
+        description: "Block SQL Injection attempts",
+        match: {
+          expr: {
+            expression: "evaluatePreconfiguredExpr('sqli-v33-stable')"
+          }
+        }
+      });
+
+      // Rule: OWASP Top 10 - Cross-Site Scripting (XSS)
+      rules.push({
+        action: "deny(403)",
+        priority: priority++,
+        description: "Block XSS attempts",
+        match: {
+          expr: {
+            expression: "evaluatePreconfiguredExpr('xss-v33-stable')"
+          }
+        }
+      });
+
+      // Rule: OWASP Top 10 - Local File Inclusion (LFI)
+      rules.push({
+        action: "deny(403)",
+        priority: priority++,
+        description: "Block LFI attempts",
+        match: {
+          expr: {
+            expression: "evaluatePreconfiguredExpr('lfi-v33-stable')"
+          }
+        }
+      });
+
+      // Rule: OWASP Top 10 - Remote File Inclusion (RFI)
+      rules.push({
+        action: "deny(403)",
+        priority: priority++,
+        description: "Block RFI attempts",
+        match: {
+          expr: {
+            expression: "evaluatePreconfiguredExpr('rfi-v33-stable')"
+          }
+        }
+      });
+
+      // Rule: OWASP Top 10 - Remote Code Execution (RCE)
+      rules.push({
+        action: "deny(403)",
+        priority: priority++,
+        description: "Block RCE attempts",
+        match: {
+          expr: {
+            expression: "evaluatePreconfiguredExpr('rce-v33-stable')"
+          }
+        }
+      });
+
+      // Rule: Protocol attacks
+      rules.push({
+        action: "deny(403)",
+        priority: priority++,
+        description: "Block protocol attacks",
+        match: {
+          expr: {
+            expression: "evaluatePreconfiguredExpr('protocolattack-v33-stable')"
+          }
+        }
+      });
+
+      // Rule: Scanner detection (preconfigured)
+      rules.push({
+        action: "deny(403)",
+        priority: priority++,
+        description: "Block known scanners",
+        match: {
+          expr: {
+            expression:
+              "evaluatePreconfiguredExpr('scannerdetection-v33-stable')"
+          }
+        }
+      });
+    }
+
+    // ==========================================================================
+    // STANDARD TIER FEATURES (free - always enabled)
+    // ==========================================================================
+
+    // Rule: Block countries if specified
+    if (config.blockedCountries && config.blockedCountries.length > 0) {
+      const countryList = config.blockedCountries
+        .map((c) => `'${c}'`)
+        .join(", ");
+      rules.push({
+        action: "deny(403)",
+        priority: priority++,
+        description: `Block requests from: ${config.blockedCountries.join(", ")}`,
+        match: {
+          expr: {
+            expression: `origin.region_code in [${countryList}]`
+          }
+        }
+      });
+    }
+
+    // Rule: Rate limiting - General (if configured)
+    if (config.rateLimitPerIp) {
+      rules.push({
+        action: "throttle",
+        priority: priority++,
+        description: `Rate limit: ${config.rateLimitPerIp} requests/minute per IP`,
+        match: {
+          versionedExpr: "SRC_IPS_V1",
+          config: {
+            srcIpRanges: ["*"]
+          }
+        },
+        rateLimitOptions: {
+          conformAction: "allow",
+          exceedAction: "deny(429)",
+          enforceOnKey: "IP",
+          rateLimitThreshold: {
+            count: config.rateLimitPerIp,
+            intervalSec: 60
+          }
+        }
+      });
+    }
+
+    // Rule: Stricter rate limiting for auth endpoints
+    if (config.authRateLimitPerIp) {
+      rules.push({
+        action: "throttle",
+        priority: priority++,
+        description: `Auth rate limit: ${config.authRateLimitPerIp} requests/minute per IP`,
+        match: {
+          expr: {
+            expression:
+              "request.path.matches('/api/auth/.*') || request.path.matches('/auth/.*')"
+          }
+        },
+        rateLimitOptions: {
+          conformAction: "allow",
+          exceedAction: "deny(429)",
+          enforceOnKey: "IP",
+          rateLimitThreshold: {
+            count: config.authRateLimitPerIp,
+            intervalSec: 60
+          }
+        }
+      });
+    }
+
+    // Rule: Block common vulnerability scanners by User-Agent (Part 1)
+    // Custom expressions work on standard tier
+    rules.push({
+      action: "deny(403)",
+      priority: priority++,
+      description: "Block vulnerability scanner User-Agents (Part 1)",
+      match: {
+        expr: {
+          expression: `
+            request.headers['user-agent'].lower().contains('nikto') ||
+            request.headers['user-agent'].lower().contains('sqlmap') ||
+            request.headers['user-agent'].lower().contains('nmap') ||
+            request.headers['user-agent'].lower().contains('masscan')
+          `
+            .replace(/\s+/g, " ")
+            .trim()
+        }
+      }
+    });
+
+    // Rule: Block common vulnerability scanners by User-Agent (Part 2)
+    rules.push({
+      action: "deny(403)",
+      priority: priority++,
+      description: "Block vulnerability scanner User-Agents (Part 2)",
+      match: {
+        expr: {
+          expression: `
+            request.headers['user-agent'].lower().contains('zgrab') ||
+            request.headers['user-agent'].lower().contains('gobuster') ||
+            request.headers['user-agent'].lower().contains('dirbuster')
+          `
+            .replace(/\s+/g, " ")
+            .trim()
+        }
+      }
+    });
+
+    // Default rule: Allow all other traffic
+    rules.push({
+      action: "allow",
+      priority: 2147483647, // Lowest priority (highest number)
+      description: "Default: Allow all other traffic",
+      match: {
+        versionedExpr: "SRC_IPS_V1",
+        config: {
+          srcIpRanges: ["*"]
+        }
+      }
+    });
+
+    // Create the security policy
+    this.policy = new gcp.compute.SecurityPolicy(
+      `${name}-policy`,
+      {
+        project: config.project,
+        name: `{{ .Project.Metadata.Name }}-${config.environment}-security-policy`,
+        description: `Cloud Armor security policy for {{ .Project.Metadata.Name }} ${config.environment}`,
+        type: "CLOUD_ARMOR",
+        // Adaptive protection requires Plus tier
+        adaptiveProtectionConfig: config.enablePlusTier
+          ? {
+              layer7DdosDefenseConfig: {
+                enable: true,
+                ruleVisibility: "STANDARD"
+              }
+            }
+          : undefined,
+        rules: rules
+      },
+      { parent: this }
+    );
+
+    this.policyName = this.policy.name;
+
+    this.registerOutputs({
+      policy: this.policy,
+      policyName: this.policyName
+    });
+  }
 }
 
 /**
- * Creates Cloud Armor WAF security policies for the
- * {{ .Project.Metadata.Name }} project.
+ * Create Cloud Armor security policy
  *
- * Includes:
- * - OWASP Top 10 protection rules
- * - Rate limiting
- * - Configurable geo-restriction
+ * By default uses standard tier (free). Set enablePlusTier for advanced features.
  */
-export function createSecurityPolicies(
-  dependsOn: pulumi.Resource[] = [],
-): SecurityPolicyOutputs {
-  const config = new pulumi.Config();
-  const allowedCountries = config.getObject<string[]>("allowedCountries");
-
-  const rules: gcp.types.input.compute.SecurityPolicyRule[] = [];
-  let priority = 1000;
-
-  // ── OWASP Top 10 Rules ────────────────────────────────────────────
-
-  const owaspRules: { id: string; description: string }[] = [
-    { id: "sqli-v33-stable", description: "SQL Injection" },
-    { id: "xss-v33-stable", description: "Cross-Site Scripting" },
-    { id: "lfi-v33-stable", description: "Local File Inclusion" },
-    { id: "rfi-v33-stable", description: "Remote File Inclusion" },
-    { id: "rce-v33-stable", description: "Remote Code Execution" },
-    { id: "methodenforcement-v33-stable", description: "Method Enforcement" },
-    { id: "scannerdetection-v33-stable", description: "Scanner Detection" },
-    { id: "protocolattack-v33-stable", description: "Protocol Attack" },
-    { id: "sessionfixation-v33-stable", description: "Session Fixation" },
-  ];
-
-  owaspRules.forEach((rule) => {
-    rules.push({
-      action: "deny(403)",
-      priority,
-      description: `OWASP: ${rule.description}`,
-      match: {
-        expr: {
-          expression: `evaluatePreconfiguredWaf('${rule.id}', {'sensitivity': 1})`,
-        },
-      },
-    });
-    priority += 100;
-  });
-
-  // ── Rate Limiting Rule ────────────────────────────────────────────
-  rules.push({
-    action: "throttle",
-    priority: priority,
-    description: "Rate limiting: max 100 requests per minute per IP",
-    match: {
-      versionedExpr: "SRC_IPS_V1",
-      config: {
-        srcIpRanges: ["*"],
-      },
+export function createCloudArmorPolicy(
+  project: string,
+  environment: string,
+  options?: {
+    /** Enable Cloud Armor Plus (paid tier) for WAF rules, threat intel, adaptive protection */
+    enablePlusTier?: boolean;
+    blockedCountries?: string[];
+    rateLimitPerIp?: number;
+    authRateLimitPerIp?: number;
+  },
+  opts?: pulumi.ComponentResourceOptions
+): CloudArmorPolicy {
+  return new CloudArmorPolicy(
+    `{{ .Project.Metadata.Name }}-armor-${environment}`,
+    {
+      project,
+      environment,
+      enablePlusTier: options?.enablePlusTier ?? false, // Default: standard tier only
+      blockedCountries: options?.blockedCountries,
+      rateLimitPerIp: options?.rateLimitPerIp ?? 1000, // 1000 req/min default
+      authRateLimitPerIp: options?.authRateLimitPerIp ?? 30 // 30 req/min for auth
     },
-    rateLimitOptions: {
-      rateLimitThreshold: {
-        count: 100,
-        intervalSec: 60,
-      },
-      conformAction: "allow",
-      exceedAction: "deny(429)",
-      enforceOnKey: "IP",
-    },
-  });
-  priority += 100;
-
-  // ── Geo-Restriction Rule (if configured) ──────────────────────────
-  if (allowedCountries && allowedCountries.length > 0) {
-    const countryExpr = allowedCountries
-      .map((c) => `'${c}'`)
-      .join(", ");
-
-    rules.push({
-      action: "deny(403)",
-      priority,
-      description: "Geo-restriction: block requests from disallowed regions",
-      match: {
-        expr: {
-          expression: `!origin.region_code.matches('[${allowedCountries.join("|")}]')`,
-        },
-      },
-    });
-    priority += 100;
-  }
-
-  // ── Default Allow Rule ────────────────────────────────────────────
-  rules.push({
-    action: "allow",
-    priority: 2147483647,
-    description: "Default rule: allow all other traffic",
-    match: {
-      versionedExpr: "SRC_IPS_V1",
-      config: {
-        srcIpRanges: ["*"],
-      },
-    },
-  });
-
-  // ── Security Policy ───────────────────────────────────────────────
-  const securityPolicy = new gcp.compute.SecurityPolicy("cloud-armor-policy", {
-    name: `{{ .Project.Metadata.Name }}-${stackName}-waf-policy`,
-    project: projectId,
-    description: `Cloud Armor WAF policy for {{ .Project.Metadata.Name }} (${stackName})`,
-    rules,
-  }, { dependsOn });
-
-  return { securityPolicy };
+    opts
+  );
 }

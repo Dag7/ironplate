@@ -1,27 +1,434 @@
+# =============================================================================
+# {{ .Project.Metadata.Name }} Staging Environment Configuration
+# =============================================================================
+# This file contains ALL configuration for the staging environment.
+# The same TypeScript code is used for all environments - only config differs.
+# =============================================================================
+#
+# KUBECTL ACCESS:
+#   gcloud container clusters get-credentials {{ .Project.Metadata.Name }}-staging-cluster --region us-central1 --project {{ .Project.Metadata.Name }}-staging
+#
+# PULUMI OUTPUTS (after deployment):
+#   pulumi stack output gcloudGetCredentials -s staging
+#
+# =============================================================================
+
 config:
-  gcp:project: {{ .Project.Metadata.Organization }}-{{ .Project.Metadata.Name }}-stg
-  gcp:region: {{ .Project.Spec.Cloud.Region }}
-  {{ .Project.Metadata.Name }}-infra:environment: staging
-  {{ .Project.Metadata.Name }}-infra:shortName: stg
-  {{ .Project.Metadata.Name }}-infra:domain: stg.{{ .Project.Metadata.Domain }}
-  {{ .Project.Metadata.Name }}-infra:nodeCount: "1"
-  {{ .Project.Metadata.Name }}-infra:machineType: e2-standard-4
-  {{ .Project.Metadata.Name }}-infra:dbTier: db-custom-2-8192
-{{- if .Computed.HasArgoCD }}
-  {{ .Project.Metadata.Name }}-infra:argoCDEnabled: "true"
-{{- end }}
-{{- if .Computed.HasObservability }}
-  {{ .Project.Metadata.Name }}-infra:observabilityEnabled: "true"
-{{- end }}
+  # ---------------------------------------------------------------------------
+  # GCP Project Settings
+  # ---------------------------------------------------------------------------
+  gcp:project: {{ .Project.Metadata.Name }}-staging
+  gcp:region: us-central1
+  gcp:zone: us-central1-a
+  # Required for Billing Budgets API when using ADC (Application Default Credentials)
+  gcp:userProjectOverride: "true"
+  gcp:billingProject: {{ .Project.Metadata.Name }}-staging
+  # ---------------------------------------------------------------------------
+  # Environment
+  # ---------------------------------------------------------------------------
+  # Short name for resource naming (3-4 chars, used in service account names)
+  # Examples: stg (staging), prd (production), tst (test), dev (development)
+  {{ .Project.Metadata.Name }}:envShortName: stg
+  # ---------------------------------------------------------------------------
+  # Organization
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:organization: {{ .Project.Metadata.Organization }}
+  {{ .Project.Metadata.Name }}:zone: us-central1-a
+  {{ .Project.Metadata.Name }}:team: platform
+  {{ .Project.Metadata.Name }}:deletionProtection: "false"
+  # ---------------------------------------------------------------------------
+  # Networking
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:networking:
+    vpcCidr: "10.10.0.0/16"
+    gkeSubnetCidr: "10.10.0.0/20"
+    # /14 CIDR must be aligned (start at x.0.0.0 where x divisible by 4)
+    podsCidr: "10.64.0.0/14"
+    servicesCidr: "10.68.0.0/20"
+    privateServicesCidr: "10.10.48.0/20"
+    enableCloudNat: true
+  # ---------------------------------------------------------------------------
+  # GKE Configuration
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:gke:
+    releaseChannel: RAPID
+    enableAutopilot: false
+    enablePrivateCluster: true
+    enablePrivateEndpoint: false
+    enableWorkloadIdentity: true
+    enableBinaryAuthorization: false
+    enableNetworkPolicy: true
+    enableVpa: true
+    enableHttpLoadBalancing: true
+    enableHpa: true
+    masterAuthorizedNetworks:
+      - displayName: "Allow All (Staging)"
+        cidrBlock: "0.0.0.0/0"
+    # -------------------------------------------------------------------------
+    # NODE POOLS (Budget: Minimal for staging ~$150-200/month)
+    # -------------------------------------------------------------------------
+    # 3 pools with clear separation:
+    #   - system: Critical k8s components only (kube-system)
+    #   - infra: Infrastructure workloads (observability, databases, ingress)
+    #   - services: Application workloads (microservices) - spot for cost savings
+    # -------------------------------------------------------------------------
+    nodePools:
+      # System pool - k8s control plane addons only
+      - name: system
+        machineType: e2-small
+        minNodes: 1
+        maxNodes: 3
+        initialNodes: 1
+        diskSizeGb: 30
+        diskType: pd-standard
+        spot: false
+        labels:
+          workload-type: system
+        taints:
+          - key: CriticalAddonsOnly
+            value: "true"
+            effect: NO_SCHEDULE
+      # Infra pool - infrastructure workloads (stable, non-spot)
+      - name: infra
+        machineType: e2-standard-2
+        minNodes: 1
+        maxNodes: 3
+        initialNodes: 2
+        diskSizeGb: 30
+        diskType: pd-ssd
+        spot: false
+        labels:
+          workload-type: infra
+        taints:
+          - key: workload-type
+            value: infra
+            effect: NO_SCHEDULE
+      # Services pool - application microservices (spot for cost savings)
+      - name: services
+        machineType: e2-standard-2
+        minNodes: 0
+        maxNodes: 6
+        initialNodes: 2
+        diskSizeGb: 50
+        diskType: pd-standard
+        spot: true
+        labels:
+          workload-type: services
+  # ---------------------------------------------------------------------------
+  # Database Configuration (Budget: Minimal for staging)
+  # ---------------------------------------------------------------------------
+  # TIER OPTIONS (ENTERPRISE edition):
+  #   Shared CPU (cheapest):
+  #     - db-f1-micro    : shared CPU, 0.6 GB  (~$7/month)   <- current
+  #     - db-g1-small    : shared CPU, 1.7 GB  (~$25/month)
+  #   Dedicated CPU (production-ready):
+  #     - db-custom-1-3840 : 1 vCPU, 3.75 GB  (~$35/month)
+  #     - db-custom-2-7680 : 2 vCPU, 7.5 GB   (~$70/month)
+  #     - db-custom-4-15360: 4 vCPU, 15 GB    (~$140/month)
+  # To upgrade to ENTERPRISE_PLUS (advanced features): use db-perf-optimized-N-*
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:database:
+    edition: ENTERPRISE
+    tier: db-f1-micro
+    highAvailability: false
+    diskSizeGb: 10
+    diskAutoresize: true
+    diskAutoresizeLimit: 50
+    postgresVersion: POSTGRES_17
+    enablePointInTimeRecovery: false
+    backupRetentionDays: 7
+    deletionProtection: false
+    databaseFlags:
+      max_connections: "300"
+    insightsConfig:
+      queryInsightsEnabled: false
+      queryStringLength: 1024
+      recordApplicationTags: false
+      recordClientAddress: false
 {{- if .Computed.HasRedis }}
-  {{ .Project.Metadata.Name }}-infra:redisEnabled: "true"
+  # ---------------------------------------------------------------------------
+  # Redis Configuration (Budget: Minimal for staging)
+  # ---------------------------------------------------------------------------
+  # TIER OPTIONS:
+  #   - BASIC       : no HA, single node (~$35/month for 1GB)  <- current
+  #   - STANDARD_HA : HA with replica  (~$70/month for 1GB, doubles cost)
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:redis:
+    tier: BASIC
+    memorySizeGb: 1
+    redisVersion: REDIS_7_0
+    authEnabled: true
+    transitEncryptionEnabled: true
+    redisConfigs:
+      maxmemory-policy: allkeys-lru
 {{- end }}
 {{- if .Computed.HasKafka }}
-  {{ .Project.Metadata.Name }}-infra:kafkaEnabled: "true"
+  # ---------------------------------------------------------------------------
+  # Kafka Configuration
+  # ---------------------------------------------------------------------------
+  # NOTE: Kafka is deployed via Helm (Strimzi), NOT Pulumi.
+  # Configuration is in: k8s/helm/strimzi-kafka/values-staging.yaml
+  # ---------------------------------------------------------------------------
 {{- end }}
-{{- if .Computed.HasHasura }}
-  {{ .Project.Metadata.Name }}-infra:hasuraEnabled: "true"
+
+  # ---------------------------------------------------------------------------
+  # Storage Buckets
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:storage:
+    buckets:
+      - nameSuffix: artifacts
+        storageClass: STANDARD
+        location: us-central1
+        versioning: true
+        uniformBucketLevelAccess: true
+        lifecycleRules:
+          - action:
+              type: Delete
+            condition:
+              age: 90
+      - nameSuffix: files
+        storageClass: STANDARD
+        location: us-central1
+        versioning: true
+        uniformBucketLevelAccess: true
+        lifecycleRules:
+          - action:
+              type: Delete
+            condition:
+              age: 90
+        cors:
+          - origins:
+              - "https://staging.{{ .Project.Metadata.Domain }}"
+              - "https://app.staging.{{ .Project.Metadata.Domain }}"
+            methods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+              - HEAD
+            responseHeaders:
+              - Content-Type
+              - Content-Length
+              - Content-MD5
+              - x-goog-resumable
+            maxAgeSeconds: 3600
+{{- if .Computed.HasObservability }}
+      - nameSuffix: tempo-traces
+        storageClass: STANDARD
+        location: us-central1
+        versioning: false
+        uniformBucketLevelAccess: true
+        lifecycleRules:
+          - action:
+              type: Delete
+            condition:
+              age: 7
 {{- end }}
+{{- if .Computed.HasLangfuse }}
+      - nameSuffix: langfuse-blob
+        storageClass: STANDARD
+        location: us-central1
+        versioning: true
+        uniformBucketLevelAccess: true
+        lifecycleRules:
+          - action:
+              type: Delete
+            condition:
+              age: 365
+{{- end }}
+  # ---------------------------------------------------------------------------
+  # Domain Configuration
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:domain:
+    baseDomain: {{ .Project.Metadata.Domain }}
+    envSubdomain: staging
+    tlsSecretName: {{ .Project.Metadata.Name }}-staging-tls
+    appSubdomain: app.staging
+    apiSubdomain: api.staging
+    authSubdomain: auth.staging
+    tlsEnabled: true
+    tlsIssuer: letsencrypt-production
+    enableHsts: false
+  # ---------------------------------------------------------------------------
+  # Certificate Configuration (cert-manager)
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:certificate:
+    enabled: true
+    name: {{ .Project.Metadata.Name }}-staging-wildcard
+    domains:
+      - staging.{{ .Project.Metadata.Domain }}
+      - "*.staging.{{ .Project.Metadata.Domain }}"
+  # ---------------------------------------------------------------------------
+  # Traefik Ingress Controller Configuration
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:traefik:
+    replicas: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 3
+      targetCpuUtilization: 60
+    logLevel: INFO
+  # ---------------------------------------------------------------------------
+  # DNS Configuration
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:dns:
+    domain: {{ .Project.Metadata.Domain }}
+    acmeEmail: admin@{{ .Project.Metadata.Domain }}
+    enableDnssec: true
+  # ---------------------------------------------------------------------------
+  # Security Configuration
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:security:
+    cloudArmor:
+      enabled: true
+      enablePlusTier: false
+      rateLimitPerIp: 1000
+      authRateLimitPerIp: 30
+    iap:
+      enabled: true
+      supportEmail: admin@{{ .Project.Metadata.Domain }}
+      allowedMembers:
+        domain: {{ .Project.Metadata.Domain }}
+      oauth2ProxyVersion: "v7.5.1"
+      allowedEmailDomain: {{ .Project.Metadata.Domain }}
+      replicas: 1
+      cookieDomain: .staging.{{ .Project.Metadata.Domain }}
+      cookieRefresh: 1h
+      cookieExpire: 4h
+      cookieSameSiteStrict: false
+      enablePodAntiAffinity: false
+      nodeSelector:
+        workload-type: infra
+      tolerations:
+        - key: workload-type
+          operator: Equal
+          value: infra
+          effect: NoSchedule
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+  # ---------------------------------------------------------------------------
+  # Load Balancer Configuration
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:loadBalancer:
+    enabled: true
 {{- if .Computed.HasExternalSecrets }}
-  {{ .Project.Metadata.Name }}-infra:externalSecretsEnabled: "true"
+  # ---------------------------------------------------------------------------
+  # Secrets Configuration
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:secrets:
+    enableExternalSecrets: true
+    refreshInterval: 1h
+    clusterSecretStoreName: gcp-secret-manager
+{{- end }}
+{{- if .Computed.HasObservability }}
+  # ---------------------------------------------------------------------------
+  # Observability Configuration
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:observability:
+    enableOtel: true
+    enableTempo: true
+    tempoStorageBackend: local
+    traceRetentionHours: 168
+    enablePrometheus: false
+{{- end }}
+{{- if .Computed.HasLangfuse }}
+  # ---------------------------------------------------------------------------
+  # Langfuse Configuration
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:langfuse:
+    selfHosted: true
+    version: "3.0.0"
+    redis:
+      tier: BASIC
+      memorySizeGb: 1
+      redisVersion: REDIS_7_0
+      authEnabled: true
+      transitEncryptionEnabled: true
+      redisConfigs:
+        maxmemory-policy: noeviction
+{{- end }}
+  # ---------------------------------------------------------------------------
+  # GitHub CI/CD Configuration (Workload Identity)
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:github:
+    organization: {{ .Project.Metadata.Organization }}
+    repository: {{ .Project.Metadata.Name }}
+    allowedBranches:
+      - main
+      - staging
+{{- if .Computed.HasArgoCD }}
+  # ---------------------------------------------------------------------------
+  # ArgoCD Configuration
+  # ---------------------------------------------------------------------------
+  {{ .Project.Metadata.Name }}:argocd:
+    enabled: true
+    version: "9.4.2"
+    subdomain: argocd.staging
+    replicas: 1
+    enableSso: false
+    enableIap: true
+    useInfraNodes: true
+    webhook:
+      enabled: true
+    notifications:
+      enabled: true
+      slackChannel: "#{{ .Project.Metadata.Name }}-staging-deployments"
+      slackAlertChannel: "#{{ .Project.Metadata.Name }}-staging-alerts"
+    imageUpdater:
+      enabled: true
+      version: "1.0.4"
+      registryPrefix: us-central1-docker.pkg.dev/{{ .Project.Metadata.Name }}-staging/{{ .Project.Metadata.Name }}
+      updateStrategy: digest
+      writeBackMethod: git
+      writeBackBranch: staging
+      authStrategy: workload-identity-script
+    rbac:
+      defaultPolicy: "role:readonly"
+      adminGroups:
+        - argocd-admins@{{ .Project.Metadata.Domain }}
+        - platform-team@{{ .Project.Metadata.Domain }}
+      developerGroups:
+        - devops@{{ .Project.Metadata.Domain }}
+      viewerGroups:
+        - engineering@{{ .Project.Metadata.Domain }}
+      enableGoogleGroups: true
+    serverResources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    controllerResources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    repoServerResources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    applicationSetReplicas: 1
+    pdbEnabled: false
+    redisHa: false
+    enableSyncWindows: false
+    logLevel: debug
 {{- end }}

@@ -1,0 +1,163 @@
+/**
+ * GKE Node Pools Configuration Module
+ *
+ * Creates and manages node pools for the GKE cluster.
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { nodePoolName } from "../../utils/naming.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface NodePoolsArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** GKE cluster */
+  cluster: gcp.container.Cluster;
+  /** Node service account email */
+  nodeServiceAccountEmail?: pulumi.Output<string>;
+}
+
+export interface NodePoolsOutputs {
+  /** Created node pools */
+  nodePools: Record<string, gcp.container.NodePool>;
+}
+
+// =============================================================================
+// Node Pools Component
+// =============================================================================
+
+export class NodePools extends pulumi.ComponentResource {
+  public readonly nodePools: Record<string, gcp.container.NodePool>;
+
+  constructor(
+    name: string,
+    args: NodePoolsArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:gke:NodePools", name, {}, opts);
+
+    const { config, cluster, nodeServiceAccountEmail } = args;
+    this.nodePools = {};
+
+    // Default OAuth scopes for GKE nodes
+    const defaultOauthScopes = [
+      "https://www.googleapis.com/auth/cloud-platform",
+      "https://www.googleapis.com/auth/logging.write",
+      "https://www.googleapis.com/auth/monitoring",
+      "https://www.googleapis.com/auth/devstorage.read_only"
+    ];
+
+    for (const poolConfig of config.gke.nodePools) {
+      const poolName = nodePoolName(config.name, poolConfig.name);
+
+      const nodePool = new gcp.container.NodePool(
+        `${name}-${poolConfig.name}`,
+        {
+          name: poolName,
+          project: config.gcpProject,
+          location: config.gcpRegion,
+          cluster: cluster.name,
+
+          // Node count configuration
+          initialNodeCount: poolConfig.initialNodes,
+          autoscaling: {
+            minNodeCount: poolConfig.minNodes,
+            maxNodeCount: poolConfig.maxNodes
+          },
+
+          // Management settings
+          management: {
+            autoRepair: true,
+            autoUpgrade: true
+          },
+
+          // Upgrade settings
+          upgradeSettings: {
+            maxSurge: 1,
+            maxUnavailable: 0,
+            strategy: "SURGE"
+          },
+
+          // Node configuration
+          nodeConfig: {
+            machineType: poolConfig.machineType,
+            diskSizeGb: poolConfig.diskSizeGb,
+            diskType: poolConfig.diskType,
+            imageType: "COS_CONTAINERD",
+
+            // Spot/preemptible VMs
+            spot: poolConfig.spot,
+
+            // Service account
+            serviceAccount: nodeServiceAccountEmail,
+            oauthScopes: poolConfig.oauthScopes ?? defaultOauthScopes,
+
+            // Workload Identity
+            workloadMetadataConfig: config.gke.enableWorkloadIdentity
+              ? {
+                  mode: "GKE_METADATA"
+                }
+              : undefined,
+
+            // Labels
+            labels: {
+              ...poolConfig.labels,
+              environment: config.name,
+              "node-pool": poolConfig.name
+            },
+
+            // Tags for firewall rules
+            tags: ["gke-node", `gke-${config.name}`, poolConfig.name],
+
+            // Taints (GKE expects effects like NO_SCHEDULE, PREFER_NO_SCHEDULE, NO_EXECUTE)
+            taints: poolConfig.taints?.map((t) => ({
+              key: t.key,
+              value: t.value,
+              effect: t.effect
+            })),
+
+            // Shielded instance config
+            shieldedInstanceConfig: {
+              enableIntegrityMonitoring: true,
+              enableSecureBoot: true
+            },
+
+            // Metadata
+            metadata: {
+              "disable-legacy-endpoints": "true"
+            }
+          }
+        },
+        { parent: this, dependsOn: [cluster] }
+      );
+
+      this.nodePools[poolConfig.name] = nodePool;
+    }
+
+    this.registerOutputs({
+      nodePools: this.nodePools
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createNodePools(
+  config: EnvironmentConfig,
+  cluster: gcp.container.Cluster,
+  nodeServiceAccountEmail?: pulumi.Output<string>,
+  opts?: pulumi.ComponentResourceOptions
+): NodePools {
+  return new NodePools(
+    `{{ .Project.Metadata.Name }}-node-pools-${config.name}`,
+    { config, cluster, nodeServiceAccountEmail },
+    opts
+  );
+}

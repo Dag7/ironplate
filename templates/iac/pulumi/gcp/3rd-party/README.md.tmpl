@@ -1,0 +1,86 @@
+# Third-Party Configurations
+
+This folder contains setup guides and manifests for third-party services that Pulumi cannot manage directly.
+
+## Contents
+
+| Folder                 | Service        | Purpose                            |
+| ---------------------- | -------------- | ---------------------------------- |
+| [`gcp/`](./gcp/)      | GCP IAP        | OAuth credentials for IAP          |
+| [`github/`](./github/) | GitHub Actions | CI/CD secrets, variables, webhooks |
+| [`slack/`](./slack/)   | Slack App      | ArgoCD deployment notifications    |
+
+## Why This Folder?
+
+Some integrations require manual setup in external platforms:
+
+- **GCP IAP** - OAuth clients must be created in GCP Console (API deprecated)
+- **GitHub App** - Must be created in GitHub UI, then credentials added to Pulumi
+- **Slack App** - Must be created in Slack, then webhook URL added to K8s
+
+This folder provides:
+
+- Step-by-step setup guides
+- App manifests (where supported, e.g., Slack)
+- Configuration templates
+
+## Setup Order
+
+1. **GitHub App** (Required for private repos)
+   - Create app -> Install on repo -> Add credentials to Pulumi
+   - See: [`github/README.md`](./github/README.md)
+
+2. **GCP IAP** (Required for protected services)
+   - Create OAuth client -> Add credentials to secrets -> Deploy
+   - See: [`gcp/IAP-SETUP.md`](./gcp/IAP-SETUP.md)
+
+3. **GitHub Actions** (Required for CI/CD)
+   - Configure repository variables and secrets
+   - Set up webhooks for ArgoCD
+
+4. **Slack App** (Optional, for notifications)
+   - Create app from manifest -> Install -> Configure webhook
+   - See: [`slack/README.md`](./slack/README.md)
+
+## Quick Reference
+
+### GitHub App Credentials
+
+After creating the GitHub App, add to `src/_secrets/staging.json`:
+
+```json
+{
+  "github-app-credentials": {
+    "appId": "YOUR_APP_ID",
+    "installationId": "YOUR_INSTALLATION_ID",
+    "privateKey": "-----BEGIN RSA PRIVATE KEY-----\\n...\\n-----END RSA PRIVATE KEY-----\\n",
+    "clientId": "YOUR_CLIENT_ID",
+    "clientSecret": "YOUR_CLIENT_SECRET"
+  }
+}
+```
+
+### Slack Webhook
+
+After creating the Slack App:
+
+```bash
+kubectl create secret generic argocd-notifications-secret \
+  -n argocd \
+  --from-literal=slack-token="https://hooks.slack.com/services/..." \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+## Future Additions
+
+As you integrate more third-party services, add folders here:
+
+```
+3rd-party/
+├── gcp/              # GCP IAP OAuth setup
+├── github/           # GitHub App for ArgoCD
+├── slack/            # Slack App for notifications
+├── datadog/          # Monitoring integration
+├── pagerduty/        # Incident management
+└── ...
+```

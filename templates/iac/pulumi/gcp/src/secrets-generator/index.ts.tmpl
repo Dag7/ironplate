@@ -1,0 +1,522 @@
+/**
+ * Secrets Generator Module
+ *
+ * Generates and manages secrets, syncing them to GCP Secret Manager.
+ *
+ * Secrets Flow:
+ *   1. User-provided: Read from Pulumi config ({{ .Project.Metadata.Name }}:secrets:{group}:{key})
+ *   2. Derived: From infrastructure (DB URLs, Redis URLs)
+ *   3. Stored in GCP Secret Manager as INDIVIDUAL secrets (not JSON blobs)
+ *   4. External Secrets syncs to K8s
+ *   5. Workloads consume via envFrom
+ *
+ * Naming Convention:
+ *   Since GCP project IS the environment ({{ .Project.Metadata.Name }}-staging, {{ .Project.Metadata.Name }}-production),
+ *   secrets are named: {group}-{key}
+ *   Example: jwt-credentials-jwt-secret
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type {
+  EnvironmentConfig,
+  SecretCredentialGroup
+} from "../config/types.js";
+import { secretName } from "../utils/naming.js";
+import { secretLabels } from "../utils/tags.js";
+
+// Re-export generators
+export * from "./generators.js";
+
+// =============================================================================
+// Credential Group Definitions
+// =============================================================================
+
+/**
+ * Credential groups with their expected keys.
+ * Each group maps to multiple individual secrets in GCP.
+ */
+export const CREDENTIAL_GROUPS: Record<SecretCredentialGroup, string[]> = {
+  "jwt-credentials": ["jwt-secret", "jwt-issuer", "jwt-audience"],
+  "encryption-credentials": ["encryption-key"],
+{{ if .Computed.HasHasura }}  "hasura-credentials": ["hasura-admin-secret", "hasura-graphql-jwt-secret", "hasura-webhook-secret"],
+{{ end }}  "oauth-credentials": [
+    "google-client-id",
+    "google-client-secret",
+    "google-authorization-url",
+    "google-token-url",
+    "google-user-url",
+    "github-client-id",
+    "github-client-secret"
+  ],
+  "llm-credentials": [
+    "openai-api-key",
+    "anthropic-api-key",
+    "google-api-key",
+    "ollama-base-url"
+  ],
+{{ if .Computed.HasLangfuse }}  "langfuse-credentials": [
+    "langfuse-nextauth-secret",
+    "langfuse-salt",
+    "langfuse-encryption-key",
+    "langfuse-public-key",
+    "langfuse-secret-key",
+    "langfuse-base-url",
+    "langfuse-init-user-password"
+  ],
+  "langfuse-clickhouse-credentials": ["clickhouse-user", "clickhouse-password"],
+  "langfuse-redis-credentials": ["redis-url", "redis-auth-string"],
+  "langfuse-otel-credentials": ["auth-header"],
+{{ end }}  "statsig-credentials": ["statsig-server-key", "statsig-client-key"],
+  "email-credentials": ["resend-api-key"],
+  "iap-credentials": ["client-id", "client-secret", "cookie-secret"],
+{{ if .Computed.HasArgoCD }}  "github-app-credentials": [
+    "app-id",
+    "installation-id",
+    "private-key",
+    "client-id",
+    "client-secret"
+  ],
+{{ end }}  "slack-credentials": ["slack-bot-token"],
+{{ if .Computed.HasObservability }}  "grafana-credentials": ["admin-user", "admin-password"],
+  "alertmanager-credentials": ["slack-webhook-url", "pagerduty-service-key"],
+{{ end }}  "stripe-credentials": ["secret-key", "publishable-key", "webhook-secret"],
+  "visitor-credentials": ["cookie-secret"],
+  "search-provider-credentials": ["brave-search-api-key"]
+};
+
+/**
+ * Credential groups that are computed/derived, NOT loaded from JSON files.
+ * These are generated in the SecretsGenerator from other credentials or infrastructure.
+ */
+export const COMPUTED_CREDENTIAL_GROUPS: SecretCredentialGroup[] = [
+{{ if .Computed.HasLangfuse }}  "langfuse-redis-credentials",
+  "langfuse-otel-credentials",
+{{ end }}];
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface SecretsGeneratorArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** Database password (from Cloud SQL) */
+  databasePassword?: pulumi.Output<string>;
+  /** Database connection strings */
+  databaseConnectionStrings?: Record<string, pulumi.Output<string>>;
+{{ if .Computed.HasRedis }}  /** Redis connection URL */
+  redisConnectionUrl?: pulumi.Output<string>;
+  /** Redis auth string */
+  redisAuthString?: pulumi.Output<string>;
+{{ end }}{{ if .Computed.HasLangfuse }}  /** Langfuse Redis connection URL (for Langfuse v3) */
+  langfuseRedisConnectionUrl?: pulumi.Output<string>;
+  /** Langfuse Redis auth string (for Langfuse v3) */
+  langfuseRedisAuthString?: pulumi.Output<string>;
+{{ end }}}
+
+export interface SecretsGeneratorOutputs {
+  /** GCP Secret Manager secrets (group-key -> Secret) */
+  gcpSecrets: Record<string, gcp.secretmanager.Secret>;
+  /** Secret versions */
+  secretVersions: Record<string, gcp.secretmanager.SecretVersion>;
+  /** Missing credential groups */
+  missingGroups: string[];
+}
+
+// =============================================================================
+// Secrets Generator Component
+// =============================================================================
+
+export class SecretsGenerator extends pulumi.ComponentResource {
+  public readonly gcpSecrets: Record<string, gcp.secretmanager.Secret>;
+  public readonly secretVersions: Record<
+    string,
+    gcp.secretmanager.SecretVersion
+  >;
+  public readonly missingGroups: string[];
+
+  constructor(
+    name: string,
+    args: SecretsGeneratorArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:secrets:SecretsGenerator", name, {}, opts);
+
+    const {
+      config,
+      databasePassword,
+      databaseConnectionStrings,
+{{ if .Computed.HasRedis }}      redisConnectionUrl,
+      redisAuthString,
+{{ end }}{{ if .Computed.HasLangfuse }}      langfuseRedisConnectionUrl,
+      langfuseRedisAuthString,
+{{ end }}    } = args;
+
+    this.gcpSecrets = {};
+    this.secretVersions = {};
+    this.missingGroups = [];
+
+    // ==========================================================================
+    // Phase 1: Process User-Provided Credential Groups from Config
+    // ==========================================================================
+    // Each key in the group becomes an individual GCP Secret
+    // Format: {group}-{key} (e.g., jwt-credentials-jwt-secret)
+    // Note: Computed credential groups are skipped here and handled in Phase 3
+
+    const credentials = config.secrets.credentials || {};
+
+    for (const [groupName, expectedKeys] of Object.entries(CREDENTIAL_GROUPS)) {
+      // Skip computed credential groups - they're handled separately
+      if (COMPUTED_CREDENTIAL_GROUPS.includes(groupName as SecretCredentialGroup)) {
+        continue;
+      }
+
+      const groupCredentialsOutput =
+        credentials[groupName as SecretCredentialGroup];
+
+      if (!groupCredentialsOutput) {
+        this.missingGroups.push(groupName);
+        pulumi.log.warn(
+          `Missing credential group: ${groupName}. Run: ./scripts/pulumi-secret-set.sh -e ${config.name}`
+        );
+        continue;
+      }
+
+      // Create individual secrets for each key in the group
+      for (const key of expectedKeys) {
+        const credentialsOutput = groupCredentialsOutput as pulumi.Output<
+          Record<string, string>
+        >;
+
+        // IMPORTANT: GCP SecretVersion requires non-empty payload
+        // If value is missing/empty, use a placeholder that indicates it needs configuration
+        const secretValue = credentialsOutput.apply((creds) => {
+          if (!creds || !(key in creds)) {
+            pulumi.log.warn(
+              `[PLACEHOLDER] Secret ${groupName}/${key}: key not found - using placeholder`
+            );
+            return `__UNCONFIGURED__:${groupName}/${key}:set-via-pulumi-secrets`;
+          }
+          const val = creds[key];
+          if (val === undefined || val === null || val === "") {
+            pulumi.log.warn(
+              `[PLACEHOLDER] Secret ${groupName}/${key}: value is empty - using placeholder`
+            );
+            return `__UNCONFIGURED__:${groupName}/${key}:set-via-pulumi-secrets`;
+          }
+          return val;
+        });
+
+        this.createIndividualSecret(
+          name,
+          config,
+          groupName,
+          key,
+          pulumi.secret(secretValue)
+        );
+      }
+    }
+
+    // ==========================================================================
+    // Phase 2: Create Infrastructure-Derived Secrets
+    // ==========================================================================
+
+    // Database credentials (from Cloud SQL)
+    if (databasePassword) {
+      this.createIndividualSecret(
+        name,
+        config,
+        "database-credentials",
+        "database-password",
+        databasePassword
+      );
+    }
+
+    if (databaseConnectionStrings?.["{{ .Project.Metadata.Name }}"]) {
+      this.createIndividualSecret(
+        name,
+        config,
+        "database-credentials",
+        "database-url",
+        databaseConnectionStrings["{{ .Project.Metadata.Name }}"]
+      );
+    }
+
+{{ if .Computed.HasHasura }}    if (databaseConnectionStrings?.["hasuraMetadata"]) {
+      this.createIndividualSecret(
+        name,
+        config,
+        "database-credentials",
+        "metadata-database-url",
+        databaseConnectionStrings["hasuraMetadata"]
+      );
+    }
+{{ end }}
+{{ if .Computed.HasRedis }}    // Redis credentials (from Memorystore)
+    if (redisConnectionUrl) {
+      this.createIndividualSecret(
+        name,
+        config,
+        "redis-credentials",
+        "redis-url",
+        redisConnectionUrl
+      );
+    }
+
+    if (redisAuthString) {
+      this.createIndividualSecret(
+        name,
+        config,
+        "redis-credentials",
+        "redis-auth-string",
+        redisAuthString
+      );
+    }
+{{ end }}
+{{ if .Computed.HasLangfuse }}    // Langfuse database URL
+    if (databaseConnectionStrings?.["langfuse"]) {
+      this.createIndividualSecret(
+        name,
+        config,
+        "langfuse-credentials",
+        "database-url",
+        databaseConnectionStrings["langfuse"]
+      );
+    }
+
+    // Langfuse Redis credentials (for Langfuse v3)
+    if (langfuseRedisConnectionUrl) {
+      this.createIndividualSecret(
+        name,
+        config,
+        "langfuse-redis-credentials",
+        "redis-url",
+        langfuseRedisConnectionUrl
+      );
+    }
+
+    if (langfuseRedisAuthString) {
+      this.createIndividualSecret(
+        name,
+        config,
+        "langfuse-redis-credentials",
+        "redis-auth-string",
+        langfuseRedisAuthString
+      );
+    }
+{{ end }}
+    // ==========================================================================
+    // Phase 3: Create Computed/Derived Secrets
+    // ==========================================================================
+{{ if .Computed.HasLangfuse }}
+    // Langfuse OTEL credentials (for OTEL Collector -> Langfuse OTLP endpoint)
+    // auth-header = base64(public_key:secret_key)
+    const langfuseCredentialsOutput = credentials["langfuse-credentials"];
+    if (langfuseCredentialsOutput) {
+      const langfuseCreds = langfuseCredentialsOutput as pulumi.Output<{
+        "langfuse-public-key"?: string;
+        "langfuse-secret-key"?: string;
+      }>;
+
+      const authHeader = langfuseCreds.apply((creds) => {
+        const publicKey = creds["langfuse-public-key"];
+        const secretKey = creds["langfuse-secret-key"];
+
+        if (!publicKey || !secretKey) {
+          pulumi.log.warn(
+            "[PLACEHOLDER] langfuse-otel-credentials/auth-header: missing public_key or secret_key"
+          );
+          return "__UNCONFIGURED__:langfuse-otel-credentials/auth-header:set-langfuse-credentials";
+        }
+
+        // Compute base64(public_key:secret_key)
+        const combined = `${publicKey}:${secretKey}`;
+        return Buffer.from(combined).toString("base64");
+      });
+
+      this.createIndividualSecret(
+        name,
+        config,
+        "langfuse-otel-credentials",
+        "auth-header",
+        pulumi.secret(authHeader)
+      );
+    } else {
+      pulumi.log.warn(
+        "langfuse-otel-credentials: Cannot compute - langfuse-credentials not configured"
+      );
+    }
+{{ end }}
+    this.registerOutputs({
+      gcpSecrets: this.gcpSecrets,
+      secretVersions: this.secretVersions,
+      missingGroups: this.missingGroups
+    });
+  }
+
+  /**
+   * Create an individual GCP Secret for a single key (guaranteed non-empty)
+   *
+   * @param name - Component name prefix
+   * @param config - Environment config
+   * @param group - Credential group (e.g., "jwt-credentials")
+   * @param key - Secret key (e.g., "jwt-secret")
+   * @param value - Secret value
+   */
+  private createIndividualSecret(
+    name: string,
+    config: EnvironmentConfig,
+    group: string,
+    key: string,
+    value: pulumi.Output<string>
+  ): void {
+    // Secret name: {group}-{key} (no env prefix - project IS the env)
+    const gcpSecretId = secretName(group, key);
+    const resourceName = `${name}-${group}-${key}`;
+    const labels = secretLabels(config, `${group}-${key}`);
+
+    // Create the secret container
+    const gcpSecret = new gcp.secretmanager.Secret(
+      resourceName,
+      {
+        secretId: gcpSecretId,
+        project: config.gcpProject,
+        replication: {
+          auto: {}
+        },
+        labels: labels
+      },
+      { parent: this }
+    );
+
+    const secretKey = `${group}/${key}`;
+    this.gcpSecrets[secretKey] = gcpSecret;
+
+    // Create the secret version with the actual value
+    const secretVersion = new gcp.secretmanager.SecretVersion(
+      `${resourceName}-version`,
+      {
+        secret: gcpSecret.id,
+        secretData: value
+      },
+      { parent: this, dependsOn: [gcpSecret] }
+    );
+    this.secretVersions[secretKey] = secretVersion;
+  }
+
+  /**
+   * Create an individual GCP Secret for a single key, only if value exists
+   *
+   * @param name - Component name prefix
+   * @param config - Environment config
+   * @param group - Credential group (e.g., "jwt-credentials")
+   * @param key - Secret key (e.g., "jwt-secret")
+   * @param value - Secret value (may be undefined)
+   */
+  private createIndividualSecretIfValue(
+    name: string,
+    config: EnvironmentConfig,
+    group: string,
+    key: string,
+    value: pulumi.Output<string | undefined>
+  ): void {
+    const secretKey = `${group}/${key}`;
+
+    // Use pulumi.all to check value and conditionally create resources
+    // We need to create a "placeholder" secret that only gets versioned if value exists
+    const gcpSecretId = secretName(group, key);
+    const resourceName = `${name}-${group}-${key}`;
+    const labels = secretLabels(config, `${group}-${key}`);
+
+    // Always create the secret container (it's just metadata)
+    const gcpSecret = new gcp.secretmanager.Secret(
+      resourceName,
+      {
+        secretId: gcpSecretId,
+        project: config.gcpProject,
+        replication: {
+          auto: {}
+        },
+        labels: labels
+      },
+      { parent: this }
+    );
+
+    this.gcpSecrets[secretKey] = gcpSecret;
+
+    // Only create secret version if we have a non-empty value
+    // Use a placeholder that will be replaced, or skip entirely
+    const safeValue = value.apply((v) => {
+      if (v === undefined || v === null || v === "") {
+        // Return a marker that we'll use to skip
+        return "__EMPTY_SECRET_SKIP__";
+      }
+      return v;
+    });
+
+    // Create the secret version - GCP will reject empty strings anyway
+    // So we use a conditional approach
+    const secretVersion = new gcp.secretmanager.SecretVersion(
+      `${resourceName}-version`,
+      {
+        secret: gcpSecret.id,
+        // If empty, use a placeholder that indicates it needs to be configured
+        secretData: safeValue.apply((v) =>
+          v === "__EMPTY_SECRET_SKIP__"
+            ? `PLACEHOLDER:${secretKey}:configure-this-secret`
+            : v
+        )
+      },
+      { parent: this, dependsOn: [gcpSecret] }
+    );
+    this.secretVersions[secretKey] = secretVersion;
+  }
+
+  /**
+   * Get GCP Secret name for a specific key
+   */
+  getSecretName(group: string, key: string): string {
+    return secretName(group, key);
+  }
+
+  /**
+   * Check if all credential groups are configured
+   */
+  hasAllCredentialGroups(): boolean {
+    return this.missingGroups.length === 0;
+  }
+
+  /**
+   * Get list of missing credential groups
+   */
+  getMissingGroups(): string[] {
+    return this.missingGroups;
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createSecretsGenerator(
+  config: EnvironmentConfig,
+  options?: {
+    databasePassword?: pulumi.Output<string>;
+    databaseConnectionStrings?: Record<string, pulumi.Output<string>>;
+{{ if .Computed.HasRedis }}    redisConnectionUrl?: pulumi.Output<string>;
+    redisAuthString?: pulumi.Output<string>;
+{{ end }}{{ if .Computed.HasLangfuse }}    langfuseRedisConnectionUrl?: pulumi.Output<string>;
+    langfuseRedisAuthString?: pulumi.Output<string>;
+{{ end }}  },
+  opts?: pulumi.ComponentResourceOptions
+): SecretsGenerator {
+  return new SecretsGenerator(
+    `{{ .Project.Metadata.Name }}-secrets-${config.name}`,
+    {
+      config,
+      ...options
+    },
+    opts
+  );
+}

@@ -1,0 +1,257 @@
+/**
+ * GitHub Workload Identity Module
+ *
+ * Sets up Workload Identity Federation for GitHub Actions to authenticate
+ * with GCP without using service account keys.
+ *
+ * This enables keyless authentication from GitHub Actions to GCP services
+ * using OIDC (OpenID Connect) tokens.
+ *
+ * @see https://cloud.google.com/iam/docs/workload-identity-federation
+ * @see https://github.com/google-github-actions/auth
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface GitHubWorkloadIdentityArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+
+  /** GitHub organization name (e.g., '{{ .Project.Metadata.Organization }}') */
+  githubOrg: string;
+
+  /** GitHub repository name (e.g., '{{ .Project.Metadata.Name }}') */
+  githubRepo: string;
+
+  /**
+   * Service accounts to allow GitHub to impersonate.
+   * These should be the service account resources created by IamSetup.
+   */
+  serviceAccounts: gcp.serviceaccount.Account[];
+
+  /**
+   * Optional: Restrict to specific branches.
+   * If not provided, allows all branches.
+   * Example: ['main', 'staging', 'production']
+   */
+  allowedBranches?: string[];
+}
+
+export interface GitHubWorkloadIdentityOutputs {
+  /** Workload Identity Pool */
+  pool: gcp.iam.WorkloadIdentityPool;
+
+  /** Workload Identity Provider */
+  provider: gcp.iam.WorkloadIdentityPoolProvider;
+
+  /**
+   * Full provider path for use in GitHub Actions.
+   * Format: projects/{project_number}/locations/global/workloadIdentityPools/{pool}/providers/{provider}
+   */
+  providerPath: pulumi.Output<string>;
+
+  /**
+   * Service account bindings allowing GitHub to impersonate the SAs.
+   */
+  bindings: gcp.serviceaccount.IAMMember[];
+}
+
+// =============================================================================
+// GitHub Workload Identity Component
+// =============================================================================
+
+export class GitHubWorkloadIdentity extends pulumi.ComponentResource {
+  public readonly pool: gcp.iam.WorkloadIdentityPool;
+  public readonly provider: gcp.iam.WorkloadIdentityPoolProvider;
+  public readonly providerPath: pulumi.Output<string>;
+  public readonly bindings: gcp.serviceaccount.IAMMember[];
+
+  constructor(
+    name: string,
+    args: GitHubWorkloadIdentityArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:core:GitHubWorkloadIdentity", name, {}, opts);
+
+    const { config, githubOrg, githubRepo, serviceAccounts, allowedBranches } =
+      args;
+
+    // ==========================================================================
+    // Workload Identity Pool
+    // ==========================================================================
+    // The pool is a container for providers and is where we define
+    // the trust relationship with external identity providers.
+
+    const poolId = `github-actions-${config.name}`;
+
+    this.pool = new gcp.iam.WorkloadIdentityPool(
+      `${name}-pool`,
+      {
+        workloadIdentityPoolId: poolId,
+        project: config.gcpProject,
+        displayName: `GitHub Actions - ${config.name}`,
+        description: `Workload Identity Pool for GitHub Actions (${config.name} environment)`
+      },
+      { parent: this }
+    );
+
+    // ==========================================================================
+    // Workload Identity Provider
+    // ==========================================================================
+    // The provider defines how to map GitHub OIDC tokens to GCP identities.
+
+    const providerId = "github";
+
+    // Build the attribute condition to restrict access
+    let attributeCondition: string;
+
+    if (allowedBranches && allowedBranches.length > 0) {
+      // Restrict to specific branches
+      const branchConditions = allowedBranches
+        .map((branch) => `assertion.ref == 'refs/heads/${branch}'`)
+        .join(" || ");
+
+      attributeCondition = `assertion.repository == '${githubOrg}/${githubRepo}' && (${branchConditions})`;
+    } else {
+      // Allow all branches from this repository
+      attributeCondition = `assertion.repository == '${githubOrg}/${githubRepo}'`;
+    }
+
+    this.provider = new gcp.iam.WorkloadIdentityPoolProvider(
+      `${name}-provider`,
+      {
+        workloadIdentityPoolId: this.pool.workloadIdentityPoolId,
+        workloadIdentityPoolProviderId: providerId,
+        project: config.gcpProject,
+        displayName: "GitHub",
+        description: "GitHub Actions OIDC provider",
+
+        // OIDC configuration for GitHub
+        oidc: {
+          issuerUri: "https://token.actions.githubusercontent.com"
+        },
+
+        // Map GitHub token claims to GCP attributes
+        attributeMapping: {
+          // Standard mappings
+          "google.subject": "assertion.sub",
+
+          // Custom attributes for access control
+          "attribute.actor": "assertion.actor",
+          "attribute.repository": "assertion.repository",
+          "attribute.repository_owner": "assertion.repository_owner",
+          "attribute.ref": "assertion.ref",
+          "attribute.workflow": "assertion.workflow",
+          "attribute.job_workflow_ref": "assertion.job_workflow_ref"
+        },
+
+        // Condition to restrict which GitHub repos/branches can use this provider
+        attributeCondition: attributeCondition
+      },
+      { parent: this, dependsOn: [this.pool] }
+    );
+
+    // ==========================================================================
+    // Provider Path Output
+    // ==========================================================================
+    // This is the value needed for the 'workload_identity_provider' input
+    // in the google-github-actions/auth action.
+
+    // Get project number (needed for the full provider path)
+    const project = gcp.organizations.getProjectOutput({
+      projectId: config.gcpProject
+    });
+
+    this.providerPath = pulumi.interpolate`projects/${project.number}/locations/global/workloadIdentityPools/${this.pool.workloadIdentityPoolId}/providers/${this.provider.workloadIdentityPoolProviderId}`;
+
+    // ==========================================================================
+    // Service Account Bindings
+    // ==========================================================================
+    // Allow GitHub Actions to impersonate the specified service accounts.
+
+    this.bindings = [];
+
+    for (let i = 0; i < serviceAccounts.length; i++) {
+      const sa = serviceAccounts[i];
+      if (!sa) continue;
+
+      // The principal for a Workload Identity Pool member
+      // Format: principalSet://iam.googleapis.com/{pool}/attribute.repository/{org}/{repo}
+      const principalSet = pulumi.interpolate`principalSet://iam.googleapis.com/${this.pool.name}/attribute.repository/${githubOrg}/${githubRepo}`;
+
+      const binding = new gcp.serviceaccount.IAMMember(
+        `${name}-binding-${i}`,
+        {
+          serviceAccountId: sa.name,
+          role: "roles/iam.workloadIdentityUser",
+          member: principalSet
+        },
+        { parent: this, dependsOn: [this.provider] }
+      );
+
+      this.bindings.push(binding);
+    }
+
+    this.registerOutputs({
+      pool: this.pool,
+      provider: this.provider,
+      providerPath: this.providerPath,
+      bindings: this.bindings
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export interface CreateGitHubWorkloadIdentityArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+
+  /** GitHub organization name */
+  githubOrg: string;
+
+  /** GitHub repository name */
+  githubRepo: string;
+
+  /** Service accounts to bind */
+  serviceAccounts: gcp.serviceaccount.Account[];
+
+  /** Optional: Restrict to specific branches */
+  allowedBranches?: string[];
+}
+
+/**
+ * Create GitHub Workload Identity setup
+ *
+ * Example:
+ * ```typescript
+ * const githubWI = createGitHubWorkloadIdentity({
+ *   config,
+ *   githubOrg: '{{ .Project.Metadata.Organization }}',
+ *   githubRepo: '{{ .Project.Metadata.Name }}',
+ *   serviceAccounts: [iamSetup.serviceAccounts['artifact-pusher']],
+ *   allowedBranches: ['main', 'staging']
+ * });
+ *
+ * // Export for GitHub secrets configuration
+ * export const workloadIdentityProvider = githubWI.providerPath;
+ * ```
+ */
+export function createGitHubWorkloadIdentity(
+  args: CreateGitHubWorkloadIdentityArgs,
+  opts?: pulumi.ComponentResourceOptions
+): GitHubWorkloadIdentity {
+  return new GitHubWorkloadIdentity(
+    `github-wi-${args.config.name}`,
+    args,
+    opts
+  );
+}

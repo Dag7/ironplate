@@ -1,0 +1,286 @@
+/**
+ * Certificate Management with cert-manager + Let's Encrypt
+ *
+ * Uses DNS-01 challenge via Cloud DNS for wildcard certificate support.
+ * Environment-aware: Creates certificates for the current environment only.
+ *
+ * Certificates created per environment:
+ *   - Production: *.{{ .Project.Metadata.Domain }} + {{ .Project.Metadata.Domain }}
+ *   - Staging: *.staging.{{ .Project.Metadata.Domain }} + staging.{{ .Project.Metadata.Domain }}
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as k8s from "@pulumi/kubernetes";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface CertManagerArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** Cloud DNS zone name */
+  dnsZoneName: pulumi.Input<string>;
+}
+
+export interface CertManagerOutputs {
+  namespace: k8s.core.v1.Namespace;
+  helmRelease: k8s.helm.v3.Release;
+  serviceAccount: gcp.serviceaccount.Account;
+  clusterIssuer: k8s.apiextensions.CustomResource;
+  certificate: k8s.apiextensions.CustomResource;
+  certificateSecretName: string;
+}
+
+// =============================================================================
+// Component
+// =============================================================================
+
+export class CertManager extends pulumi.ComponentResource {
+  public readonly namespace: k8s.core.v1.Namespace;
+  public readonly helmRelease: k8s.helm.v3.Release;
+  public readonly serviceAccount: gcp.serviceaccount.Account;
+  public readonly clusterIssuer: k8s.apiextensions.CustomResource;
+  public readonly certificate: k8s.apiextensions.CustomResource;
+  public readonly certificateSecretName: string;
+
+  constructor(
+    name: string,
+    args: CertManagerArgs,
+    k8sProvider: k8s.Provider,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:core:CertManager", name, {}, opts);
+
+    const { config, dnsZoneName } = args;
+    const domain = config.dns.domain.replace(/\.$/, "");
+
+    // All values from config - no environment checks needed
+    const certDomains = config.certificate.domains;
+    const certSecretName = config.domain.tlsSecretName;
+    const certName = config.certificate.name;
+
+    // Use production Let's Encrypt by default, staging for testing
+    const useAcmeStaging = config.domain.tlsIssuer === "letsencrypt-staging";
+    const acmeServer = useAcmeStaging
+      ? "https://acme-staging-v02.api.letsencrypt.org/directory"
+      : "https://acme-v02.api.letsencrypt.org/directory";
+
+    const issuerName = useAcmeStaging
+      ? "letsencrypt-staging"
+      : "letsencrypt-production";
+
+    this.certificateSecretName = certSecretName;
+
+    // =========================================================================
+    // Create namespace for cert-manager
+    // =========================================================================
+    this.namespace = new k8s.core.v1.Namespace(
+      `${name}-namespace`,
+      {
+        metadata: {
+          name: "cert-manager",
+          labels: {
+            "app.kubernetes.io/name": "cert-manager",
+            "app.kubernetes.io/managed-by": "pulumi",
+            environment: config.name
+          }
+        }
+      },
+      { provider: k8sProvider, parent: this }
+    );
+
+    // =========================================================================
+    // Create GCP Service Account for DNS-01 challenge
+    // =========================================================================
+    this.serviceAccount = new gcp.serviceaccount.Account(
+      `${name}-dns-sa`,
+      {
+        project: config.gcpProject,
+        accountId: `cert-manager-${config.name}`,
+        displayName: `cert-manager DNS Solver (${config.name})`,
+        description: `Service account for cert-manager to manage DNS records for ACME challenges in ${config.name}`
+      },
+      { parent: this }
+    );
+
+    // Grant DNS Admin role to the service account
+    new gcp.projects.IAMMember(
+      `${name}-dns-admin`,
+      {
+        project: config.gcpProject,
+        role: "roles/dns.admin",
+        member: pulumi.interpolate`serviceAccount:${this.serviceAccount.email}`
+      },
+      { parent: this, dependsOn: [this.serviceAccount] }
+    );
+
+    // Create Workload Identity binding
+    new gcp.serviceaccount.IAMMember(
+      `${name}-workload-identity`,
+      {
+        serviceAccountId: this.serviceAccount.id,
+        role: "roles/iam.workloadIdentityUser",
+        member: pulumi.interpolate`serviceAccount:${config.gcpProject}.svc.id.goog[cert-manager/cert-manager]`
+      },
+      { parent: this, dependsOn: [this.serviceAccount] }
+    );
+
+    // =========================================================================
+    // Deploy cert-manager using Helm
+    // =========================================================================
+    this.helmRelease = new k8s.helm.v3.Release(
+      `${name}-helm`,
+      {
+        name: "cert-manager",
+        namespace: this.namespace.metadata.name,
+        chart: "cert-manager",
+        version: "v1.14.4",
+        repositoryOpts: {
+          repo: "https://charts.jetstack.io"
+        },
+        values: {
+          installCRDs: true,
+          global: {
+            leaderElection: {
+              namespace: "cert-manager"
+            }
+          },
+          serviceAccount: {
+            annotations: {
+              "iam.gke.io/gcp-service-account": this.serviceAccount.email
+            }
+          },
+          securityContext: {
+            fsGroup: 1001
+          },
+          prometheus: {
+            enabled: true,
+            servicemonitor: {
+              enabled: false // Enable if using Prometheus Operator
+            }
+          },
+          // Resources
+          resources: {
+            requests: {
+              cpu: "50m",
+              memory: "64Mi"
+            },
+            limits: {
+              cpu: "200m",
+              memory: "256Mi"
+            }
+          }
+        }
+      },
+      { provider: k8sProvider, parent: this, dependsOn: [this.namespace] }
+    );
+
+    // =========================================================================
+    // Create ClusterIssuer for Let's Encrypt
+    // =========================================================================
+    this.clusterIssuer = new k8s.apiextensions.CustomResource(
+      `${name}-issuer`,
+      {
+        apiVersion: "cert-manager.io/v1",
+        kind: "ClusterIssuer",
+        metadata: {
+          name: issuerName
+        },
+        spec: {
+          acme: {
+            server: acmeServer,
+            email: config.dns.acmeEmail,
+            privateKeySecretRef: {
+              name: `${issuerName}-account-key`
+            },
+            solvers: [
+              {
+                dns01: {
+                  cloudDNS: {
+                    project: config.gcpProject
+                  }
+                },
+                selector: {
+                  dnsZones: [domain]
+                }
+              }
+            ]
+          }
+        }
+      },
+      { provider: k8sProvider, parent: this, dependsOn: [this.helmRelease] }
+    );
+
+    // =========================================================================
+    // Create Wildcard Certificate for this environment
+    // =========================================================================
+    this.certificate = new k8s.apiextensions.CustomResource(
+      `${name}-cert`,
+      {
+        apiVersion: "cert-manager.io/v1",
+        kind: "Certificate",
+        metadata: {
+          name: certName,
+          namespace: "{{ .Project.Metadata.Name }}" // Store in app namespace for ingress access
+        },
+        spec: {
+          secretName: certSecretName,
+          issuerRef: {
+            name: issuerName,
+            kind: "ClusterIssuer"
+          },
+          commonName: certDomains[0],
+          dnsNames: certDomains,
+          privateKey: {
+            algorithm: "RSA",
+            size: 2048
+          },
+          // Auto-renew 30 days before expiry
+          renewBefore: "720h" // 30 days
+        }
+      },
+      { provider: k8sProvider, parent: this, dependsOn: [this.clusterIssuer] }
+    );
+
+    this.registerOutputs({
+      namespace: this.namespace,
+      helmRelease: this.helmRelease,
+      serviceAccount: this.serviceAccount,
+      clusterIssuer: this.clusterIssuer,
+      certificate: this.certificate,
+      certificateSecretName: this.certificateSecretName
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+/**
+ * Create cert-manager infrastructure for the environment
+ *
+ * @param config - Environment configuration
+ * @param dnsZoneName - Cloud DNS zone name
+ * @param k8sProvider - Kubernetes provider
+ * @param opts - Pulumi resource options
+ */
+export function createCertManager(
+  config: EnvironmentConfig,
+  dnsZoneName: pulumi.Input<string>,
+  k8sProvider: k8s.Provider,
+  opts?: pulumi.ComponentResourceOptions
+): CertManager {
+  return new CertManager(
+    `{{ .Project.Metadata.Name }}-cert-manager-${config.name}`,
+    {
+      config,
+      dnsZoneName
+    },
+    k8sProvider,
+    opts
+  );
+}

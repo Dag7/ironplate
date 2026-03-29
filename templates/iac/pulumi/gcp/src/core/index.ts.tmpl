@@ -1,0 +1,26 @@
+/**
+ * Core Module
+ *
+ * Re-exports all core infrastructure components for the {{ .Project.Metadata.Name }} platform.
+ */
+
+// Project setup (APIs, IAM)
+export * from "./project/index.js";
+
+// Networking (VPC, Subnets, NAT, Firewall)
+export * from "./networking/index.js";
+
+// GKE (Cluster, Node Pools)
+export * from "./gke/index.js";
+
+// DNS (Cloud DNS)
+export * from "./dns/index.js";
+
+// Certificates (cert-manager, Let's Encrypt)
+export * from "./certificates/index.js";
+
+// Load Balancer (Static IP)
+export * from "./load-balancer/index.js";
+
+// Security (Cloud Armor, IAP)
+export * from "./security/index.js";

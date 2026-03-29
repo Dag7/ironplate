@@ -1,0 +1,197 @@
+# Pulumi Secrets Directory
+
+This directory contains user-provided secrets for Pulumi deployments.
+All JSON files (except templates) are **gitignored** for security.
+
+## Directory Structure
+
+```
+_secrets/
+├── credentials.template.json   # Template (committed to git)
+├── staging.json                # Staging secrets (gitignored)
+├── production.json             # Production secrets (gitignored)
+└── README.md                   # This file
+```
+
+## Quick Start
+
+1. **Copy the template:**
+
+   ```bash
+   cd iac/pulumi/src/_secrets
+   cp credentials.template.json staging.json
+   # Edit staging.json with your actual values
+   ```
+
+2. **Run the secret setter:**
+   ```bash
+   cd iac/pulumi
+   ./scripts/pulumi-secret-set.sh -e staging
+   ```
+
+## Template Structure
+
+Create `staging.json` and `production.json` with this structure:
+
+```json
+{
+  "jwt-credentials": {
+    "jwt-secret": "XgRhqcBe2Qmh7m2JXOE9ADvavMJjH9lvD1l5Onrm6pg=",
+    "jwt-issuer": "{{ .Project.Metadata.Name }}",
+    "jwt-audience": "{{ .Project.Metadata.Name }}-api"
+  },
+  "encryption-credentials": {
+    "encryption-key": "ALJVsr0rSJNTcpbIwlE7UutfyDcQFjpPWg5C+W3z9nU="
+  },
+{{- if .Computed.HasHasura }}
+  "hasura-credentials": {
+    "hasura-admin-secret": "your-admin-secret",
+    "hasura-graphql-jwt-secret": "{\"type\":\"HS256\",\"key\":\"SAME_AS_JWT_SECRET\",\"claims_namespace\":\"https://hasura.io/jwt/claims\"}"
+  },
+{{- end }}
+  "oauth-credentials": {
+    "google-client-id": "xxx.apps.googleusercontent.com",
+    "google-client-secret": "GOCSPX-xxx",
+    "google-authorization-url": "https://accounts.google.com/o/oauth2/v2/auth",
+    "google-token-url": "https://oauth2.googleapis.com/token",
+    "google-user-url": "https://www.googleapis.com/oauth2/v3/userinfo",
+    "github-client-id": "",
+    "github-client-secret": ""
+  },
+  "llm-credentials": {
+    "openai-api-key": "sk-xxx",
+    "anthropic-api-key": "",
+    "google-api-key": "",
+    "ollama-base-url": "http://host.docker.internal:11434"
+  },
+{{- if .Computed.HasLangfuse }}
+  "langfuse-credentials": {
+    "langfuse-nextauth-secret": "base64-secret",
+    "langfuse-salt": "base64-salt",
+    "langfuse-encryption-key": "64-hex-chars",
+    "langfuse-public-key": "pk-lf-uuid",
+    "langfuse-secret-key": "sk-lf-uuid",
+    "langfuse-base-url": "http://langfuse.{{ .Project.Metadata.Name }}.svc.cluster.local",
+    "langfuse-init-user-password": "admin-password"
+  },
+{{- end }}
+{{- if .Computed.HasObservability }}
+  "statsig-credentials": {
+    "statsig-server-key": "secret-xxx",
+    "statsig-client-key": "client-xxx"
+  },
+{{- end }}
+  "email-credentials": {
+    "resend-api-key": "re_xxx"
+  },
+{{- if .Computed.HasArgoCD }}
+  "github-app-credentials": {
+    "app-id": "1234567",
+    "installation-id": "12345678",
+    "private-key": "-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----",
+    "client-id": "Iv23xxx",
+    "client-secret": "your-client-secret"
+  }
+{{- end }}
+}
+```
+
+## How It Works
+
+The script is **fully dynamic** - it reads each top-level key and creates a separate Pulumi secret:
+
+```
+staging.json                        Pulumi Config
+────────────                        ─────────────
+"jwt-credentials": {...}      →     {{ .Project.Metadata.Name }}:jwt-credentials: { secure: v1:... }
+"github-app-credentials": {}  →     {{ .Project.Metadata.Name }}:github-app-credentials: { secure: v1:... }
+```
+
+**Features:**
+
+- Empty values are automatically filtered out
+- Placeholder values (`REPLACE_WITH_*`, `missing-secret`) are skipped
+- Groups with no valid values are skipped entirely
+- No need to predefine credential groups in the script
+- Add new credential groups just by adding to the JSON
+
+## Credential Groups Reference
+
+| Group                    | Description                                 |
+| ------------------------ | ------------------------------------------- |
+| `jwt-credentials`        | JWT authentication (shared by all services) |
+| `encryption-credentials` | Data encryption key                         |
+{{- if .Computed.HasHasura }}
+| `hasura-credentials`     | Hasura GraphQL Engine admin + JWT           |
+{{- end }}
+| `oauth-credentials`      | Google/GitHub OAuth providers               |
+| `llm-credentials`        | LLM API keys (OpenAI, Anthropic, etc.)      |
+{{- if .Computed.HasLangfuse }}
+| `langfuse-credentials`   | LLM observability platform                  |
+{{- end }}
+{{- if .Computed.HasObservability }}
+| `statsig-credentials`    | Feature flags (Statsig)                     |
+{{- end }}
+| `email-credentials`      | Email service (Resend)                      |
+{{- if .Computed.HasArgoCD }}
+| `github-app-credentials` | GitHub App for ArgoCD repo access           |
+| `slack-credentials`      | Slack Bot Token for ArgoCD notifications    |
+{{- end }}
+
+**Auto-derived credentials** (from infrastructure - no config needed):
+
+- `database-credentials` - From Cloud SQL
+{{- if .Computed.HasRedis }}
+- `redis-credentials` - From Memorystore
+{{- end }}
+
+**Auto-managed credentials** (created by Pulumi):
+
+- `iap-credentials` - OAuth for IAP-protected services
+
+## Generating Secrets
+
+```bash
+# JWT Secret (32+ chars, base64)
+JWT_SECRET=$(openssl rand -base64 32)
+echo "jwt-secret: $JWT_SECRET"
+
+# Encryption Key (base64)
+echo "encryption-key: $(openssl rand -base64 32)"
+{{ if .Computed.HasHasura }}
+# Hasura Admin Secret
+echo "hasura-admin-secret: $(openssl rand -base64 24)"
+
+# Hasura JWT Config (use same JWT_SECRET)
+echo "hasura-graphql-jwt-secret: {\"type\":\"HS256\",\"key\":\"$JWT_SECRET\",\"claims_namespace\":\"https://hasura.io/jwt/claims\"}"
+{{ end }}
+{{- if .Computed.HasLangfuse }}
+# Langfuse secrets
+echo "langfuse-nextauth-secret: $(openssl rand -base64 32)"
+echo "langfuse-salt: $(openssl rand -base64 32)"
+echo "langfuse-encryption-key: $(openssl rand -hex 32)"
+{{ end }}
+```
+{{ if .Computed.HasArgoCD }}
+## Private Key Formatting
+
+For the GitHub App private key, convert newlines to `\n`:
+
+```bash
+# Format the .pem file for JSON
+cat your-app.private-key.pem | awk '{printf "%s\\n", $0}'
+```
+
+Or use the helper script:
+
+```bash
+./scripts/pem-formatter.sh path/to/key.pem
+```
+{{ end }}
+## Security Notes
+
+- **Never commit** `staging.json` or `production.json` to git
+- Only `*.template.json` files are tracked
+- Pulumi encrypts secrets in YAML files
+- Use strong, unique passwords
+- Rotate secrets periodically in production

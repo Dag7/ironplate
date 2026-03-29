@@ -1,0 +1,159 @@
+{{ if .Computed.HasLangfuse }}/**
+ * Langfuse Memorystore Redis Module
+ *
+ * Creates a dedicated Redis instance for Langfuse v3.
+ * Langfuse requires maxmemory-policy=noeviction for reliable queue processing.
+ */
+
+import * as gcp from "@pulumi/gcp";
+import * as pulumi from "@pulumi/pulumi";
+import type { EnvironmentConfig } from "../../config/types.js";
+import { defaultLabels, withLabels } from "../../utils/tags.js";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface LangfuseRedisArgs {
+  /** Environment configuration */
+  config: EnvironmentConfig;
+  /** VPC network for private IP */
+  network: gcp.compute.Network;
+}
+
+export interface LangfuseRedisOutputs {
+  /** Redis instance */
+  instance: gcp.redis.Instance;
+  /** Redis host */
+  host: pulumi.Output<string>;
+  /** Redis port */
+  port: pulumi.Output<number>;
+  /** Auth string (if enabled) */
+  authString: pulumi.Output<string>;
+  /** Connection URL */
+  connectionUrl: pulumi.Output<string>;
+}
+
+// =============================================================================
+// Langfuse Redis Component
+// =============================================================================
+
+export class LangfuseRedisInstance extends pulumi.ComponentResource {
+  public readonly instance: gcp.redis.Instance;
+  public readonly host: pulumi.Output<string>;
+  public readonly port: pulumi.Output<number>;
+  public readonly authString: pulumi.Output<string>;
+  public readonly connectionUrl: pulumi.Output<string>;
+
+  constructor(
+    name: string,
+    args: LangfuseRedisArgs,
+    opts?: pulumi.ComponentResourceOptions
+  ) {
+    super("{{ .Project.Metadata.Name }}:data:LangfuseRedisInstance", name, {}, opts);
+
+    const { config, network } = args;
+
+    // Get Langfuse Redis config - use defaults if not specified
+    const langfuseRedisConfig = config.langfuse.redis;
+
+    if (!langfuseRedisConfig) {
+      throw new Error(
+        "Langfuse Redis configuration is required for Langfuse v3"
+      );
+    }
+
+    const instanceName = `{{ .Project.Metadata.Organization }}-${config.envShortName}-langfuse-redis`;
+    const labels = {
+      ...withLabels({ component: "langfuse-redis" }),
+      purpose: "langfuse"
+    };
+
+    // Create Redis instance with noeviction policy (required for Langfuse)
+    this.instance = new gcp.redis.Instance(
+      name,
+      {
+        name: instanceName,
+        project: config.gcpProject,
+        region: config.gcpRegion,
+
+        // Tier and size
+        tier: langfuseRedisConfig.tier,
+        memorySizeGb: langfuseRedisConfig.memorySizeGb,
+        redisVersion: langfuseRedisConfig.redisVersion,
+
+        // Network configuration
+        authorizedNetwork: network.id,
+        connectMode: "PRIVATE_SERVICE_ACCESS",
+
+        // Security
+        authEnabled: langfuseRedisConfig.authEnabled,
+        transitEncryptionMode: langfuseRedisConfig.transitEncryptionEnabled
+          ? "SERVER_AUTHENTICATION"
+          : "DISABLED",
+
+        // Redis configuration - CRITICAL: noeviction is required for Langfuse
+        redisConfigs: {
+          "maxmemory-policy": "noeviction",
+          ...langfuseRedisConfig.redisConfigs
+        },
+
+        // Labels
+        labels: labels,
+
+        // Display name
+        displayName: `{{ .Project.Metadata.Name }} ${config.name} Langfuse Redis`
+      },
+      { parent: this }
+    );
+
+    // Extract outputs
+    this.host = this.instance.host;
+    this.port = this.instance.port;
+    this.authString = this.instance.authString;
+
+    // Build connection URL
+    // Use rediss:// (TLS) when transit encryption is enabled
+    const protocol = langfuseRedisConfig.transitEncryptionEnabled
+      ? "rediss"
+      : "redis";
+    this.connectionUrl = pulumi
+      .all([this.host, this.port, this.authString])
+      .apply(([host, port, auth]) => {
+        if (auth) {
+          return `${protocol}://:${auth}@${host}:${port}`;
+        }
+        return `${protocol}://${host}:${port}`;
+      });
+
+    this.registerOutputs({
+      instance: this.instance,
+      host: this.host,
+      port: this.port,
+      authString: this.authString,
+      connectionUrl: this.connectionUrl
+    });
+  }
+}
+
+// =============================================================================
+// Factory Function
+// =============================================================================
+
+export function createLangfuseRedisInstance(
+  config: EnvironmentConfig,
+  network: gcp.compute.Network,
+  opts?: pulumi.ComponentResourceOptions
+): LangfuseRedisInstance | undefined {
+  // Only create if Langfuse Redis config is provided (v3 upgrade)
+  if (!config.langfuse.redis) {
+    return undefined;
+  }
+
+  return new LangfuseRedisInstance(
+    `{{ .Project.Metadata.Name }}-langfuse-redis-${config.name}`,
+    { config, network },
+    opts
+  );
+}
+{{ end }}

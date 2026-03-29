@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+#
+# setup-iap-oauth.sh - Create OAuth credentials for IAP (OAuth2 Proxy)
+#
+# Usage:
+#   ./setup-iap-oauth.sh -e staging
+#   ./setup-iap-oauth.sh -e production
+#
+# What it does:
+# 1. Creates OAuth consent screen (brand) if it doesn't exist
+# 2. Creates OAuth client with correct redirect URIs
+# 3. Sets credentials in Pulumi config (encrypted)
+#
+# NOTE: The IAP OAuth Admin APIs are deprecated but work until March 2026.
+#       After that, OAuth clients must be created in GCP Console.
+#
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PULUMI_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# Environment-specific settings
+declare -A PROJECTS=(
+  ["staging"]="{{ .Project.Metadata.Name }}-staging"
+  ["production"]="{{ .Project.Metadata.Name }}-production"
+)
+
+declare -A DOMAINS=(
+  ["staging"]="staging.{{ .Project.Metadata.Domain }}"
+  ["production"]="{{ .Project.Metadata.Domain }}"
+)
+
+PROTECTED_SERVICES=(
+  "traefik"
+  "grafana"
+  "k8s-dashboard"
+  "argocd"
+)
+
+# Parse arguments
+ENVIRONMENT=""
+while getopts "e:h" opt; do
+  case $opt in
+    e)
+      ENVIRONMENT="$OPTARG"
+      ;;
+    h)
+      echo "Usage: $0 -e <staging|production>"
+      exit 0
+      ;;
+    *)
+      echo "Usage: $0 -e <staging|production>"
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -z "$ENVIRONMENT" ]]; then
+  echo -e "${RED}Error: Environment is required. Use -e staging or -e production${NC}"
+  exit 1
+fi
+
+if [[ ! -v "PROJECTS[$ENVIRONMENT]" ]]; then
+  echo -e "${RED}Error: Unknown environment '$ENVIRONMENT'. Use staging or production.${NC}"
+  exit 1
+fi
+
+PROJECT="${PROJECTS[$ENVIRONMENT]}"
+DOMAIN="${DOMAINS[$ENVIRONMENT]}"
+SUPPORT_EMAIL="admin@{{ .Project.Metadata.Domain }}"  # Change to your email
+CLIENT_NAME="{{ .Project.Metadata.Name }} IAP ${ENVIRONMENT^}"
+
+echo -e "${BLUE}=== Setting up IAP OAuth for ${ENVIRONMENT} ===${NC}"
+echo -e "Project: ${PROJECT}"
+echo -e "Domain: ${DOMAIN}"
+echo ""
+
+# Step 1: Check/Create OAuth Brand (Consent Screen)
+echo -e "${YELLOW}Step 1: Checking OAuth consent screen (brand)...${NC}"
+BRAND_NAME=$(gcloud iap oauth-brands list --project="${PROJECT}" --format="value(name)" 2>/dev/null || echo "")
+
+if [[ -z "$BRAND_NAME" ]]; then
+  echo -e "Creating OAuth consent screen..."
+  BRAND_NAME=$(gcloud iap oauth-brands create \
+    --application_title="{{ .Project.Metadata.Name }} ${ENVIRONMENT^}" \
+    --support_email="${SUPPORT_EMAIL}" \
+    --project="${PROJECT}" \
+    --format="value(name)" 2>&1)
+
+  if [[ $? -ne 0 ]]; then
+    echo -e "${RED}Failed to create OAuth brand. Error: ${BRAND_NAME}${NC}"
+    echo -e "${YELLOW}You may need to configure the OAuth consent screen manually in GCP Console.${NC}"
+    echo -e "Go to: https://console.cloud.google.com/apis/credentials/consent?project=${PROJECT}"
+    exit 1
+  fi
+  echo -e "${GREEN}Created OAuth consent screen: ${BRAND_NAME}${NC}"
+else
+  echo -e "${GREEN}OAuth consent screen already exists: ${BRAND_NAME}${NC}"
+fi
+
+# Step 2: Check if OAuth client already exists
+echo -e "\n${YELLOW}Step 2: Checking existing OAuth clients...${NC}"
+EXISTING_CLIENTS=$(gcloud iap oauth-clients list "${BRAND_NAME}" --project="${PROJECT}" --format="value(name)" 2>/dev/null || echo "")
+
+if [[ -n "$EXISTING_CLIENTS" ]]; then
+  echo -e "${YELLOW}Found existing OAuth client(s):${NC}"
+  echo "$EXISTING_CLIENTS"
+  echo ""
+  read -p "Do you want to create a new client anyway? (y/N): " CREATE_NEW
+  if [[ ! "$CREATE_NEW" =~ ^[Yy]$ ]]; then
+    echo -e "${YELLOW}Using existing client. Please set credentials manually if needed.${NC}"
+    exit 0
+  fi
+fi
+
+# Step 3: Create OAuth Client
+echo -e "\n${YELLOW}Step 3: Creating OAuth client...${NC}"
+
+CLIENT_OUTPUT=$(gcloud iap oauth-clients create "${BRAND_NAME}" \
+  --display_name="${CLIENT_NAME}" \
+  --project="${PROJECT}" \
+  --format="json" 2>&1)
+
+if [[ $? -ne 0 ]]; then
+  echo -e "${RED}Failed to create OAuth client. Error:${NC}"
+  echo "$CLIENT_OUTPUT"
+  exit 1
+fi
+
+# Extract client ID and secret from JSON output
+CLIENT_ID=$(echo "$CLIENT_OUTPUT" | jq -r '.name' | sed 's|.*/||')
+CLIENT_SECRET=$(echo "$CLIENT_OUTPUT" | jq -r '.secret')
+
+if [[ -z "$CLIENT_ID" || -z "$CLIENT_SECRET" ]]; then
+  echo -e "${RED}Failed to parse OAuth client credentials${NC}"
+  echo "Raw output: $CLIENT_OUTPUT"
+  exit 1
+fi
+
+echo -e "${GREEN}Created OAuth client: ${CLIENT_ID}${NC}"
+
+# Step 4: Build redirect URIs
+echo -e "\n${YELLOW}Step 4: Redirect URIs to add to the OAuth client:${NC}"
+echo -e "${YELLOW}(You may need to add these manually in GCP Console)${NC}"
+for svc in "${PROTECTED_SERVICES[@]}"; do
+  echo "  https://${svc}.${DOMAIN}/oauth2/callback"
+done
+
+# Step 5: Set credentials in Pulumi config
+echo -e "\n${YELLOW}Step 5: Setting credentials in Pulumi config...${NC}"
+cd "${PULUMI_DIR}"
+
+pulumi config set {{ .Project.Metadata.Name }}:iap-client-id "${CLIENT_ID}" --stack "${ENVIRONMENT}"
+pulumi config set --secret {{ .Project.Metadata.Name }}:iap-client-secret "${CLIENT_SECRET}" --stack "${ENVIRONMENT}"
+
+echo -e "${GREEN}✓ Credentials set in Pulumi config${NC}"
+
+# Step 6: Also set in Secret Manager directly (for immediate use)
+echo -e "\n${YELLOW}Step 6: Setting credentials in Secret Manager...${NC}"
+
+echo -n "${CLIENT_ID}" | gcloud secrets versions add iap-credentials-client-id --data-file=- --project="${PROJECT}" 2>/dev/null || \
+  echo -n "${CLIENT_ID}" | gcloud secrets versions add iap-credentials-client-id --data-file=- --project="${PROJECT}"
+
+echo -n "${CLIENT_SECRET}" | gcloud secrets versions add iap-credentials-client-secret --data-file=- --project="${PROJECT}" 2>/dev/null || \
+  echo -n "${CLIENT_SECRET}" | gcloud secrets versions add iap-credentials-client-secret --data-file=- --project="${PROJECT}"
+
+echo -e "${GREEN}✓ Credentials set in Secret Manager${NC}"
+
+# Summary
+echo -e "\n${GREEN}=== Setup Complete ===${NC}"
+echo -e ""
+echo -e "OAuth Client ID: ${BLUE}${CLIENT_ID}${NC}"
+echo -e "OAuth Client Secret: ${BLUE}[stored securely]${NC}"
+echo -e ""
+echo -e "${YELLOW}IMPORTANT: Add redirect URIs to the OAuth client:${NC}"
+echo -e "Go to: https://console.cloud.google.com/apis/credentials?project=${PROJECT}"
+echo -e "Edit the '${CLIENT_NAME}' client and add these Authorized redirect URIs:"
+for svc in "${PROTECTED_SERVICES[@]}"; do
+  echo "  https://${svc}.${DOMAIN}/oauth2/callback"
+done
+echo -e ""
+echo -e "${GREEN}Next step: Run 'pulumi up -s ${ENVIRONMENT}' to apply changes${NC}"

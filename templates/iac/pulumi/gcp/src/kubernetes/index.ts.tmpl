@@ -1,0 +1,22 @@
+/**
+ * Kubernetes Infrastructure Module
+ *
+ * Re-exports Kubernetes INFRASTRUCTURE components only.
+ *
+ * NOTE: This module does NOT deploy application workloads.
+ * Application deployments are managed by Tilt (dev/CI) or ArgoCD (staging/production).
+ *
+ * This module provides:
+ * - Namespaces
+ * - External Secrets Operator (to sync GCP Secret Manager -> K8s)
+ * - Traefik Ingress Controller
+{{ if .Computed.HasArgoCD }} * - ArgoCD GitOps Controller (for staging/production deployments)
+{{ end }} * - IAP (Identity-Aware Proxy) for protecting internal services
+ */
+
+{{ if .Computed.HasArgoCD }}export * from "./argocd/index.js";
+{{ end }}export * from "./iap/index.js";
+export * from "./ingress/index.js";
+export * from "./namespaces/index.js";
+{{ if .Computed.HasExternalSecrets }}export * from "./secrets/index.js";
+{{ end }}

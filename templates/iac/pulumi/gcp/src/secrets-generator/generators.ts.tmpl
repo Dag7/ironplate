@@ -1,0 +1,306 @@
+/**
+ * Secret Value Generators
+ *
+ * Generates secure random values for various secret types.
+ */
+
+import * as pulumi from "@pulumi/pulumi";
+import * as random from "@pulumi/random";
+import * as tls from "@pulumi/tls";
+
+// =============================================================================
+// Types
+// =============================================================================
+
+export interface GeneratedSecret {
+  name: string;
+  value: pulumi.Output<string>;
+  description: string;
+}
+
+// =============================================================================
+// JWT Secret Generator
+// =============================================================================
+
+/**
+ * Generate a secure JWT secret
+ */
+export function generateJwtSecret(
+  name: string,
+  opts?: pulumi.ResourceOptions
+): GeneratedSecret {
+  const secret = new random.RandomPassword(
+    `${name}-jwt-secret`,
+    {
+      length: 64,
+      special: false, // JWT secrets shouldn't have special chars
+      upper: true,
+      lower: true,
+      numeric: true
+    },
+    opts
+  );
+
+  return {
+    name: "JWT_SECRET",
+    value: secret.result,
+    description: "JWT signing secret for authentication tokens"
+  };
+}
+
+// =============================================================================
+// Encryption Key Generator
+// =============================================================================
+
+/**
+ * Generate a secure encryption key
+ */
+export function generateEncryptionKey(
+  name: string,
+  opts?: pulumi.ResourceOptions
+): GeneratedSecret {
+  const secret = new random.RandomPassword(
+    `${name}-encryption-key`,
+    {
+      length: 32,
+      special: false,
+      upper: true,
+      lower: true,
+      numeric: true
+    },
+    opts
+  );
+
+  return {
+    name: "ENCRYPTION_KEY",
+    value: secret.result,
+    description: "AES-256 encryption key for secrets at rest"
+  };
+}
+
+{{ if .Computed.HasHasura }}// =============================================================================
+// Hasura Admin Secret Generator
+// =============================================================================
+
+/**
+ * Generate Hasura admin secret
+ */
+export function generateHasuraAdminSecret(
+  name: string,
+  opts?: pulumi.ResourceOptions
+): GeneratedSecret {
+  const secret = new random.RandomPassword(
+    `${name}-hasura-admin`,
+    {
+      length: 32,
+      special: false,
+      upper: true,
+      lower: true,
+      numeric: true
+    },
+    opts
+  );
+
+  return {
+    name: "HASURA_GRAPHQL_ADMIN_SECRET",
+    value: secret.result,
+    description: "Hasura GraphQL Engine admin secret"
+  };
+}
+
+// =============================================================================
+// Hasura Webhook Secret Generator
+// =============================================================================
+
+/**
+ * Generate Hasura webhook secret for event trigger authentication
+ */
+export function generateHasuraWebhookSecret(
+  name: string,
+  opts?: pulumi.ResourceOptions
+): GeneratedSecret {
+  const secret = new random.RandomPassword(
+    `${name}-hasura-webhook`,
+    {
+      length: 32,
+      special: false,
+      upper: true,
+      lower: true,
+      numeric: true
+    },
+    opts
+  );
+
+  return {
+    name: "HASURA_WEBHOOK_SECRET",
+    value: secret.result,
+    description: "Hasura webhook secret for event trigger authentication"
+  };
+}
+
+{{ end }}// =============================================================================
+// Database Password Generator
+// =============================================================================
+
+/**
+ * Generate a secure database password
+ */
+export function generateDatabasePassword(
+  name: string,
+  opts?: pulumi.ResourceOptions
+): GeneratedSecret {
+  const secret = new random.RandomPassword(
+    `${name}-db-password`,
+    {
+      length: 32,
+      special: true,
+      overrideSpecial: "!#$%&*()-_=+[]{}<>:?",
+      upper: true,
+      lower: true,
+      numeric: true
+    },
+    opts
+  );
+
+  return {
+    name: "DATABASE_PASSWORD",
+    value: secret.result,
+    description: "PostgreSQL database password"
+  };
+}
+
+// =============================================================================
+// API Key Generator
+// =============================================================================
+
+/**
+ * Generate an API key
+ */
+export function generateApiKey(
+  name: string,
+  keyName: string,
+  opts?: pulumi.ResourceOptions
+): GeneratedSecret {
+  const secret = new random.RandomPassword(
+    `${name}-${keyName}`,
+    {
+      length: 48,
+      special: false,
+      upper: true,
+      lower: true,
+      numeric: true
+    },
+    opts
+  );
+
+  return {
+    name: keyName.toUpperCase().replace(/-/g, "_"),
+    value: secret.result,
+    description: `API key for ${keyName}`
+  };
+}
+
+// =============================================================================
+// Service Token Generator
+// =============================================================================
+
+/**
+ * Generate a service-to-service authentication token
+ * This creates a JWT-like token structure
+ */
+export function generateServiceToken(
+  name: string,
+  serviceName: string,
+  jwtSecret: pulumi.Output<string>,
+  opts?: pulumi.ResourceOptions
+): GeneratedSecret {
+  // For service tokens, we generate a long-lived token
+  // In production, you'd want to use proper JWT signing
+  const token = jwtSecret.apply((secret) => {
+    // Create a deterministic but secure token based on the secret
+    const payload = {
+      sub: serviceName,
+      role: "service",
+      orgId: "system",
+      userId: serviceName,
+      iss: "{{ .Project.Metadata.Name }}",
+      aud: "{{ .Project.Metadata.Name }}-api"
+    };
+    // Base64 encode the payload (simplified - in production use proper JWT library)
+    const header = Buffer.from(
+      JSON.stringify({ alg: "HS256", typ: "JWT" })
+    ).toString("base64url");
+    const payloadB64 = Buffer.from(JSON.stringify(payload)).toString(
+      "base64url"
+    );
+    // Simplified signature (in production, use crypto.createHmac)
+    const signatureInput = `${header}.${payloadB64}`;
+    return `${signatureInput}.${Buffer.from(secret).toString("base64url").slice(0, 43)}`;
+  });
+
+  return {
+    name: `${serviceName.toUpperCase().replace(/-/g, "_")}_JWT_TOKEN`,
+    value: token,
+    description: `Service JWT token for ${serviceName}`
+  };
+}
+
+// =============================================================================
+// TLS Certificate Generator
+// =============================================================================
+
+/**
+ * Generate a self-signed TLS certificate (for internal services)
+ */
+export function generateTlsCertificate(
+  name: string,
+  commonName: string,
+  opts?: pulumi.ResourceOptions
+): {
+  privateKey: tls.PrivateKey;
+  certificate: tls.SelfSignedCert;
+} {
+  const privateKey = new tls.PrivateKey(
+    `${name}-key`,
+    {
+      algorithm: "RSA",
+      rsaBits: 2048
+    },
+    opts
+  );
+
+  const certificate = new tls.SelfSignedCert(
+    `${name}-cert`,
+    {
+      privateKeyPem: privateKey.privateKeyPem,
+      subject: { commonName },
+      validityPeriodHours: 8760, // 1 year
+      allowedUses: ["key_encipherment", "digital_signature", "server_auth"],
+      dnsNames: [commonName, `*.${commonName}`]
+    },
+    opts
+  );
+
+  return { privateKey, certificate };
+}
+
+{{ if .Computed.HasHasura }}// =============================================================================
+// Hasura JWT Config Generator
+// =============================================================================
+
+/**
+ * Generate Hasura JWT configuration JSON
+ */
+export function generateHasuraJwtConfig(
+  jwtSecret: pulumi.Output<string>
+): pulumi.Output<string> {
+  return jwtSecret.apply((secret) => {
+    const config = {
+      type: "HS256",
+      key: secret,
+      claims_namespace: "https://hasura.io/jwt/claims"
+    };
+    return JSON.stringify(config);
+  });
+}
+{{ end }}
