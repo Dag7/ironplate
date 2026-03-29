@@ -1,0 +1,115 @@
+{{/*
+=============================================================================
+Hasura Migrations Job
+=============================================================================
+Runs Hasura migrations as an ArgoCD PostSync hook.
+Only deployed in staging/production (not local development).
+
+This ensures:
+  1. Migrations run AFTER Hasura is deployed and healthy
+  2. Database schema is up to date before services use it
+  3. If migrations fail, ArgoCD marks the sync as failed
+
+Debug Mode:
+  Set migrations.debug: true to keep the pod alive for 1 hour
+  after failure, allowing you to exec into it and inspect logs.
+*/}}
+
+{{- if and .Values.migrations.enabled (ne .Values.global.environment "development") }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hasura-migrations
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: hasura-migrations
+    app.kubernetes.io/component: migrations
+    app.kubernetes.io/part-of: hasura
+    app.kubernetes.io/managed-by: helm
+    environment: {{ .Values.global.environment }}
+  annotations:
+    # ArgoCD Hook Configuration - run AFTER Hasura is deployed
+    argocd.argoproj.io/hook: PostSync
+    {{- if .Values.migrations.debug }}
+    # Debug mode: keep job after failure for inspection
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    {{- else }}
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    {{- end }}
+    argocd.argoproj.io/sync-wave: "0"
+    helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+spec:
+  # Don't retry indefinitely (in debug mode, don't retry at all)
+  backoffLimit: {{ if .Values.migrations.debug }}0{{ else }}3{{ end }}
+  # Clean up after 1 hour (applies to both success and failure)
+  ttlSecondsAfterFinished: 3600
+  # Deadline: job must complete within this time
+  {{- if .Values.migrations.debug }}
+  activeDeadlineSeconds: 3600
+  {{- else }}
+  activeDeadlineSeconds: 600
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        app: hasura-migrations
+        environment: {{ .Values.global.environment }}
+    spec:
+      # In debug mode, use Never to keep pod around after failure
+      restartPolicy: {{ if .Values.migrations.debug }}Never{{ else }}OnFailure{{ end }}
+      {{- with .Values.migrations.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.migrations.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrations
+          image: {{ .Values.migrations.image.registry }}/hasura-migrations:{{ .Values.migrations.image.tag }}
+          imagePullPolicy: {{ .Values.migrations.image.pullPolicy | default "Always" }}
+          {{- if .Values.migrations.debug }}
+          # Debug mode: run migrations, then sleep for 1 hour if they fail
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "=== Debug Mode Enabled ==="
+              echo "Pod will stay alive for 1 hour after failure for debugging"
+              echo ""
+              # Run the actual migration script
+              /scripts/run-migrations.sh || {
+                EXIT_CODE=$?
+                echo ""
+                echo "=== Migration Failed (exit code: $EXIT_CODE) ==="
+                echo "Pod staying alive for debugging. You can:"
+                echo "  1. View logs: kubectl logs -n {{ .Values.namespace }} -l app=hasura-migrations"
+                echo "  2. Exec in: kubectl exec -it -n {{ .Values.namespace }} \$(kubectl get pod -n {{ .Values.namespace }} -l app=hasura-migrations -o jsonpath='{.items[0].metadata.name}') -- /bin/sh"
+                echo ""
+                echo "Sleeping for 1 hour..."
+                sleep 3600
+                exit $EXIT_CODE
+              }
+          {{- end }}
+          env:
+            - name: HASURA_ENDPOINT
+              value: {{ .Values.migrations.hasuraEndpoint | quote }}
+            - name: HASURA_ADMIN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: hasura-credentials
+                  key: HASURA_GRAPHQL_ADMIN_SECRET
+            - name: APPLY_SEEDS
+              value: {{ .Values.migrations.applySeeds | quote }}
+            - name: MAX_RETRIES
+              value: {{ .Values.migrations.maxRetries | quote }}
+            - name: RETRY_INTERVAL
+              value: {{ .Values.migrations.retryInterval | quote }}
+            {{- if .Values.migrations.debug }}
+            - name: DEBUG
+              value: "true"
+            {{- end }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+{{- end }}

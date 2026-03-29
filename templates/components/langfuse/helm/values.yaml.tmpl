@@ -1,76 +1,238 @@
 # =============================================================================
-# Langfuse LLM Observability - Values
+# Langfuse LLM Observability - Development Values (v3)
 # =============================================================================
-# Configuration for the Langfuse observability platform.
-# Provides tracing, evaluation, and debugging for LLM applications.
-# Requires PostgreSQL and Redis.
+# Self-managed Langfuse deployment for {{ .Project.Metadata.Name }} platform.
+# Uses Cloud SQL for database (managed by Pulumi).
+# Secrets synced from GCP Secret Manager via External Secrets.
+#
+# Required External Secrets:
+#   - langfuse-credentials (main Langfuse config)
+#   - langfuse-clickhouse-credentials (ClickHouse auth for v3)
+#   - langfuse-redis-credentials (Redis auth for v3)
 # =============================================================================
 
-# -- Project-level metadata (injected by Ironplate at scaffold time)
-projectName: {{ .Project.Metadata.Name }}
-
-image:
-  repository: langfuse/langfuse
-  tag: "2"
-  pullPolicy: IfNotPresent
-
-replicaCount: 1
-
-service:
-  type: ClusterIP
-  port: 3000
-
-# -- Database connection (PostgreSQL)
-database:
-  secretName: langfuse-database-credentials
-  secretKey: DATABASE_URL
-
-# -- Feature flags (injected by Ironplate at scaffold time)
-redis:
-  enabled: {{ .Computed.HasRedis }}
-  host: redis
-  port: 6379
-
-kafka:
-  enabled: {{ .Computed.HasKafka }}
-
-observability:
-  enabled: {{ .Computed.HasObservability }}
-
-# -- NextAuth configuration
-nextAuth:
-  url: "http://langfuse:3000"
-  secretName: langfuse-auth-secret
-  secretKey: NEXTAUTH_SECRET
-
-# -- Salt for hashing API keys
-salt:
-  secretName: langfuse-auth-secret
-  secretKey: SALT
-
-# -- CORS settings
-cors:
-  allowedOrigins: "*"
-
-# -- Resource limits suitable for local development
-resources:
-  requests:
-    cpu: 250m
-    memory: 512Mi
-  limits:
-    cpu: "1"
-    memory: 1Gi
-
-# -- Health check configuration
-healthCheck:
-  path: /api/public/health
-  initialDelaySeconds: 15
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 5
-
-# -- Pod-level settings
+# Namespace
 namespace: {{ .Project.Metadata.Name }}
-labels:
-  app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
-  app.kubernetes.io/managed-by: helm
+
+# Global settings
+global:
+  environment: development
+
+# Service Account (for workload identity in staging/production)
+serviceAccount:
+  annotations: {}
+
+# =============================================================================
+# Langfuse Web Deployment Configuration
+# =============================================================================
+langfuse:
+  # Image settings
+  image:
+    repository: langfuse/langfuse
+    tag: "3"
+    pullPolicy: IfNotPresent
+
+  # Replicas
+  replicas: 1
+
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 3000
+
+  # Secrets to mount as envFrom
+  secrets:
+    - langfuse-credentials
+    - langfuse-clickhouse-credentials
+    - langfuse-redis-credentials
+
+  # Environment variables (non-secret config)
+  env:
+    NEXTAUTH_URL: "http://langfuse.localhost"
+    HOSTNAME: "0.0.0.0"
+    TELEMETRY_ENABLED: "false"
+    LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+    # Init configuration
+    LANGFUSE_INIT_ORG_ID: "{{ .Project.Metadata.Name }}"
+    LANGFUSE_INIT_ORG_NAME: "{{ .Project.Metadata.Organization }}"
+    LANGFUSE_INIT_PROJECT_ID: "{{ .Project.Metadata.Name }}-dev"
+    LANGFUSE_INIT_PROJECT_NAME: "{{ .Project.Metadata.Organization }} Development"
+    LANGFUSE_INIT_USER_EMAIL: "admin@{{ .Project.Metadata.Domain }}"
+    LANGFUSE_INIT_USER_NAME: "{{ .Project.Metadata.Organization }} Admin"
+
+  # Redis configuration (v3)
+  redis:
+    enabled: false
+    host: ""
+    port: "6379"
+    tlsEnabled: "false"
+    # tlsRejectUnauthorized: "false"  # Set to "false" for VPC internal connections
+
+  # GCS configuration (v3)
+  gcs:
+    enabled: false
+    bucket: ""
+    region: "us-central1"
+
+  # Resource limits
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  # Probes
+  livenessProbe:
+    path: /api/public/health
+    port: 3000
+    initialDelaySeconds: 60
+    periodSeconds: 20
+    timeoutSeconds: 10
+
+  readinessProbe:
+    path: /api/public/health
+    port: 3000
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+  # Node selection (empty for dev)
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# =============================================================================
+# PostgreSQL Configuration (local development only)
+# =============================================================================
+# For staging/production, use Cloud SQL (external database via DATABASE_URL)
+postgres:
+  enabled: false
+
+  image:
+    repository: postgres
+    tag: "17"
+    pullPolicy: IfNotPresent
+
+  database: postgres
+  user: postgres
+  password: postgres
+
+  storage:
+    size: 1Gi
+    storageClassName: ""
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# =============================================================================
+# ClickHouse Configuration (v3)
+# =============================================================================
+clickhouse:
+  enabled: false
+
+  image:
+    repository: clickhouse/clickhouse-server
+    tag: "24.8-alpine"
+    pullPolicy: IfNotPresent
+
+  storage:
+    size: 10Gi
+    storageClassName: ""
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+
+  nodeSelector: {}
+  tolerations: []
+
+# =============================================================================
+# Worker Configuration (v3)
+# =============================================================================
+worker:
+  enabled: false
+
+  image:
+    repository: langfuse/langfuse-worker
+    tag: "3"
+    pullPolicy: IfNotPresent
+
+  replicas: 1
+
+  secrets:
+    - langfuse-credentials
+    - langfuse-clickhouse-credentials
+    - langfuse-redis-credentials
+
+  env:
+    HOSTNAME: "0.0.0.0"
+    TELEMETRY_ENABLED: "false"
+
+  redis:
+    enabled: false
+    host: ""
+    port: "6379"
+    tlsEnabled: "false"
+    # tlsRejectUnauthorized: "false"  # Set to "false" for VPC internal connections
+
+  gcs:
+    enabled: false
+    bucket: ""
+    region: "us-central1"
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  livenessProbe:
+    initialDelaySeconds: 60
+    periodSeconds: 20
+    timeoutSeconds: 10
+
+  readinessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# =============================================================================
+# Ingress Configuration
+# =============================================================================
+ingress:
+  enabled: true
+  host: langfuse.localhost
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+  tls:
+    enabled: false
+    secretName: ""

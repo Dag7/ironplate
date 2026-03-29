@@ -1,109 +1,573 @@
 # =============================================================================
-# {{ .Project.Metadata.Name }} Observability Stack - Default Values
+# Observability Stack Configuration - Development Values
 # =============================================================================
-# Configuration for the observability stack:
-#   - OpenTelemetry Collector (trace/metric ingestion)
-#   - Grafana Tempo (distributed tracing backend)
-#   - Prometheus (metrics storage and querying)
-#   - Grafana (dashboards and visualization)
+# Complete observability stack:
+#   - kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
+#   - Tempo (distributed tracing)
+#
+# LOCAL DEV: Runs in lightweight mode (Tempo only) to reduce resource usage.
+# Prometheus/Grafana are disabled by default - enable via staging/prod values.
 # =============================================================================
 
-global:
-  namespace: {{ .Project.Metadata.Name }}
-  labels:
-    app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
-    app.kubernetes.io/managed-by: helm
+# Namespace for monitoring resources
+namespace: {{ .Project.Metadata.Name }}
 
-# -----------------------------------------------------------------------------
-# Project identity (injected by ironplate at scaffold time)
-# -----------------------------------------------------------------------------
-projectName: {{ .Project.Metadata.Name }}
-domain: {{ .Project.Metadata.Domain }}
+# Disable heavy Prometheus stack in local dev (enable via values-dev-full.yaml)
+# Set to true to enable Prometheus, Grafana, Alertmanager
+prometheusStack:
+  enabled: false
 
-# -----------------------------------------------------------------------------
-# Conditional scrape targets (based on installed components)
-# -----------------------------------------------------------------------------
-scrapeTargets:
-  kafka:
-    enabled: {{ .Computed.HasKafka }}
-  hasura:
-    enabled: {{ .Computed.HasHasura }}
-  dapr:
-    enabled: {{ .Computed.HasDapr }}
+# =============================================================================
+# Lightweight Mode Settings
+# =============================================================================
+# When prometheusStack is disabled, these are also disabled as they require
+# Prometheus/Grafana to function. Enable them with prometheusStack.
+# See values-dev-full.yaml for full stack configuration.
 
-# -----------------------------------------------------------------------------
-# OpenTelemetry Collector
-# -----------------------------------------------------------------------------
-otelCollector:
+# =============================================================================
+# kube-prometheus-stack configuration
+# =============================================================================
+kube-prometheus-stack:
+  # ---------------------------------------------------------------------------
+  # Global settings
+  # ---------------------------------------------------------------------------
+  fullnameOverride: ""
+  namespaceOverride: {{ .Project.Metadata.Name }}
+
+  # ---------------------------------------------------------------------------
+  # Prometheus Operator
+  # ---------------------------------------------------------------------------
+  prometheusOperator:
+    enabled: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 100Mi
+      limits:
+        cpu: 200m
+        memory: 200Mi
+
+  # ---------------------------------------------------------------------------
+  # Prometheus
+  # ---------------------------------------------------------------------------
+  prometheus:
+    enabled: true
+
+    prometheusSpec:
+      replicas: 1
+
+      # Retention (dev: short, prod: 15 days)
+      retention: 24h
+      retentionSize: 5GB
+
+      # Resources (minimal for dev)
+      resources:
+        requests:
+          memory: 512Mi
+          cpu: 250m
+        limits:
+          memory: 1Gi
+          cpu: 500m
+
+      # Storage (ephemeral for dev)
+      storageSpec: {}
+      # For production, use:
+      # storageSpec:
+      #   volumeClaimTemplate:
+      #     spec:
+      #       accessModes: ["ReadWriteOnce"]
+      #       resources:
+      #         requests:
+      #           storage: 50Gi
+
+      # ServiceMonitor selector - match all in project namespace
+      serviceMonitorSelectorNilUsesHelmValues: false
+      serviceMonitorSelector: {}
+      serviceMonitorNamespaceSelector: {}
+
+      # PodMonitor selector
+      podMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelector: {}
+      podMonitorNamespaceSelector: {}
+
+      # PrometheusRules selector
+      ruleSelectorNilUsesHelmValues: false
+      ruleSelector: {}
+      ruleNamespaceSelector: {}
+
+      # Additional scrape configs
+      additionalScrapeConfigs: []
+
+  # ---------------------------------------------------------------------------
+  # Grafana
+  # ---------------------------------------------------------------------------
+  grafana:
+    enabled: true
+
+    # Admin credentials (dev only - use secrets in prod)
+    adminUser: admin
+    adminPassword: {{ .Project.Metadata.Name }}-dev
+
+    # Persistence (disabled for dev)
+    persistence:
+      enabled: false
+      # For production:
+      # enabled: true
+      # size: 10Gi
+
+    # Resources
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+    # Service
+    service:
+      type: ClusterIP
+      port: 80
+      targetPort: 3000
+
+    # Ingress (disabled - managed by project ingress chart)
+    ingress:
+      enabled: false
+
+    # Grafana.ini config
+    grafana.ini:
+      server:
+        root_url: "%(protocol)s://%(domain)s:%(http_port)s/"
+        serve_from_sub_path: false
+      auth:
+        disable_login_form: false
+      auth.anonymous:
+        enabled: true
+        org_role: Viewer
+      security:
+        allow_embedding: true
+
+    # Data sources
+    # NOTE: Prometheus datasource is auto-created by kube-prometheus-stack via sidecar.
+    # Disable static datasources.yaml to avoid duplicate defaults with isDefault: true
+    datasources: {}
+
+    # Additional datasources are added to the sidecar ConfigMap (Tempo for traces)
+    additionalDataSources:
+      - name: Tempo
+        type: tempo
+        url: http://observability-stack-tempo:3200
+        access: proxy
+        editable: false
+        jsonData:
+          httpMethod: GET
+          tracesToLogs:
+            datasourceUid: loki
+            filterByTraceID: true
+            filterBySpanID: false
+
+    # Dashboard providers
+    dashboardProviders:
+      dashboardproviders.yaml:
+        apiVersion: 1
+        providers:
+          - name: "{{ .Project.Metadata.Name }}"
+            orgId: 1
+            folder: "{{ .Project.Metadata.Name | title }}"
+            type: file
+            disableDeletion: true
+            editable: false
+            options:
+              path: /var/lib/grafana/dashboards/{{ .Project.Metadata.Name }}
+
+    # Sidecar for dashboards
+    sidecar:
+      dashboards:
+        enabled: true
+        label: grafana_dashboard
+        labelValue: "1"
+        folder: /var/lib/grafana/dashboards
+        searchNamespace: ALL
+      datasources:
+        enabled: true
+        label: grafana_datasource
+        labelValue: "1"
+
+    # Additional labels for dashboards ConfigMaps
+    extraLabels:
+      app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}-observability
+
+  # ---------------------------------------------------------------------------
+  # Alertmanager
+  # ---------------------------------------------------------------------------
+  alertmanager:
+    enabled: true
+
+    alertmanagerSpec:
+      replicas: 1
+
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+      # Storage (ephemeral for dev)
+      storage: {}
+
+    # Config (dev - no actual alerting)
+    config:
+      global:
+        resolve_timeout: 5m
+      route:
+        group_by: ["alertname", "job"]
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 12h
+        receiver: "null"
+      receivers:
+        - name: "null"
+      inhibit_rules:
+        - source_matchers:
+            - "severity = critical"
+          target_matchers:
+            - "severity =~ warning|info"
+          equal: ["alertname", "namespace"]
+
+  # ---------------------------------------------------------------------------
+  # Node Exporter (disable in dev - k3d doesn't expose host)
+  # ---------------------------------------------------------------------------
+  nodeExporter:
+    enabled: false
+
+  # ---------------------------------------------------------------------------
+  # Kube State Metrics
+  # ---------------------------------------------------------------------------
+  kubeStateMetrics:
+    enabled: true
+
+  # ---------------------------------------------------------------------------
+  # Component Exports (disabled in dev to reduce footprint)
+  # ---------------------------------------------------------------------------
+  kubeApiServer:
+    enabled: false
+  kubelet:
+    enabled: false
+  kubeControllerManager:
+    enabled: false
+  coreDns:
+    enabled: false
+  kubeEtcd:
+    enabled: false
+  kubeScheduler:
+    enabled: false
+  kubeProxy:
+    enabled: false
+
+  # ---------------------------------------------------------------------------
+  # Default Rules
+  # ---------------------------------------------------------------------------
+  defaultRules:
+    create: true
+    rules:
+      alertmanager: true
+      general: true
+      node: false
+      nodeExporterAlerting: false
+      nodeExporterRecording: false
+      prometheus: true
+      prometheusOperator: true
+
+# =============================================================================
+# Project-specific configuration
+# =============================================================================
+
+# ServiceMonitors for project services
+# Disabled in lightweight mode - enable with prometheusStack
+serviceMonitors:
+  enabled: false
+  # List of services to monitor
+  services: []
+
+# PrometheusRules for project alerts
+# Disabled in lightweight mode - enable with prometheusStack
+prometheusRules:
+  enabled: false
+
+# =============================================================================
+# Grafana Dashboards
+# =============================================================================
+# Dashboard definitions - JSON stored here for easy per-environment customization
+# Disabled in lightweight mode - enable with prometheusStack
+dashboards: {}
+
+# =============================================================================
+# Tempo - Distributed Tracing (Official Grafana Chart)
+# =============================================================================
+# Chart: grafana/tempo v1.24.1
+# Docs: https://grafana.com/docs/tempo/latest/set-up-for-tracing/setup-tempo/deploy/kubernetes/helm-chart/
+tempo:
+  enabled: true
+
+  # Single binary mode (default for development)
+  tempo:
+    # Tempo configuration (tempo.yaml)
+    server:
+      http_listen_port: 3200
+      grpc_listen_port: 9095
+      log_level: info
+
+    # Storage configuration
+    storage:
+      trace:
+        backend: local
+        local:
+          path: /var/tempo/traces
+
+    # Distributor - receives traces via OTLP
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: "0.0.0.0:4317"
+            http:
+              endpoint: "0.0.0.0:4318"
+
+    # Ingester configuration
+    ingester:
+      max_block_duration: 5m
+      trace_idle_period: 10s
+      max_block_bytes: 1073741824 # 1GB
+
+    # Compactor configuration
+    compactor:
+      compaction:
+        block_retention: 168h # 7 days
+
+    # Querier configuration
+    querier:
+      max_concurrent_queries: 20
+      search:
+        query_timeout: 30s
+
+  # Resources
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  # Persistence (disabled for dev)
+  persistence:
+    enabled: false
+    size: 10Gi
+
+  # Service type
+  service:
+    type: ClusterIP
+
+  # ServiceMonitor for Prometheus
+  serviceMonitor:
+    enabled: true
+
+# =============================================================================
+# OTEL Collector - Trace Collection Gateway (Official OpenTelemetry Chart)
+# =============================================================================
+# Chart: open-telemetry/opentelemetry-collector v0.141.1
+# Alias: otel-collector
+# Docs: https://opentelemetry.io/docs/platforms/kubernetes/helm/collector/
+otel-collector:
+  enabled: true
+
+  # Deployment mode (not daemonset)
+  mode: deployment
+
+  # Use contrib image for Kafka exporter
   image:
     repository: otel/opentelemetry-collector-contrib
-    tag: "0.96.0"
-    pullPolicy: IfNotPresent
+
+  # Replicas
+  replicaCount: 1
+
+  # Resources
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+
+  # Environment variables for Langfuse OTLP integration
+  # These are referenced in the config as ${VAR_NAME}
+  extraEnvs:
+{{ if .Computed.HasLangfuse }}
+    - name: LANGFUSE_OTLP_ENDPOINT
+      value: "http://langfuse.{{ .Project.Metadata.Name }}.svc.cluster.local/api/public/otel"
+    - name: LANGFUSE_OTLP_AUTH
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-otel-credentials
+          key: auth-header
+          optional: true
+{{ else }}
+    []
+{{ end }}
+
+  # Ports configuration
   ports:
-    grpc: 4317
-    http: 4318
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 200m
-      memory: 256Mi
+    otlp:
+      enabled: true
+      containerPort: 4317
+      servicePort: 4317
+      protocol: TCP
+    otlp-http:
+      enabled: true
+      containerPort: 4318
+      servicePort: 4318
+      protocol: TCP
+    metrics:
+      enabled: true
+      containerPort: 8888
+      servicePort: 8888
+      protocol: TCP
 
-# -----------------------------------------------------------------------------
-# Grafana Tempo (Traces)
-# -----------------------------------------------------------------------------
-tempo:
-  image:
-    repository: grafana/tempo
-    tag: "2.4.1"
-    pullPolicy: IfNotPresent
-  port: 3200
-  jaeger:
-    port: 14268
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 200m
-      memory: 256Mi
+  # Collector configuration
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+          http:
+            endpoint: "0.0.0.0:4318"
 
-# -----------------------------------------------------------------------------
-# Prometheus (Metrics)
-# -----------------------------------------------------------------------------
-prometheus:
-  image:
-    repository: prom/prometheus
-    tag: "v2.51.0"
-    pullPolicy: IfNotPresent
-  port: 9090
-  scrapeInterval: 15s
-  storage:
-    size: 1Gi
-  resources:
-    requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      cpu: 200m
-      memory: 512Mi
+    processors:
+      batch:
+        timeout: 100ms
+        send_batch_size: 100
+        send_batch_max_size: 200
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 100
+        spike_limit_mib: 20
+      resource:
+        attributes:
+          - key: deployment.environment
+            value: development
+            action: upsert
+          - key: service.namespace
+            value: {{ .Project.Metadata.Name }}
+            action: upsert
+{{ if .Computed.HasLangfuse }}
+      # Filter for LLM/GenAI spans to send to Langfuse
+      # OTTL filter DROPS spans matching conditions, so we drop NON-LLM spans
+      # to keep only LLM spans for Langfuse export
+      filter/langfuse:
+        error_mode: ignore
+        traces:
+          span:
+            # DROP spans that don't have any LLM-related attributes
+            # (spans with LLM attributes will pass through to Langfuse)
+            - 'attributes["gen_ai.system"] == nil and attributes["gen_ai.operation.name"] == nil and attributes["langfuse.span.type"] == nil and attributes["llm.provider"] == nil and not (name == "langchain.chain" or name == "langchain.llm" or name == "langchain.chat" or name == "langchain.tool" or name == "langchain.agent") and instrumentation_scope.name != "langfuse-sdk" and instrumentation_scope.name != "@langfuse/langchain" and instrumentation_scope.name != "ai"'
+{{ end }}
 
-# -----------------------------------------------------------------------------
-# Grafana (Dashboards)
-# -----------------------------------------------------------------------------
-grafana:
-  image:
-    repository: grafana/grafana
-    tag: "10.4.1"
-    pullPolicy: IfNotPresent
-  port: 3000
-  adminUser: admin
-  adminPassword: admin
-  resources:
-    requests:
-      cpu: 50m
-      memory: 64Mi
-    limits:
-      cpu: 200m
-      memory: 256Mi
+    exporters:
+{{ if .Computed.HasKafka }}
+      # Kafka exporter for trace events
+      kafka:
+        brokers:
+          - {{ .Project.Metadata.Name }}-kafka-kafka-bootstrap.kafka:9092
+        topic: {{ .Project.Metadata.Name }}.tracing.events
+        encoding: otlp_json
+        producer:
+          max_message_bytes: 1048576
+          required_acks: 1
+          flush_max_messages: 100
+        metadata:
+          full: false
+        retry_on_failure:
+          enabled: true
+          initial_interval: 100ms
+          max_interval: 1s
+          max_elapsed_time: 10s
+{{ end }}
+      # Tempo exporter via OTLP
+      otlp/tempo:
+        endpoint: observability-stack-tempo:4317
+        tls:
+          insecure: true
+      # Debug exporter (development only)
+      debug:
+        verbosity: basic
+        sampling_initial: 5
+        sampling_thereafter: 200
+{{ if .Computed.HasLangfuse }}
+      # Langfuse OTLP exporter (HTTP/protobuf - Langfuse doesn't support gRPC)
+      # Sends LLM traces to Langfuse for AI observability
+      # Auth headers are set via environment variables in staging/prod
+      otlphttp/langfuse:
+        endpoint: "${LANGFUSE_OTLP_ENDPOINT}"
+        headers:
+          Authorization: "Basic ${LANGFUSE_OTLP_AUTH}"
+        tls:
+          insecure: true
+        retry_on_failure:
+          enabled: true
+          initial_interval: 100ms
+          max_interval: 5s
+          max_elapsed_time: 30s
+{{ end }}
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
+    service:
+      extensions:
+        - health_check
+      telemetry:
+        logs:
+          level: info
+        metrics:
+          level: detailed
+          address: 0.0.0.0:8888
+      pipelines:
+        traces:
+          receivers:
+            - otlp
+          processors:
+            - memory_limiter
+            - batch
+            - resource
+          exporters:
+{{ if .Computed.HasKafka }}
+            - kafka
+{{ end }}
+            - otlp/tempo
+{{ if .Computed.HasLangfuse }}
+        # Langfuse pipeline: filtered LLM spans only
+        # Uses filter/langfuse processor to only export GenAI/LLM traces
+        traces/langfuse:
+          receivers:
+            - otlp
+          processors:
+            - memory_limiter
+            - filter/langfuse
+            - batch
+          exporters:
+            - otlphttp/langfuse
+{{ end }}
+        metrics:
+          receivers:
+            - otlp
+          processors:
+            - memory_limiter
+            - batch
+          exporters:
+            - debug

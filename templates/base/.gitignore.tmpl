@@ -37,8 +37,7 @@ Thumbs.db
 coverage/
 
 # Nx
-.nx/cache
-.nx/workspace-data
+.nx
 
 # Kubernetes
 *.kubeconfig
@@ -65,3 +64,12 @@ yarn-error.log*
 *.pem
 *.key
 credentials.json
+
+# K3d/K3s secrets (keep templates and README, ignore actual secret values)
+**/_secrets/*
+!**/_secrets/*.secret
+!**/_secrets/**/*.template.*
+!**/_secrets/**/*.md
+
+# Tilt development cache
+.tilt-cache/

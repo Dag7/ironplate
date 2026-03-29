@@ -1,0 +1,28 @@
+=============================================================================
+ Langfuse LLM Observability - {{ .Values.global.environment }}
+=============================================================================
+
+Langfuse has been deployed successfully!
+
+Environment: {{ .Values.global.environment }}
+Replicas: {{ .Values.langfuse.replicas }}
+
+{{- if .Values.ingress.enabled }}
+Access Langfuse at:
+  http://{{ .Values.ingress.host }}
+{{- else }}
+Langfuse is not exposed via ingress.
+Access via port-forward:
+  kubectl port-forward -n {{ .Values.namespace }} svc/langfuse 3000:{{ .Values.langfuse.service.port }}
+  Then open: http://localhost:3000
+{{- end }}
+
+Required Secret (synced via External Secrets):
+  - langfuse-credentials
+    (DATABASE_URL, NEXTAUTH_SECRET, SALT, ENCRYPTION_KEY, etc.)
+
+To check status:
+  kubectl get pods -n {{ .Values.namespace }} -l app=langfuse
+
+To view logs:
+  kubectl logs -n {{ .Values.namespace }} -l app=langfuse -f

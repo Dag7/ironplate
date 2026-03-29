@@ -1,9 +1,12 @@
 # =============================================================================
 # Hasura GraphQL Engine - Tiltfile
 # =============================================================================
+# Deploys Hasura for development with metadata, migrations, and console support
+# =============================================================================
 
+# Configuration
 HASURA_NAMESPACE = "{{ .Project.Metadata.Name }}"
-HASURA_ADMIN_SECRET = "{{ .Project.Metadata.Name }}"
+HASURA_ADMIN_SECRET = "{{ .Project.Metadata.Name }}"  # From .devcontainer/k3s/manifests/_secrets/{{ .Project.Metadata.Name }}.yaml
 
 def setup_hasura(environment):
     """
@@ -12,32 +15,35 @@ def setup_hasura(environment):
     Args:
         environment: 'development', 'staging', or 'production'
     """
+
+    # Environment-specific overrides (merged with base values.yaml)
     env_values_file = {
-        "development": None,
+        "development": None,  # Use only base values.yaml
         "staging": "values-staging.yaml",
         "production": "values-prod.yaml",
     }.get(environment)
 
     chart_path = "k8s/helm/infra/hasura"
 
-    # Build values files list
-    values_files = ["./%s/values.yaml" % chart_path]
+    # Build values files list (relative to this Tiltfile's directory)
+    values_files = ["./values.yaml"]
     if env_values_file:
-        values_files.append("./%s/%s" % (chart_path, env_values_file))
+        values_files.append("./%s" % env_values_file)
 
-    # Deploy via Helm
+    # Deploy via Helm (path relative to this Tiltfile's directory)
     k8s_yaml(helm(
-        "./%s" % chart_path,
+        ".",
         name="hasura",
-        namespace=HASURA_NAMESPACE,
+        namespace="{{ .Project.Metadata.Name }}",
         values=values_files
     ))
 
-    # Hasura deployment
+    # Hasura deployment (Service is auto-associated by Tilt)
+    # Ingress is handled by central {{ .Project.Metadata.Name }}/ingress chart
     k8s_resource(
         "hasura",
         objects=[
-            "hasura:ServiceAccount:%s" % HASURA_NAMESPACE,
+            "hasura:ServiceAccount:{{ .Project.Metadata.Name }}",
         ],
         resource_deps=["postgresql"],
         labels=["hasura"],
@@ -52,6 +58,8 @@ def setup_hasura(environment):
 def _setup_development_resources():
     """Setup hasura-setup and hasura-console for local development."""
 
+    # Apply metadata, migrations, and seeds
+    # Watches hasura directory and auto-applies when metadata files change
     local_resource(
         "hasura-setup",
         dir="/workspaces/{{ .Project.Metadata.Name }}/hasura",
@@ -65,13 +73,14 @@ def _setup_development_resources():
             hasura metadata reload --admin-secret {secret}
             echo "Applying seeds..."
             hasura seed apply --database-name default --admin-secret {secret} || echo "No seeds to apply"
-            echo "Hasura setup complete"
+            echo "Hasura setup complete (metadata, migrations, seeds)"
         """.format(secret=HASURA_ADMIN_SECRET),
         auto_init=True,
         resource_deps=["hasura"],
         labels=["hasura"],
     )
 
+    # Hasura console (manual trigger)
     local_resource(
         "hasura-console",
         serve_dir="/workspaces/{{ .Project.Metadata.Name }}/hasura",

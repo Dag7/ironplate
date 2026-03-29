@@ -2,82 +2,97 @@
 load('../../../../utils/tilt/k8s/namespace.utils.tilt', 'create_namespace')
 load('../../../../utils/tilt/k8s/helm.utils.tilt', 'ensure_helm_deps')
 
-# Set to True for full Prometheus + Grafana stack in local dev
-ENABLE_FULL_STACK = True
+# Configuration: Set to True to enable full Prometheus stack in local dev
+ENABLE_FULL_STACK = True  # Set to False for lightweight mode (Tempo + OTEL only)
 
 def setup_observability_stack(environment, full_stack=None):
     """
-    Setup observability stack: OTEL Collector + Tempo + (optionally) Prometheus + Grafana.
+    Setup complete observability stack:
+      - Prometheus + Grafana + Alertmanager (kube-prometheus-stack) - optional in dev
+      - Tempo (distributed tracing)
+      - OTEL Collector (trace ingestion gateway)
 
     Args:
         environment: 'development', 'staging', or 'production'
-        full_stack: Override full Prometheus stack (None = use ENABLE_FULL_STACK)
+        full_stack: Override to enable/disable full Prometheus stack (None = use default)
     """
+
+    # Determine if full stack should be enabled
     enable_full = ENABLE_FULL_STACK
     if full_stack != None:
         enable_full = full_stack
 
     chart_path = "k8s/helm/infra/observability"
 
-    # Build values files list
-    values_files = ["./%s/values.yaml" % chart_path]
+    # Build values files list (relative to this Tiltfile's directory)
+    values_files = ["./values.yaml"]
+
+    # For development with full stack, we need to enable prometheusStack
     if environment == "development" and enable_full:
-        values_files.append("./%s/values-dev-full.yaml" % chart_path)
+        values_files.append("./values-dev-full.yaml")
     elif environment == "staging":
-        values_files.append("./%s/values-staging.yaml" % chart_path)
+        values_files.append("./values-staging.yaml")
     elif environment == "production":
-        values_files.append("./%s/values-prod.yaml" % chart_path)
+        values_files.append("./values-prod.yaml")
 
     # Create monitoring namespace
     create_namespace("monitoring")
 
-    # Ensure helm dependencies
+    # Ensure helm dependencies are fetched (Helm 3.8+ reads repos from Chart.yaml)
     ensure_helm_deps(chart_path)
 
-    # Deploy via Helm
-    k8s_yaml(helm(
-        "./%s" % chart_path,
-        name="observability-stack",
-        namespace="monitoring",
-        values=values_files
-    ))
-
-    # Monitoring Namespace
+    # Claim the monitoring namespace
     k8s_resource(
         new_name="monitoring-namespace",
         objects=["monitoring:namespace"],
         labels=["observability"]
     )
 
-    # Tempo (distributed tracing)
+    # Deploy via Helm (path relative to this Tiltfile's directory)
+    k8s_yaml(helm(
+        ".",
+        name="observability-stack",
+        namespace="{{ .Project.Metadata.Name }}",
+        values=values_files
+    ))
+
+    # =========================================================================
+    # Tempo - Official Grafana Chart (StatefulSet)
+    # =========================================================================
     k8s_resource(
         "observability-stack-tempo",
         new_name="tempo",
         objects=[
-            "observability-stack-tempo:serviceaccount:monitoring",
-            "tempo:configmap:monitoring",
+            "observability-stack-tempo:serviceaccount:{{ .Project.Metadata.Name }}",
+            "tempo:configmap:{{ .Project.Metadata.Name }}",
         ],
         labels=["observability"],
         port_forwards=["3200:3200"],
         resource_deps=["monitoring-namespace"]
     )
 
-    # OTEL Collector (trace ingestion)
+    # =========================================================================
+    # OTEL Collector - Official OpenTelemetry Chart (Deployment)
+    # =========================================================================
     k8s_resource(
         "observability-stack-otel-collector",
         new_name="otel-collector",
         objects=[
-            "observability-stack-otel-collector:serviceaccount:monitoring",
-            "observability-stack-otel-collector:configmap:monitoring",
+            "observability-stack-otel-collector:serviceaccount:{{ .Project.Metadata.Name }}",
+            "observability-stack-otel-collector:configmap:{{ .Project.Metadata.Name }}",
         ],
         labels=["observability"],
         port_forwards=["4317:4317", "4318:4318"],
-        resource_deps=["monitoring-namespace", "tempo"]
+        resource_deps=["tempo"]
     )
 
+    # =========================================================================
     # Full Stack Resources (Prometheus, Grafana, Alertmanager)
+    # =========================================================================
     if enable_full:
-        # Prometheus CRDs
+        # -----------------------------------------------------------------
+        # Prometheus CRDs - group all CRDs together (no namespace dependency)
+        # -----------------------------------------------------------------
         k8s_resource(
             new_name="prometheus-crds",
             objects=[
@@ -95,21 +110,24 @@ def setup_observability_stack(environment, full_stack=None):
             labels=["observability"]
         )
 
-        # Admission webhooks
+        # -----------------------------------------------------------------
+        # Admission webhooks - must run before operator
+        # -----------------------------------------------------------------
         k8s_resource(
             "observability-stack-kube-p-admission-create",
             new_name="prom-admission-create",
             objects=[
-                "observability-stack-kube-p-admission:serviceaccount:monitoring",
-                "observability-stack-kube-p-admission:role:monitoring",
-                "observability-stack-kube-p-admission:rolebinding:monitoring",
+                "observability-stack-kube-p-admission:serviceaccount:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-admission:role:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-admission:rolebinding:{{ .Project.Metadata.Name }}",
                 "observability-stack-kube-p-admission:clusterrole",
                 "observability-stack-kube-p-admission:clusterrolebinding",
+                # Webhook configurations - must exist before patch job
                 "observability-stack-kube-p-admission:mutatingwebhookconfiguration",
                 "observability-stack-kube-p-admission:validatingwebhookconfiguration",
             ],
             labels=["observability"],
-            resource_deps=["monitoring-namespace", "prometheus-crds"]
+            resource_deps=["prometheus-crds"]
         )
 
         k8s_resource(
@@ -119,83 +137,169 @@ def setup_observability_stack(environment, full_stack=None):
             resource_deps=["prom-admission-create"]
         )
 
-        # Prometheus Operator
+        # -----------------------------------------------------------------
+        # Prometheus Operator deployment
+        # -----------------------------------------------------------------
         k8s_resource(
             "observability-stack-kube-p-operator",
             new_name="prometheus-operator",
             objects=[
+                # Operator RBAC
                 "observability-stack-kube-p-operator:clusterrole",
                 "observability-stack-kube-p-operator:clusterrolebinding",
-                "observability-stack-kube-p-operator:serviceaccount:monitoring",
-                "observability-stack-kube-p-operator:servicemonitor:monitoring",
-                "observability-stack-kube-p-prometheus-operator:prometheusrule:monitoring",
+                "observability-stack-kube-p-operator:serviceaccount:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-operator:servicemonitor:{{ .Project.Metadata.Name }}",
+                # Operator PrometheusRule
+                "observability-stack-kube-p-prometheus-operator:prometheusrule:{{ .Project.Metadata.Name }}",
             ],
             labels=["observability"],
             resource_deps=["prom-admission-patch"]
         )
 
-        # Prometheus & Alertmanager
+        # -----------------------------------------------------------------
+        # Prometheus & Alertmanager CRs - depend on operator
+        # -----------------------------------------------------------------
         k8s_resource(
             new_name="prometheus-alertmanager",
             objects=[
-                "observability-stack-kube-p-prometheus:Prometheus:monitoring",
+                # Prometheus CR and resources
+                "observability-stack-kube-p-prometheus:Prometheus:{{ .Project.Metadata.Name }}",
                 "observability-stack-kube-p-prometheus:clusterrole",
                 "observability-stack-kube-p-prometheus:clusterrolebinding",
-                "observability-stack-kube-p-prometheus:serviceaccount:monitoring",
-                "observability-stack-kube-p-prometheus:service:monitoring",
-                "observability-stack-kube-p-prometheus:servicemonitor:monitoring",
-                "observability-stack-kube-p-prometheus:configmap:monitoring",
-                "observability-stack-kube-p-alertmanager:Alertmanager:monitoring",
-                "observability-stack-kube-p-alertmanager:serviceaccount:monitoring",
-                "observability-stack-kube-p-alertmanager:service:monitoring",
-                "observability-stack-kube-p-alertmanager:servicemonitor:monitoring",
-                "alertmanager-observability-stack-kube-p-alertmanager:secret:monitoring",
+                "observability-stack-kube-p-prometheus:serviceaccount:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-prometheus:service:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-prometheus:servicemonitor:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-prometheus:configmap:{{ .Project.Metadata.Name }}",
+                # Alertmanager CR and resources
+                "observability-stack-kube-p-alertmanager:Alertmanager:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-alertmanager:serviceaccount:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-alertmanager:service:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-alertmanager:servicemonitor:{{ .Project.Metadata.Name }}",
+                "alertmanager-observability-stack-kube-p-alertmanager:secret:{{ .Project.Metadata.Name }}",
             ],
             labels=["observability"],
             port_forwards=["9090:9090", "9093:9093"],
             resource_deps=["prometheus-operator"]
         )
 
+        # -----------------------------------------------------------------
+        # Prometheus Rules - depend on CRDs
+        # -----------------------------------------------------------------
+        k8s_resource(
+            new_name="prometheus-rules",
+            objects=[
+                # Project custom rules
+                "{{ .Project.Metadata.Name }}-rules:PrometheusRule:{{ .Project.Metadata.Name }}",
+                # Built-in kube-prometheus rules
+                "observability-stack-kube-p-alertmanager.rules:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-config-reloaders:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-general.rules:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s.rules.container-cpu-usage-second:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s.rules.container-memory-cache:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s.rules.container-memory-rss:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s.rules.container-memory-swap:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s.rules.container-memory-working-s:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s.rules.container-resource:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s.rules.pod-owner:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-kube-prometheus-general.rules:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-kube-prometheus-node-recording.rules:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-kube-state-metrics:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-kubernetes-apps:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-kubernetes-resources:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-kubernetes-storage:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-kubernetes-system-apiserver:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-kubernetes-system-kubelet:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-kubernetes-system:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-node-network:prometheusrule:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-prometheus:prometheusrule:{{ .Project.Metadata.Name }}",
+            ],
+            labels=["observability"],
+            resource_deps=["prometheus-crds", "prometheus-alertmanager"]
+        )
+
+        # -----------------------------------------------------------------
+        # ServiceMonitors - depend on CRDs
+        # -----------------------------------------------------------------
+        k8s_resource(
+            new_name="service-monitors",
+            objects=[
+                # Built-in monitors
+                "observability-stack-grafana:servicemonitor:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-state-metrics:servicemonitor:{{ .Project.Metadata.Name }}",
+                # Tempo ServiceMonitor (from official chart)
+                "observability-stack-tempo:servicemonitor:{{ .Project.Metadata.Name }}",
+            ],
+            labels=["observability"],
+            resource_deps=["prometheus-crds", "prometheus-alertmanager"]
+        )
+
+        # -----------------------------------------------------------------
         # Kube State Metrics
+        # -----------------------------------------------------------------
         k8s_resource(
             "observability-stack-kube-state-metrics",
             new_name="kube-state-metrics",
             objects=[
                 "observability-stack-kube-state-metrics:clusterrole",
                 "observability-stack-kube-state-metrics:clusterrolebinding",
-                "observability-stack-kube-state-metrics:serviceaccount:monitoring",
+                "observability-stack-kube-state-metrics:serviceaccount:{{ .Project.Metadata.Name }}",
             ],
             labels=["observability"],
-            resource_deps=["monitoring-namespace"]
+            resource_deps=[]
         )
 
-        # Grafana RBAC
+        # -----------------------------------------------------------------
+        # Grafana RBAC - must be created before Grafana deployment
+        # -----------------------------------------------------------------
         k8s_resource(
             new_name="grafana-rbac",
             objects=[
-                "observability-stack-grafana:serviceaccount:monitoring",
-                "observability-stack-grafana:role:monitoring",
-                "observability-stack-grafana:rolebinding:monitoring",
+                "observability-stack-grafana:serviceaccount:{{ .Project.Metadata.Name }}",
+                "observability-stack-grafana:role:{{ .Project.Metadata.Name }}",
+                "observability-stack-grafana:rolebinding:{{ .Project.Metadata.Name }}",
                 "observability-stack-grafana-clusterrole:clusterrole",
                 "observability-stack-grafana-clusterrolebinding:clusterrolebinding",
             ],
             labels=["observability"],
-            resource_deps=["monitoring-namespace"]
+            resource_deps=[]
         )
 
-        # Grafana
+        # -----------------------------------------------------------------
+        # Grafana - depends on RBAC and Prometheus
+        # -----------------------------------------------------------------
         k8s_resource(
             "observability-stack-grafana",
             new_name="grafana",
             objects=[
-                "observability-stack-grafana-config-dashboards:configmap:monitoring",
-                "observability-stack-grafana:configmap:monitoring",
-                "observability-stack-grafana:secret:monitoring",
-                "observability-stack-kube-p-grafana-datasource:configmap:monitoring",
+                # Built-in dashboards
+                "observability-stack-kube-p-alertmanager-overview:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-cluster-total:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-grafana-overview:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s-resources-cluster:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s-resources-multicluster:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s-resources-namespace:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s-resources-node:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s-resources-pod:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s-resources-workload:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-k8s-resources-workloads-namespace:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-namespace-by-pod:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-namespace-by-workload:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-persistentvolumesusage:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-pod-total:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-kube-p-workload-total:configmap:{{ .Project.Metadata.Name }}",
+                # Grafana config
+                "observability-stack-grafana-config-dashboards:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-grafana:configmap:{{ .Project.Metadata.Name }}",
+                "observability-stack-grafana:secret:{{ .Project.Metadata.Name }}",
+                # Datasource
+                "observability-stack-kube-p-grafana-datasource:configmap:{{ .Project.Metadata.Name }}",
             ],
             labels=["observability"],
             port_forwards=["3050:3000"],
             resource_deps=["grafana-rbac", "prometheus-alertmanager"]
         )
+
+    # In lightweight mode, no additional resources needed
+    # Tempo and OTEL Collector are already configured above
 
 setup_observability_stack('development')

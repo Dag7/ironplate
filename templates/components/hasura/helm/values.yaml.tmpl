@@ -1,90 +1,134 @@
 # =============================================================================
-# Hasura GraphQL Engine - Values
+# Hasura GraphQL Engine - Local Development Values
 # =============================================================================
-# Configuration for the Hasura GraphQL Engine component.
-# Connects to PostgreSQL and exposes a GraphQL API.
+# Self-managed Hasura deployment for {{ .Project.Metadata.Name }} platform.
+# All environments use secrets (local: k3s manifests, staging/prod: External Secrets)
 # =============================================================================
 
-# -- Project-level metadata (injected by Ironplate at scaffold time)
-projectName: {{ .Project.Metadata.Name }}
+# Namespace
+namespace: {{ .Project.Metadata.Name }}
 
-image:
-  repository: hasura/graphql-engine
-  tag: "v2.40.0"
-  pullPolicy: IfNotPresent
+# Global settings
+global:
+  environment: development
 
-replicaCount: 1
+# =============================================================================
+# Hasura Deployment Configuration
+# =============================================================================
+hasura:
+  # Image settings
+  image:
+    repository: hasura/graphql-engine
+    tag: v2.40.0
+    pullPolicy: IfNotPresent
 
-service:
-  type: ClusterIP
-  port: 8080
+  # Replicas
+  replicas: 1
 
-# -- Hasura admin secret pulled from a Kubernetes secret
-adminSecret:
-  secretName: hasura-admin-secret
-  secretKey: HASURA_GRAPHQL_ADMIN_SECRET
+  # Service configuration
+  service:
+    type: ClusterIP
+    port: 8080
 
-# -- Database connection URL pulled from a Kubernetes secret
-database:
-  secretName: hasura-database-credentials
-  secretKey: DATABASE_URL
+  # Secrets to mount as envFrom (same for all environments)
+  # Local: from .devcontainer/k3s/manifests/_secrets/{{ .Project.Metadata.Name }}.yaml
+  # Staging/Prod: from External Secrets (GCP Secret Manager)
+  secrets:
+    - database-credentials
+    - hasura-credentials
 
-# -- Console & development settings (suitable for local dev)
-console:
-  enabled: true
+  # Environment variables from secret keys (for remapping secret keys to different env var names)
+  # Hasura requires HASURA_GRAPHQL_ prefix for database URLs
+  secretEnv:
+    - name: HASURA_GRAPHQL_DATABASE_URL
+      secretName: database-credentials
+      secretKey: DATABASE_URL
+    - name: HASURA_GRAPHQL_METADATA_DATABASE_URL
+      secretName: database-credentials
+      secretKey: METADATA_DATABASE_URL
 
-devMode:
-  enabled: true
+  # Environment variables (non-secret config only)
+  env:
+    # Console settings
+    HASURA_GRAPHQL_ENABLE_CONSOLE: "true"
+    HASURA_GRAPHQL_DEV_MODE: "true"
+    # Logging
+    HASURA_GRAPHQL_ENABLED_LOG_TYPES: "startup, http-log, webhook-log, websocket-log, query-log"
+    HASURA_GRAPHQL_LOG_LEVEL: "debug"
+    # Auth
+    HASURA_GRAPHQL_UNAUTHORIZED_ROLE: "anonymous"
+    # Connection pooling
+    HASURA_GRAPHQL_PG_CONNECTIONS: "10"
+    HASURA_GRAPHQL_PG_TIMEOUT: "180"
+    # Event trigger webhook URLs (used in Hasura metadata)
+    HASURA_EVENT_RELAY_URL: "http://hasura-event-relay:3000"
 
-cors:
-  domain: "*"
+  # Resource limits
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "1"
 
-# -- Feature flags (injected by Ironplate at scaffold time)
-kafka:
-  enabled: {{ .Computed.HasKafka }}
+  # Probes
+  livenessProbe:
+    path: /healthz
+    port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
 
-observability:
-  enabled: {{ .Computed.HasObservability }}
+  readinessProbe:
+    path: /healthz
+    port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
 
-# -- Event triggers configuration
-eventTriggers:
-  enabled: {{ .Computed.HasKafka }}
-  kafka:
-    bootstrapServers: "kafka:9092"
+  # Node selection (empty for dev)
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
-# -- Observability / OpenTelemetry
-otlp:
-  endpoint: "http://otel-collector:4318"
+# =============================================================================
+# Migrations Configuration
+# =============================================================================
+# Hasura migrations job - runs after Hasura is deployed
+# Disabled for local development (use Tilt/manual migrations)
+migrations:
+  enabled: false # Disabled for local dev
+  image:
+    registry: {{ .Project.Metadata.Name }}
+    tag: latest
+    pullPolicy: Always
+  hasuraEndpoint: http://hasura:8080
+  applySeeds: "true"
+  maxRetries: 60
+  retryInterval: 5
+  debug: false
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  nodeSelector: {}
+  tolerations: []
 
-# -- Resource limits suitable for local development
-resources:
-  requests:
-    cpu: 250m
-    memory: 512Mi
-  limits:
-    cpu: "1"
-    memory: 1Gi
-
-# -- Ingress for Hasura console access
+# =============================================================================
+# Ingress Configuration
+# =============================================================================
+# Disabled for local - central {{ .Project.Metadata.Name }}/ingress chart handles all ingresses
+# Enable for staging/production if not using central ingress
 ingress:
   enabled: false
+  host: hasura.localhost
   className: traefik
   annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: websecure
-    traefik.ingress.kubernetes.io/router.tls: "true"
-  host: "hasura.{{ .Project.Metadata.Domain }}"
-  tlsSecretName: "{{ .Project.Metadata.Name }}-tls"
-
-# -- Health check configuration
-healthCheck:
-  path: /healthz
-  initialDelaySeconds: 15
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 5
-
-# -- Pod-level settings
-namespace: {{ .Project.Metadata.Name }}
-labels:
-  app.kubernetes.io/part-of: {{ .Project.Metadata.Name }}
-  app.kubernetes.io/managed-by: helm
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+  tls:
+    enabled: false
+    secretName: ""

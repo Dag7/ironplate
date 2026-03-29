@@ -1,0 +1,24 @@
+# =============================================================================
+# Observability Stack - Development Full Mode
+# =============================================================================
+# Enables the complete Prometheus stack for local development testing.
+# Use this when you need to test dashboards, alerts, or metrics locally.
+#
+# Usage:
+#   - Set ENABLE_FULL_STACK = True in Tiltfile (default)
+#   - Or set ENABLE_FULL_STACK = False for lightweight mode (Tempo + OTEL only)
+# =============================================================================
+
+# Enable heavy Prometheus stack for full testing
+prometheusStack:
+  enabled: true
+
+# Enable dashboards and rules
+# (they're only useful with Prometheus/Grafana)
+dashboards: {}
+
+prometheusRules:
+  enabled: true
+
+serviceMonitors:
+  enabled: true

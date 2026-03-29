@@ -1,25 +1,16 @@
-{{/*
-=============================================================================
-Hasura GraphQL Engine Service
-=============================================================================
-*/}}
 apiVersion: v1
 kind: Service
 metadata:
   name: hasura
   namespace: {{ .Values.namespace }}
   labels:
-    app: hasura
-    app.kubernetes.io/name: hasura
-    app.kubernetes.io/instance: hasura
-    app.kubernetes.io/part-of: {{ .Values.projectName }}
-    app.kubernetes.io/managed-by: helm
+    {{- include "hasura.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.service.type }}
+  type: {{ .Values.hasura.service.type }}
   ports:
-    - port: {{ .Values.service.port }}
+    - port: {{ .Values.hasura.service.port }}
       targetPort: 8080
       protocol: TCP
       name: http
   selector:
-    app: hasura
+    {{- include "hasura.selectorLabels" . | nindent 4 }}

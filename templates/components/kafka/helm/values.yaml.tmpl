@@ -1,113 +1,164 @@
 # =============================================================================
-# Kafka (Strimzi) - Values
-# =============================================================================
-# Dev-friendly defaults for a single-node Kafka cluster managed by Strimzi.
+# Strimzi Kafka Configuration - Development Values
 # =============================================================================
 
-projectName: {{ .Project.Metadata.Name }}
-
+# Namespace for Kafka resources
 namespace: {{ .Project.Metadata.Name }}-kafka
 
-strimzi:
-  operator:
-    enabled: true
-    # Strimzi operator Helm chart version
-    chartVersion: "0.41.0"
-    watchNamespaces: []
-    resources:
-      requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        cpu: 500m
-        memory: 512Mi
+# Strimzi Operator settings
+operator:
+  enabled: true
+  watchNamespaces: [] # Empty = watch all namespaces
+  logLevel: INFO
 
+# =============================================================================
+# Kafka Cluster Configuration (KRaft Mode - No Zookeeper)
+# =============================================================================
 kafka:
-  # Cluster name used for the Kafka CR
-  clusterName: {{ .Project.Metadata.Name }}-kafka
-  version: "3.7.0"
+  # Cluster name
+  name: {{ .Project.Metadata.Name }}-kafka
+
+  # Kafka version
+  # Strimzi 0.49.1 supports: 3.8.0, 3.8.1, 3.9.0, 4.0.0
+  version: "4.0.0"
+
+  # Replicas (1 for dev, 3 for prod)
   replicas: 1
 
+  # KRaft Mode Configuration
+  kraft:
+    enabled: true
+    # Controller replicas (same as broker in combined mode)
+    controllerReplicas: 1
+
+  # Listeners
   listeners:
-    # Internal plain-text listener (in-cluster access)
-    plain:
+    # Internal plain listener
+    - name: plain
       port: 9092
       type: internal
       tls: false
-    # External listener via NodePort (host access from dev machine)
-    external:
-      port: 9094
-      type: nodeport
-      tls: false
+    # Internal TLS listener (optional, disabled by default in dev)
+    - name: tls
+      port: 9093
+      type: internal
+      tls: false # Set to true in production
 
+  # Storage configuration
   storage:
-    type: ephemeral
-    # For persistent storage (non-dev), uncomment:
+    type: ephemeral # Use 'persistent-claim' for production
+    # Persistent storage config (uncomment for production)
     # type: persistent-claim
     # size: 10Gi
     # storageClass: standard
+    # deleteClaim: false
 
+  # Resource limits
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+  # Kafka configuration
   config:
-    # Conservative defaults for local development
+    # Replication settings (adjust for prod)
     offsets.topic.replication.factor: 1
     transaction.state.log.replication.factor: 1
     transaction.state.log.min.isr: 1
     default.replication.factor: 1
     min.insync.replicas: 1
-    log.retention.hours: 24
-    log.retention.bytes: 1073741824
-    auto.create.topics.enable: "true"
 
-  resources:
-    requests:
-      cpu: 200m
-      memory: 512Mi
-    limits:
-      cpu: "1"
-      memory: 1Gi
+    # Performance tuning
+    num.partitions: 6
+    log.retention.hours: 24 # 24 hours (dev)
+    log.retention.bytes: 104857600 # 100MB max per partition (dev)
+    log.segment.bytes: 52428800 # 50MB segments for faster cleanup
 
-  jvmOptions:
-    -Xms: 256m
-    -Xmx: 512m
+    # Network settings
+    socket.send.buffer.bytes: 102400
+    socket.receive.buffer.bytes: 102400
+    socket.request.max.bytes: 104857600
 
-# Topics to create automatically (list of objects with name, partitions, replicas, config)
-# Example:
-#   - name: my-events
-#     partitions: 3
+  # Metrics (JMX)
+  metricsConfig:
+    enabled: {{ .Computed.HasObservability }}
+
+# =============================================================================
+# Kafka Topics
+# =============================================================================
+# Add project-specific topics here. Example:
+#   - name: my-project.events
+#     partitions: 6
 #     replicas: 1
 #     config:
 #       retention.ms: "86400000"
+#       cleanup.policy: delete
+#       min.insync.replicas: "1"
 topics: []
 
+# =============================================================================
+# Kafka Users (SCRAM-SHA-512 authentication)
+# =============================================================================
+users:
+  enabled: false # Enable for production
+  # items:
+  #   - name: my-producer
+  #     authentication:
+  #       type: scram-sha-512
+  #     authorization:
+  #       type: simple
+  #       acls:
+  #         - resource:
+  #             type: topic
+  #             name: my-project.events
+  #             patternType: literal
+  #           operations:
+  #             - Write
+  #             - Describe
+
+# =============================================================================
+# Entity Operator (Topic and User operators)
+# =============================================================================
+entityOperator:
+  enabled: true
+  topicOperator:
+    enabled: true
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "200m"
+  userOperator:
+    enabled: true
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "200m"
+
+# =============================================================================
+# Kafka UI (Optional - for debugging)
+# =============================================================================
+# NOTE: Ingress is managed centrally via ingress chart
+# with proper IAP authentication. Configure ingress there, not here.
 kafkaUI:
   enabled: true
-  image:
-    repository: provectuslabs/kafka-ui
-    tag: "v0.7.2"
-    pullPolicy: IfNotPresent
+  image: provectuslabs/kafka-ui:latest
+  replicas: 1
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
   service:
     type: ClusterIP
     port: 8080
-  resources:
-    requests:
-      cpu: 50m
-      memory: 128Mi
-    limits:
-      cpu: 250m
-      memory: 256Mi
-
-metrics:
-  enabled: {{ .Computed.HasObservability }}
-  # JMX exporter configuration for Prometheus scraping
-  jmxExporter:
-    image:
-      repository: bitnami/jmx-exporter
-      tag: "0.20.0"
-    port: 9404
-    resources:
-      requests:
-        cpu: 50m
-        memory: 64Mi
-      limits:
-        cpu: 200m
-        memory: 128Mi

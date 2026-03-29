@@ -1,0 +1,24 @@
+{{- if .Values.components.kafkaPubsub.enabled }}
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: {{ .Values.components.kafkaPubsub.name }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "dapr.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.components.kafkaPubsub.type }}
+  version: {{ .Values.components.kafkaPubsub.version }}
+  metadata:
+    {{- range .Values.components.kafkaPubsub.metadata }}
+    - name: {{ .name }}
+      {{- if .value }}
+      value: {{ .value | quote }}
+      {{- end }}
+      {{- if .secretKeyRef }}
+      secretKeyRef:
+        name: {{ .secretKeyRef.name }}
+        key: {{ .secretKeyRef.key }}
+      {{- end }}
+    {{- end }}
+{{- end }}

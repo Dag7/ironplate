@@ -17,14 +17,15 @@ import (
 
 func newInitCmd() *cobra.Command {
 	var (
-		name           string
-		organization   string
-		domain         string
-		language       string
-		provider       string
-		preset         string
-		tools          string
-		nonInteractive bool
+		name            string
+		organization    string
+		domain          string
+		language        string
+		provider        string
+		preset          string
+		tools           string
+		nonInteractive  bool
+		exampleServices bool
 	)
 
 	cmd := &cobra.Command{
@@ -42,6 +43,7 @@ Use --non-interactive with flags for scripted usage.`,
 			tui.PrintBanner()
 
 			var cfg *config.ProjectConfig
+			wantExampleServices := exampleServices
 
 			if nonInteractive {
 				// Validate required flags
@@ -60,7 +62,7 @@ Use --non-interactive with flags for scripted usage.`,
 			} else {
 				// Interactive TUI prompts
 				var err error
-				cfg, err = runInteractivePrompts(name, organization, domain, language, provider, preset)
+				cfg, wantExampleServices, err = runInteractivePrompts(name, organization, domain, language, provider, preset)
 				if err != nil {
 					return err
 				}
@@ -116,6 +118,17 @@ Use --non-interactive with flags for scripted usage.`,
 				return fmt.Errorf("scaffold failed: %w", err)
 			}
 
+			// Generate example services if requested
+			if wantExampleServices {
+				services := scaffold.DefaultExampleServices(cfg)
+				if len(services) > 0 {
+					fmt.Println()
+					if err := scaffold.GenerateExampleServices(cfg, outputDir, templates.FS, services); err != nil {
+						printer.Warning(fmt.Sprintf("Could not generate example services: %s", err))
+					}
+				}
+			}
+
 			// Print summary
 			scaffold.PrintSummary(cfg, outputDir)
 
@@ -131,11 +144,12 @@ Use --non-interactive with flags for scripted usage.`,
 	cmd.Flags().StringVar(&preset, "preset", "", "Component preset: minimal, standard, full")
 	cmd.Flags().StringVar(&tools, "tools", "", "Dev tools to install (comma-separated): operator-sdk,git-secret,mc,kompose or 'all'")
 	cmd.Flags().BoolVar(&nonInteractive, "non-interactive", false, "Skip interactive prompts")
+	cmd.Flags().BoolVar(&exampleServices, "example-services", false, "Generate example frontend and backend services")
 
 	return cmd
 }
 
-func runInteractivePrompts(name, org, domain, language, provider, preset string) (*config.ProjectConfig, error) {
+func runInteractivePrompts(name, org, domain, language, provider, preset string) (*config.ProjectConfig, bool, error) {
 	// Project Name
 	if name == "" {
 		err := huh.NewInput().
@@ -151,7 +165,7 @@ func runInteractivePrompts(name, org, domain, language, provider, preset string)
 			}).
 			Run()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
@@ -170,7 +184,7 @@ func runInteractivePrompts(name, org, domain, language, provider, preset string)
 			}).
 			Run()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
@@ -189,7 +203,7 @@ func runInteractivePrompts(name, org, domain, language, provider, preset string)
 			}).
 			Run()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
@@ -206,7 +220,7 @@ func runInteractivePrompts(name, org, domain, language, provider, preset string)
 			Value(&language).
 			Run()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
@@ -224,7 +238,7 @@ func runInteractivePrompts(name, org, domain, language, provider, preset string)
 			Value(&provider).
 			Run()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
@@ -241,7 +255,7 @@ func runInteractivePrompts(name, org, domain, language, provider, preset string)
 			Value(&preset).
 			Run()
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
@@ -258,14 +272,26 @@ func runInteractivePrompts(name, org, domain, language, provider, preset string)
 		Options(toolOptions...).
 		Value(&selectedTools).
 		Run(); err != nil {
-		return nil, err
+		return nil, false, err
+	}
+
+	// Example services
+	wantExamples := true
+	if err := huh.NewConfirm().
+		Title("Generate example services?").
+		Description("Creates a starter backend API and frontend app so you can see the full e2e flow immediately").
+		Affirmative("Yes").
+		Negative("No").
+		Value(&wantExamples).
+		Run(); err != nil {
+		return nil, false, err
 	}
 
 	cfg := config.NewDefaultConfig(name, org, domain)
 	applyFlags(cfg, language, provider, preset, "")
 	cfg.Spec.DevEnvironment.Tools = selectedTools
 
-	return cfg, nil
+	return cfg, wantExamples, nil
 }
 
 func applyFlags(cfg *config.ProjectConfig, language, provider, preset, tools string) {

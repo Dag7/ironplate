@@ -1,6 +1,22 @@
 apiVersion: v2
 name: langfuse
-description: Langfuse LLM observability for {{ .Project.Metadata.Name }}
+description: Langfuse LLM Observability platform for {{ .Project.Metadata.Name }}
 type: application
-version: 0.1.0
-appVersion: "2.0"
+version: 2.0.0
+appVersion: "3"
+
+keywords:
+  - langfuse
+  - llm
+  - observability
+  - tracing
+  - ai
+
+home: https://langfuse.com
+sources:
+  - https://github.com/langfuse/langfuse
+
+maintainers:
+  - name: {{ .Project.Metadata.Organization }}
+# No dependencies - we use Cloud SQL, not in-cluster postgres
+# External secrets are managed separately

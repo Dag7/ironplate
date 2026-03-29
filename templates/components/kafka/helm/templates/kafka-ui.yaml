@@ -1,11 +1,3 @@
-{{/*
-=============================================================================
-Kafka UI - Web interface for Kafka cluster management
-=============================================================================
-Deploys provectuslabs/kafka-ui with a Deployment and Service.
-*/}}
-
-{{- if .Values.kafkaUI }}
 {{- if .Values.kafkaUI.enabled }}
 ---
 apiVersion: apps/v1
@@ -15,11 +7,9 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     app: kafka-ui
-    app.kubernetes.io/name: kafka-ui
-    app.kubernetes.io/part-of: {{ .Values.projectName }}
-    app.kubernetes.io/managed-by: helm
+    {{- include "strimzi-kafka.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.kafkaUI.replicas }}
   selector:
     matchLabels:
       app: kafka-ui
@@ -27,48 +17,37 @@ spec:
     metadata:
       labels:
         app: kafka-ui
-        app.kubernetes.io/name: kafka-ui
-        app.kubernetes.io/part-of: {{ .Values.projectName }}
     spec:
       containers:
         - name: kafka-ui
-          image: {{ .Values.kafkaUI.image.repository }}:{{ .Values.kafkaUI.image.tag }}
-          imagePullPolicy: {{ .Values.kafkaUI.image.pullPolicy | default "IfNotPresent" }}
+          image: {{ .Values.kafkaUI.image }}
           ports:
-            - name: http
-              containerPort: 8080
-              protocol: TCP
+            - containerPort: 8080
           env:
             - name: KAFKA_CLUSTERS_0_NAME
-              value: {{ .Values.kafka.clusterName }}
+              value: {{ include "strimzi-kafka.clusterName" . }}
             - name: KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS
-              value: {{ .Values.kafka.clusterName }}-kafka-bootstrap:{{ .Values.kafka.listeners.plain.port | default 9092 }}
-            {{- if .Values.metrics }}
-            {{- if .Values.metrics.enabled }}
-            - name: KAFKA_CLUSTERS_0_METRICS_PORT
-              value: {{ .Values.metrics.jmxExporter.port | default 9404 | quote }}
-            - name: KAFKA_CLUSTERS_0_METRICS_TYPE
-              value: "JMX"
-            {{- end }}
-            {{- end }}
-          {{- with .Values.kafkaUI.resources }}
+              value: {{ include "strimzi-kafka.clusterName" . }}-kafka-bootstrap:9092
+            - name: DYNAMIC_CONFIG_ENABLED
+              value: "true"
           resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          readinessProbe:
-            httpGet:
-              path: /actuator/health
-              port: http
-            initialDelaySeconds: 15
-            periodSeconds: 10
-            timeoutSeconds: 5
+            {{- toYaml .Values.kafkaUI.resources | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /actuator/health
-              port: http
-            initialDelaySeconds: 30
+              port: 8080
+            initialDelaySeconds: 180
             periodSeconds: 15
             timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
 ---
 apiVersion: v1
 kind: Service
@@ -77,17 +56,16 @@ metadata:
   namespace: {{ .Values.namespace }}
   labels:
     app: kafka-ui
-    app.kubernetes.io/name: kafka-ui
-    app.kubernetes.io/part-of: {{ .Values.projectName }}
-    app.kubernetes.io/managed-by: helm
+    {{- include "strimzi-kafka.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.kafkaUI.service.type | default "ClusterIP" }}
+  type: {{ .Values.kafkaUI.service.type }}
   ports:
-    - port: {{ .Values.kafkaUI.service.port | default 8080 }}
-      targetPort: http
+    - port: {{ .Values.kafkaUI.service.port }}
+      targetPort: 8080
       protocol: TCP
       name: http
   selector:
     app: kafka-ui
-{{- end }}
+# NOTE: Ingress is managed centrally via ingress chart
+# with proper IAP authentication. Do NOT add ingress here.
 {{- end }}

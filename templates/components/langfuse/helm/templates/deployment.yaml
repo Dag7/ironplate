@@ -1,88 +1,143 @@
-{{/*
-=============================================================================
-Langfuse LLM Observability Deployment
-=============================================================================
-*/}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: langfuse
   namespace: {{ .Values.namespace }}
   labels:
-    app: langfuse
-    app.kubernetes.io/name: langfuse
-    app.kubernetes.io/instance: langfuse
-    app.kubernetes.io/part-of: {{ .Values.projectName }}
-    app.kubernetes.io/managed-by: helm
+    {{- include "langfuse.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.langfuse.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
-      app: langfuse
+      {{- include "langfuse.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        app: langfuse
-        app.kubernetes.io/name: langfuse
-        app.kubernetes.io/instance: langfuse
-        app.kubernetes.io/part-of: {{ .Values.projectName }}
+        {{- include "langfuse.labels" . | nindent 8 }}
     spec:
+      serviceAccountName: langfuse
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.langfuse.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.langfuse.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.langfuse.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: langfuse
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: {{ .Values.langfuse.image.repository }}:{{ .Values.langfuse.image.tag }}
+          imagePullPolicy: {{ .Values.langfuse.image.pullPolicy }}
           ports:
-            - name: http
-              containerPort: 3000
-              protocol: TCP
-          env:
-            # -- Database connection
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.database.secretName }}
-                  key: {{ .Values.database.secretKey }}
-            {{- if .Values.redis.enabled }}
-            # -- Redis connection
-            - name: REDIS_HOST
-              value: {{ .Values.redis.host | quote }}
-            - name: REDIS_PORT
-              value: {{ .Values.redis.port | quote }}
+            - containerPort: 3000
+              name: http
+          {{- if .Values.langfuse.secrets }}
+          envFrom:
+            {{- range .Values.langfuse.secrets }}
+            - secretRef:
+                name: {{ . }}
             {{- end }}
-            # -- NextAuth
-            - name: NEXTAUTH_URL
-              value: {{ .Values.nextAuth.url | quote }}
-            - name: NEXTAUTH_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.nextAuth.secretName }}
-                  key: {{ .Values.nextAuth.secretKey }}
-            # -- Salt for API key hashing
-            - name: SALT
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.salt.secretName }}
-                  key: {{ .Values.salt.secretKey }}
-            # -- CORS
-            - name: LANGFUSE_ALLOWED_ORIGINS
-              value: {{ .Values.cors.allowedOrigins | quote }}
-          # -- Health checks
-          readinessProbe:
-            httpGet:
-              path: {{ .Values.healthCheck.path }}
-              port: 3000
-            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
-            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
-            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
-            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+          {{- end }}
+          env:
+            {{- range $key, $value := .Values.langfuse.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            # ClickHouse configuration (v3)
+            {{- if .Values.clickhouse.enabled }}
+            - name: CLICKHOUSE_URL
+              value: "http://langfuse-clickhouse:8123"
+            - name: CLICKHOUSE_MIGRATION_URL
+              value: "clickhouse://langfuse-clickhouse:9000"
+            # Disable cluster mode for single-node ClickHouse (no Keeper/Zookeeper)
+            - name: CLICKHOUSE_CLUSTER_ENABLED
+              value: "false"
+            {{- end }}
+            # Redis configuration (v3)
+            {{- if .Values.langfuse.redis.enabled }}
+            {{- if .Values.langfuse.redis.connectionString }}
+            # Use connection string (bypasses REDIS_AUTH bug in Langfuse)
+            - name: REDIS_CONNECTION_STRING
+              value: {{ .Values.langfuse.redis.connectionString | quote }}
+            {{- else if .Values.langfuse.redis.host }}
+            # Set REDIS_HOST/PORT if host is specified (otherwise use secret)
+            - name: REDIS_HOST
+              value: {{ .Values.langfuse.redis.host | quote }}
+            {{- end }}
+            # REDIS_PORT is always required by Langfuse env validation
+            - name: REDIS_PORT
+              value: {{ .Values.langfuse.redis.port | default "6379" | quote }}
+            # TLS configuration (always set when redis is enabled)
+            - name: REDIS_TLS_ENABLED
+              value: {{ .Values.langfuse.redis.tlsEnabled | quote }}
+            {{- if hasKey .Values.langfuse.redis "tlsRejectUnauthorized" }}
+            - name: REDIS_TLS_REJECT_UNAUTHORIZED
+              value: {{ .Values.langfuse.redis.tlsRejectUnauthorized | quote }}
+            {{- end }}
+            {{- end }}
+            # GCS/S3 configuration (v3)
+            {{- if .Values.langfuse.gcs.enabled }}
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_BUCKET
+              value: {{ .Values.langfuse.gcs.bucket | quote }}
+            - name: LANGFUSE_S3_EVENT_UPLOAD_BUCKET
+              value: {{ .Values.langfuse.gcs.bucket | quote }}
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_REGION
+              value: {{ .Values.langfuse.gcs.region | quote }}
+            - name: LANGFUSE_S3_EVENT_UPLOAD_REGION
+              value: {{ .Values.langfuse.gcs.region | quote }}
+            {{- if .Values.langfuse.gcs.emulatorHost }}
+            # Local dev: Use GCS SDK with fake-gcs emulator
+            - name: LANGFUSE_USE_GOOGLE_CLOUD_STORAGE
+              value: "true"
+            - name: STORAGE_EMULATOR_HOST
+              value: {{ .Values.langfuse.gcs.emulatorHost | quote }}
+            {{- else if .Values.langfuse.gcs.endpoint }}
+            # S3-compatible endpoint (MinIO, etc.)
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT
+              value: {{ .Values.langfuse.gcs.endpoint | quote }}
+            - name: LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT
+              value: {{ .Values.langfuse.gcs.endpoint | quote }}
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE
+              value: "true"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE
+              value: "true"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID
+              value: {{ .Values.langfuse.gcs.accessKeyId | default "fake-access-key" | quote }}
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY
+              value: {{ .Values.langfuse.gcs.secretAccessKey | default "fake-secret-key" | quote }}
+            - name: LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID
+              value: {{ .Values.langfuse.gcs.accessKeyId | default "fake-access-key" | quote }}
+            - name: LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY
+              value: {{ .Values.langfuse.gcs.secretAccessKey | default "fake-secret-key" | quote }}
+            {{- else }}
+            # Production: Use GCS via native SDK with Workload Identity
+            - name: LANGFUSE_USE_GOOGLE_CLOUD_STORAGE
+              value: "true"
+            {{- end }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.langfuse.resources | nindent 12 }}
           livenessProbe:
             httpGet:
-              path: {{ .Values.healthCheck.path }}
-              port: 3000
-            initialDelaySeconds: {{ mul .Values.healthCheck.initialDelaySeconds 2 }}
-            periodSeconds: {{ mul .Values.healthCheck.periodSeconds 2 }}
-            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
-            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
-          # -- Resource limits
-          resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+              path: {{ .Values.langfuse.livenessProbe.path }}
+              port: {{ .Values.langfuse.livenessProbe.port }}
+            initialDelaySeconds: {{ .Values.langfuse.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.langfuse.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.langfuse.livenessProbe.timeoutSeconds }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.langfuse.readinessProbe.path }}
+              port: {{ .Values.langfuse.readinessProbe.port }}
+            initialDelaySeconds: {{ .Values.langfuse.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.langfuse.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.langfuse.readinessProbe.timeoutSeconds }}

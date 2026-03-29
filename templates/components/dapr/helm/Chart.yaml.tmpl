@@ -1,6 +1,22 @@
 apiVersion: v2
 name: dapr
-description: Dapr distributed application runtime for {{ .Project.Metadata.Name }}
+description: Dapr runtime configuration for {{ .Project.Metadata.Name }} services
 type: application
 version: 0.1.0
 appVersion: "1.13.0"
+
+dependencies:
+  - name: dapr
+    version: "1.13.0"
+    repository: "https://dapr.github.io/helm-charts/"
+    condition: operator.enabled
+
+keywords:
+  - dapr
+  - sidecar
+  - pubsub
+  - kafka
+  - microservices
+
+maintainers:
+  - name: {{ .Project.Metadata.Name }} Team

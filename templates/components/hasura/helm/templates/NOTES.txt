@@ -1,0 +1,28 @@
+=============================================================================
+ Hasura GraphQL Engine - {{ .Values.global.environment }}
+=============================================================================
+
+Hasura has been deployed successfully!
+
+Environment: {{ .Values.global.environment }}
+Replicas: {{ .Values.hasura.replicas }}
+
+{{- if .Values.ingress.enabled }}
+Access Hasura Console at:
+  http://{{ .Values.ingress.host }}
+{{- else }}
+Hasura is not exposed via ingress.
+Access via port-forward:
+  kubectl port-forward -n {{ .Values.namespace }} svc/hasura 8080:{{ .Values.hasura.service.port }}
+  Then open: http://localhost:8080
+{{- end }}
+
+Required Secrets (synced via External Secrets):
+  - database-credentials (DATABASE_URL, METADATA_DATABASE_URL)
+  - hasura-credentials (HASURA_GRAPHQL_ADMIN_SECRET, HASURA_GRAPHQL_JWT_SECRET)
+
+To check status:
+  kubectl get pods -n {{ .Values.namespace }} -l app=hasura
+
+To view logs:
+  kubectl logs -n {{ .Values.namespace }} -l app=hasura -f

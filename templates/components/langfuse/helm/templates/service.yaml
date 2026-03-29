@@ -1,25 +1,16 @@
-{{/*
-=============================================================================
-Langfuse LLM Observability Service
-=============================================================================
-*/}}
 apiVersion: v1
 kind: Service
 metadata:
   name: langfuse
   namespace: {{ .Values.namespace }}
   labels:
-    app: langfuse
-    app.kubernetes.io/name: langfuse
-    app.kubernetes.io/instance: langfuse
-    app.kubernetes.io/part-of: {{ .Values.projectName }}
-    app.kubernetes.io/managed-by: helm
+    {{- include "langfuse.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.service.type }}
+  type: {{ .Values.langfuse.service.type }}
   ports:
-    - port: {{ .Values.service.port }}
-      targetPort: 3000
+    - port: {{ .Values.langfuse.service.port }}
+      targetPort: {{ .Values.langfuse.service.targetPort }}
       protocol: TCP
       name: http
   selector:
-    app: langfuse
+    {{- include "langfuse.selectorLabels" . | nindent 4 }}

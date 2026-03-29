@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/dag7/ironplate/internal/config"
 	"github.com/dag7/ironplate/internal/engine"
+	"github.com/dag7/ironplate/internal/scaffold"
 	"github.com/dag7/ironplate/internal/tui"
 	"github.com/dag7/ironplate/pkg/fsutil"
 	"github.com/dag7/ironplate/templates"
@@ -24,9 +24,6 @@ var serviceTemplateDirs = map[string]string{
 	"go-api":   "service/go",
 	"nextjs":   "service/nextjs",
 }
-
-// registryFile is the path to the Tilt service registry relative to project root.
-const registryFile = "tilt/registry.yaml"
 
 func newGenerateCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -155,7 +152,7 @@ Examples:
 			} else {
 				// Additional service — append to existing values.yaml
 				printer.Step(step, totalSteps, "Adding service to group umbrella chart")
-				if err := appendServiceToUmbrellaValues(groupChartDir, ctx.Service); err != nil {
+				if err := scaffold.AppendServiceToUmbrellaValues(groupChartDir, ctx.Service); err != nil {
 					return fmt.Errorf("update umbrella values: %w", err)
 				}
 			}
@@ -163,7 +160,7 @@ Examples:
 			// 3. Register service in Tilt registry
 			step++
 			printer.Step(step, totalSteps, "Updating Tilt registry")
-			if err := registerServiceInRegistry(projectRoot, ctx); err != nil {
+			if err := scaffold.RegisterServiceInRegistry(projectRoot, ctx); err != nil {
 				printer.Warning(fmt.Sprintf("Could not update registry: %s", err))
 			}
 
@@ -171,7 +168,7 @@ Examples:
 			step++
 			printer.Step(step, totalSteps, "Registering with ArgoCD")
 			if cfg.Spec.GitOps.Enabled && cfg.Spec.Infrastructure.HasComponent("argocd") {
-				if err := registerArgoCDService(projectRoot, cfg, ctx); err != nil {
+				if err := scaffold.RegisterArgoCDService(projectRoot, cfg, ctx); err != nil {
 					printer.Warning(fmt.Sprintf("Could not update ArgoCD: %s", err))
 				}
 			} else {
@@ -220,213 +217,6 @@ Examples:
 	cmd.Flags().IntVar(&port, "port", 0, "Service port (auto-allocated if not set)")
 
 	return cmd
-}
-
-// appendServiceToUmbrellaValues appends a new service entry to the group umbrella
-// chart's values.yaml. Uses string append to preserve existing formatting/comments.
-func appendServiceToUmbrellaValues(groupChartDir string, svc *engine.ServiceTemplateData) error {
-	valuesPath := filepath.Join(groupChartDir, "values.yaml")
-
-	data, err := os.ReadFile(valuesPath)
-	if err != nil {
-		return fmt.Errorf("read values.yaml: %w", err)
-	}
-
-	content := string(data)
-
-	// Check if the service is already registered
-	if strings.Contains(content, fmt.Sprintf("  %s:", svc.Name)) {
-		return nil
-	}
-
-	entry := fmt.Sprintf("\n  %s:\n    enabled: true\n    port: %d\n    image:\n      tag: latest\n    env:\n      LOG_LEVEL: debug\n",
-		svc.Name, svc.Port)
-
-	content += entry
-
-	return os.WriteFile(valuesPath, []byte(content), 0o644)
-}
-
-// tiltRegistry represents the structure of tilt/registry.yaml.
-type tiltRegistry struct {
-	Services       map[string]tiltServiceEntry `yaml:"services"`
-	Infrastructure map[string]interface{}      `yaml:"infrastructure"`
-}
-
-// tiltServiceEntry represents a single service in the Tilt registry.
-type tiltServiceEntry struct {
-	Type      string            `yaml:"type"`
-	Group     string            `yaml:"group"`
-	Port      int               `yaml:"port"`
-	DebugPort int               `yaml:"debugPort,omitempty"`
-	Src       string            `yaml:"src"`
-	Labels    []string          `yaml:"labels,omitempty"`
-	Deps      *tiltServiceDeps  `yaml:"deps,omitempty"`
-}
-
-// tiltServiceDeps represents service dependency declarations.
-type tiltServiceDeps struct {
-	Infra    []string `yaml:"infra,omitempty"`
-	Services []string `yaml:"services,omitempty"`
-}
-
-// registerServiceInRegistry adds or updates a service entry in tilt/registry.yaml.
-func registerServiceInRegistry(projectRoot string, ctx *engine.TemplateContext) error {
-	regPath := filepath.Join(projectRoot, registryFile)
-	svc := ctx.Service
-
-	// Read existing registry or create a new one
-	var reg tiltRegistry
-	if fsutil.FileExists(regPath) {
-		data, err := os.ReadFile(regPath)
-		if err != nil {
-			return fmt.Errorf("read registry: %w", err)
-		}
-		if err := yaml.Unmarshal(data, &reg); err != nil {
-			return fmt.Errorf("parse registry: %w", err)
-		}
-	}
-
-	if reg.Services == nil {
-		reg.Services = make(map[string]tiltServiceEntry)
-	}
-
-	// Check if service is already registered
-	if _, exists := reg.Services[svc.Name]; exists {
-		return nil
-	}
-
-	// Build labels from group and type
-	labels := []string{"backend", svc.Group}
-	if svc.Type == "nextjs" {
-		labels = []string{"frontend", svc.Group}
-	}
-
-	// Build infra deps from features (deduplicated)
-	infraDepsMap := make(map[string]bool)
-	for _, f := range svc.Features {
-		switch f {
-		case "hasura":
-			infraDepsMap["hasura"] = true
-		case "cache":
-			infraDepsMap["redis"] = true
-		case "dapr", "eventbus":
-			infraDepsMap["kafka"] = true
-		}
-	}
-	infraDeps := make([]string, 0, len(infraDepsMap))
-	for dep := range infraDepsMap {
-		infraDeps = append(infraDeps, dep)
-	}
-	sort.Strings(infraDeps)
-
-	entry := tiltServiceEntry{
-		Type:      svc.Type,
-		Group:     svc.Group,
-		Port:      svc.Port,
-		DebugPort: svc.DebugPort,
-		Src:       fmt.Sprintf("%s/%s", svc.SrcFolder, svc.Name),
-		Labels:    labels,
-	}
-	if len(infraDeps) > 0 {
-		entry.Deps = &tiltServiceDeps{Infra: infraDeps}
-	}
-
-	reg.Services[svc.Name] = entry
-
-	out, err := yaml.Marshal(&reg)
-	if err != nil {
-		return fmt.Errorf("marshal registry: %w", err)
-	}
-
-	// Ensure parent directory exists
-	if err := os.MkdirAll(filepath.Dir(regPath), 0o755); err != nil {
-		return fmt.Errorf("create registry dir: %w", err)
-	}
-
-	return os.WriteFile(regPath, out, 0o644)
-}
-
-// argoCDValuesFile is the path to the ArgoCD app-of-apps values file relative to project root.
-const argoCDValuesFile = "k8s/argocd/charts/apps/values.yaml"
-
-// argoCDServiceGroups represents the serviceGroups section of the ArgoCD values file.
-type argoCDServiceGroups struct {
-	ServiceGroups map[string]*argoCDGroupEntry `yaml:"serviceGroups"`
-}
-
-// argoCDGroupEntry represents a single group in the ArgoCD serviceGroups.
-type argoCDGroupEntry struct {
-	SyncWave  string              `yaml:"syncWave"`
-	ChartPath string              `yaml:"chartPath"`
-	Services  []argoCDServiceName `yaml:"services"`
-}
-
-// argoCDServiceName represents a service entry in an ArgoCD group.
-type argoCDServiceName struct {
-	Name string `yaml:"name"`
-}
-
-// registerArgoCDService registers the service group in the ArgoCD app-of-apps values.yaml.
-// If the group already exists, the service is appended to its services list.
-// If the group does not exist, it is created with the service as the first entry.
-func registerArgoCDService(projectRoot string, cfg *config.ProjectConfig, ctx *engine.TemplateContext) error {
-	svc := ctx.Service
-	valuesPath := filepath.Join(projectRoot, argoCDValuesFile)
-
-	if !fsutil.FileExists(valuesPath) {
-		return fmt.Errorf("ArgoCD values file not found at %s", valuesPath)
-	}
-
-	data, err := os.ReadFile(valuesPath)
-	if err != nil {
-		return fmt.Errorf("read ArgoCD values: %w", err)
-	}
-
-	// Parse the full values file into a generic map to preserve all fields
-	var fullValues map[string]interface{}
-	if err := yaml.Unmarshal(data, &fullValues); err != nil {
-		return fmt.Errorf("parse ArgoCD values: %w", err)
-	}
-
-	// Extract or initialize the serviceGroups section
-	var groups argoCDServiceGroups
-	if err := yaml.Unmarshal(data, &groups); err != nil {
-		return fmt.Errorf("parse ArgoCD serviceGroups: %w", err)
-	}
-
-	if groups.ServiceGroups == nil {
-		groups.ServiceGroups = make(map[string]*argoCDGroupEntry)
-	}
-
-	groupEntry, exists := groups.ServiceGroups[svc.Group]
-	if exists {
-		// Check if the service is already registered in this group
-		for _, s := range groupEntry.Services {
-			if s.Name == svc.Name {
-				return nil // Already registered
-			}
-		}
-		// Append service to existing group
-		groupEntry.Services = append(groupEntry.Services, argoCDServiceName{Name: svc.Name})
-	} else {
-		// Create new group entry
-		groups.ServiceGroups[svc.Group] = &argoCDGroupEntry{
-			SyncWave:  "4",
-			ChartPath: svc.Group,
-			Services:  []argoCDServiceName{{Name: svc.Name}},
-		}
-	}
-
-	// Merge the updated serviceGroups back into the full values map
-	fullValues["serviceGroups"] = groups.ServiceGroups
-
-	out, err := yaml.Marshal(fullValues)
-	if err != nil {
-		return fmt.Errorf("marshal ArgoCD values: %w", err)
-	}
-
-	return os.WriteFile(valuesPath, out, 0o644)
 }
 
 func newGeneratePackageCmd() *cobra.Command {

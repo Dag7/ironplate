@@ -1,0 +1,80 @@
+{{/*
+=============================================================================
+Langfuse LLM Observability - Template Helpers
+=============================================================================
+*/}}
+
+{{/*
+Expand the name of the chart.
+*/}}
+{{- define "langfuse.name" -}}
+{{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+Create a default fully qualified app name.
+*/}}
+{{- define "langfuse.fullname" -}}
+{{- if .Values.fullnameOverride }}
+{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- $name := default .Chart.Name .Values.nameOverride }}
+{{- if contains $name .Release.Name }}
+{{- .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- else }}
+{{- printf "%s-%s" .Release.Name $name | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{/*
+Common labels
+*/}}
+{{- define "langfuse.labels" -}}
+helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+app.kubernetes.io/name: langfuse
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: [[ .Project.Metadata.Name ]]
+app.kubernetes.io/component: observability
+app: langfuse
+environment: {{ .Values.global.environment }}
+{{- end }}
+
+{{/*
+Selector labels
+*/}}
+{{- define "langfuse.selectorLabels" -}}
+app: langfuse
+{{- end }}
+
+{{/*
+ClickHouse labels
+*/}}
+{{- define "langfuse.clickhouseLabels" -}}
+helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+app.kubernetes.io/name: langfuse-clickhouse
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: [[ .Project.Metadata.Name ]]
+app.kubernetes.io/component: clickhouse
+app: langfuse-clickhouse
+environment: {{ .Values.global.environment }}
+{{- end }}
+
+{{/*
+Worker labels
+*/}}
+{{- define "langfuse.workerLabels" -}}
+helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version | replace "+" "_" }}
+app.kubernetes.io/name: langfuse-worker
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+app.kubernetes.io/part-of: [[ .Project.Metadata.Name ]]
+app.kubernetes.io/component: worker
+app: langfuse-worker
+environment: {{ .Values.global.environment }}
+{{- end }}

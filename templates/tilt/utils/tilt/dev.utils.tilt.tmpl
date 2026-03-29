@@ -78,8 +78,12 @@ def dev_resources():
         'packages-build',
         cmd='''
             echo "📦 Building TypeScript packages..."
-            npm run build:all
-            echo "✅ All packages built successfully!"
+            if npx nx show projects --exclude="apps/*" 2>/dev/null | grep -q .; then
+                {{ .Project.Spec.Monorepo.PackageManager }} run build:all
+                echo "✅ All packages built successfully!"
+            else
+                echo "ℹ️  No packages to build yet. Skipping."
+            fi
         ''',
         resource_deps=['{{ .Project.Spec.Monorepo.PackageManager }}-install'],
         labels=['01_dev-tools'],
@@ -107,7 +111,14 @@ def dev_resources():
         'packages-watch',
         serve_cmd='''
             echo "👀 Starting TypeScript package watch mode..."
-            npm run watch:packages:tsc
+            # Check if there are any non-app packages with a build target
+            if npx nx show projects --exclude="apps/*" 2>/dev/null | grep -q .; then
+                {{ .Project.Spec.Monorepo.PackageManager }} run watch:packages:tsc
+            else
+                echo "ℹ️  No packages to watch yet. Add packages with 'iron generate package <name>'."
+                echo "   Idling until packages are added..."
+                sleep infinity
+            fi
         ''',
         resource_deps=['packages-build'],
         labels=['01_dev-tools'],

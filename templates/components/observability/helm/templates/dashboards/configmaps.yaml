@@ -1,0 +1,28 @@
+{{/*
+=============================================================================
+Grafana Dashboards - ConfigMaps
+=============================================================================
+Generates ConfigMaps for each dashboard defined in .Values.dashboards.
+Dashboard JSON is stored in values.yaml for easy per-environment customization.
+*/}}
+{{- if .Values.dashboards }}
+{{- range $name, $dashboard := .Values.dashboards }}
+{{- if $dashboard.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "dashboard.configMapName" $name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "prometheus-stack.labels" $ | nindent 4 }}
+    grafana_dashboard: "1"
+    {{- if $dashboard.folder }}
+    grafana_folder: {{ $dashboard.folder | quote }}
+    {{- end }}
+data:
+  {{ $name }}.json: |
+{{ $dashboard.json | indent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}

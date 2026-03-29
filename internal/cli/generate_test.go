@@ -10,6 +10,7 @@ import (
 
 	"github.com/dag7/ironplate/internal/config"
 	"github.com/dag7/ironplate/internal/engine"
+	"github.com/dag7/ironplate/internal/scaffold"
 )
 
 func TestServiceTemplateDirs(t *testing.T) {
@@ -62,7 +63,7 @@ infrastructure: {}
 		Features:  []string{"hasura", "cache"},
 	}
 
-	err = registerServiceInRegistry(tmpDir, ctx)
+	err = scaffold.RegisterServiceInRegistry(tmpDir, ctx)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(regDir, "registry.yaml"))
@@ -109,7 +110,7 @@ infrastructure: {}
 	}
 
 	// Should be idempotent — no error, no duplicate
-	err = registerServiceInRegistry(tmpDir, ctx)
+	err = scaffold.RegisterServiceInRegistry(tmpDir, ctx)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(regDir, "registry.yaml"))
@@ -158,7 +159,7 @@ infrastructure: {}
 		SrcFolder: "apps",
 	}
 
-	err = registerServiceInRegistry(tmpDir, ctx)
+	err = scaffold.RegisterServiceInRegistry(tmpDir, ctx)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(regDir, "registry.yaml"))
@@ -185,7 +186,7 @@ func TestRegisterServiceInRegistry_CreatesNew(t *testing.T) {
 		SrcFolder: "apps",
 	}
 
-	err := registerServiceInRegistry(tmpDir, ctx)
+	err := scaffold.RegisterServiceInRegistry(tmpDir, ctx)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(tmpDir, "tilt", "registry.yaml"))
@@ -219,7 +220,7 @@ func TestAppendServiceToUmbrellaValues(t *testing.T) {
 		Port: 3002,
 	}
 
-	err = appendServiceToUmbrellaValues(tmpDir, svc)
+	err = scaffold.AppendServiceToUmbrellaValues(tmpDir, svc)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(tmpDir, "values.yaml"))
@@ -249,7 +250,7 @@ func TestAppendServiceToUmbrellaValues_NoDuplicate(t *testing.T) {
 		Port: 3001,
 	}
 
-	err = appendServiceToUmbrellaValues(tmpDir, svc)
+	err = scaffold.AppendServiceToUmbrellaValues(tmpDir, svc)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(tmpDir, "values.yaml"))
@@ -285,7 +286,7 @@ serviceGroups: {}
 		Port:  3001,
 	}
 
-	err = registerArgoCDService(tmpDir, cfg, ctx)
+	err = scaffold.RegisterArgoCDService(tmpDir, cfg, ctx)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(argoDir, "values.yaml"))
@@ -324,7 +325,7 @@ serviceGroups:
 		Port:  3002,
 	}
 
-	err = registerArgoCDService(tmpDir, cfg, ctx)
+	err = scaffold.RegisterArgoCDService(tmpDir, cfg, ctx)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(argoDir, "values.yaml"))
@@ -361,7 +362,7 @@ serviceGroups:
 		Port:  3001,
 	}
 
-	err = registerArgoCDService(tmpDir, cfg, ctx)
+	err = scaffold.RegisterArgoCDService(tmpDir, cfg, ctx)
 	require.NoError(t, err)
 
 	data, err := os.ReadFile(filepath.Join(argoDir, "values.yaml"))

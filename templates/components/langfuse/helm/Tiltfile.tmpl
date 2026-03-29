@@ -3,27 +3,34 @@ load('../../../../utils/tilt/k8s/pvc.utils.tilt', 'clear_pvc')
 
 def setup_langfuse(environment):
     """
-    Setup Langfuse LLM Observability.
+    Setup Langfuse LLM Observability (v3).
+
+    v3 introduces:
+    - PostgreSQL (metadata) - local only, Cloud SQL for staging/prod
+    - ClickHouse (OLAP database for traces)
+    - Worker container (background jobs)
+    - Redis (queue/cache) - reuses existing Redis in dev
+    - GCS (blob storage) - only in staging/prod
 
     Args:
         environment: 'development', 'staging', or 'production'
     """
+
+    # Environment-specific overrides (merged with base values.yaml)
     env_values_file = {
         "development": "values-dev.yaml",
         "staging": "values-staging.yaml",
         "production": "values-prod.yaml",
     }.get(environment)
 
-    chart_path = "k8s/helm/infra/langfuse"
-
-    # Build values files list
-    values_files = ["./%s/values.yaml" % chart_path]
+    # Build values files list (relative to this Tiltfile's directory)
+    values_files = ["./values.yaml"]
     if env_values_file:
-        values_files.append("./%s/%s" % (chart_path, env_values_file))
+        values_files.append("./%s" % env_values_file)
 
-    # Deploy via Helm
+    # Deploy via Helm (path relative to this Tiltfile's directory)
     k8s_yaml(helm(
-        "./%s" % chart_path,
+        ".",
         name="langfuse",
         namespace="{{ .Project.Metadata.Name }}",
         values=values_files
@@ -35,23 +42,27 @@ def setup_langfuse(environment):
 
     # PostgreSQL StatefulSet (dev only)
     if environment == "development":
-        clear_pvc('data-langfuse-postgres-0', '{{ .Project.Metadata.Name }}')
-        clear_pvc('data-langfuse-clickhouse-0', '{{ .Project.Metadata.Name }}')
+        # Clear PVCs for fresh starts
+        clear_pvc('data-langfuse-postgres-0')
+        clear_pvc('data-langfuse-clickhouse-0')
 
+        # Service is auto-associated by Tilt (selector matches StatefulSet)
         k8s_resource(
             "langfuse-postgres",
             labels=["langfuse"],
         )
         web_deps.append("langfuse-postgres")
-        web_deps.append("redis")
+        web_deps.append("redis")  # Reuse existing Redis in dev
 
-    # ClickHouse StatefulSet
+    # ClickHouse StatefulSet (v3)
+    # Service is auto-associated by Tilt (selector matches StatefulSet)
     k8s_resource(
         "langfuse-clickhouse",
         labels=["langfuse"],
     )
 
-    # Langfuse Web
+    # Langfuse Web deployment
+    # Service is auto-associated by Tilt (selector matches Deployment)
     k8s_resource(
         "langfuse",
         objects=[
@@ -59,14 +70,16 @@ def setup_langfuse(environment):
         ],
         resource_deps=web_deps,
         labels=["langfuse"],
-        port_forwards=["4000:80"]
+        port_forwards=["4000:80"]  # Port 4000 for local dev
     )
 
-    # Langfuse Worker
+    # Langfuse Worker deployment (v3)
     k8s_resource(
         "langfuse-worker",
         resource_deps=worker_deps + (["redis"] if environment == "development" else []),
         labels=["langfuse"],
     )
+
+    # Note: Langfuse ingress is managed in the root Tiltfile with other infra ingresses
 
 setup_langfuse('development')

@@ -10,12 +10,20 @@ def deploy_local_infra():
 
     local_dir = os.path.join(config.main_dir, 'k8s', 'deployment', 'local')
 
+    # Note: Project namespace is created by k3d init script (k3s/manifests/setup/namespace.yaml)
+    # with appropriate labels (dapr-injection, etc). No need to create it here.
+
     # Core services
     k8s_yaml(os.path.join(local_dir, 'postgres.yaml'))
-    k8s_resource('postgres', labels=['01_infra'], port_forwards=['5432:5432'])
+    k8s_resource('postgresql', objects=[
+        'postgres-init-scripts:configmap',
+        'postgres-data-claim:persistentvolumeclaim',
+    ], port_forwards=['5432:5432'], labels=['01_infra'])
 
     k8s_yaml(os.path.join(local_dir, 'redis.yaml'))
-    k8s_resource('redis', labels=['01_infra'])
+    k8s_resource('redis', objects=[
+        'redis-data-claim:persistentvolumeclaim',
+    ], labels=['01_infra'])
 
     # Admin tools
     k8s_yaml(os.path.join(local_dir, 'pgadmin.yaml'))
@@ -26,9 +34,14 @@ def deploy_local_infra():
 
     # Traefik dashboard (k3d installs Traefik; this exposes the dashboard)
     k8s_yaml(os.path.join(local_dir, 'traefik.yaml'))
-    k8s_resource('traefik-dashboard', labels=['01_infra_dashboard'])
+    k8s_resource(
+        new_name='traefik-dashboard-svc',
+        objects=['traefik-dashboard:service'],
+        labels=['01_infra']
+    )
 {{ if eq .Project.Spec.Cloud.Provider "gcp" }}
     # GCS emulator for local development
     k8s_yaml(os.path.join(local_dir, 'fake-gcs.yaml'))
     k8s_resource('fake-gcs', labels=['01_infra'], port_forwards=['4443:4443'])
 {{ end }}
+deploy_local_infra()

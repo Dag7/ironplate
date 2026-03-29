@@ -1,0 +1,149 @@
+{{- if .Values.worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langfuse-worker
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "langfuse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: langfuse-worker
+  template:
+    metadata:
+      labels:
+        {{- include "langfuse.labels" . | nindent 8 }}
+        app: langfuse-worker
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: langfuse
+      terminationGracePeriodSeconds: 30
+      {{- with .Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ .Values.worker.image.repository }}:{{ .Values.worker.image.tag }}
+          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+          ports:
+            - containerPort: 3030
+              name: http
+          {{- if .Values.worker.secrets }}
+          envFrom:
+            {{- range .Values.worker.secrets }}
+            - secretRef:
+                name: {{ . }}
+            {{- end }}
+          {{- end }}
+          env:
+            # Common env vars
+            {{- range $key, $value := .Values.worker.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            # ClickHouse configuration
+            {{- if .Values.clickhouse.enabled }}
+            - name: CLICKHOUSE_URL
+              value: "http://langfuse-clickhouse:8123"
+            - name: CLICKHOUSE_MIGRATION_URL
+              value: "clickhouse://langfuse-clickhouse:9000"
+            # Disable cluster mode for single-node ClickHouse (no Keeper/Zookeeper)
+            - name: CLICKHOUSE_CLUSTER_ENABLED
+              value: "false"
+            {{- end }}
+            # Redis configuration
+            {{- if .Values.worker.redis.enabled }}
+            {{- if .Values.worker.redis.connectionString }}
+            # Use connection string (bypasses REDIS_AUTH bug in Langfuse)
+            - name: REDIS_CONNECTION_STRING
+              value: {{ .Values.worker.redis.connectionString | quote }}
+            {{- else if .Values.worker.redis.host }}
+            # Set REDIS_HOST/PORT if host is specified (otherwise use secret)
+            - name: REDIS_HOST
+              value: {{ .Values.worker.redis.host | quote }}
+            {{- end }}
+            # REDIS_PORT is always required by Langfuse env validation
+            - name: REDIS_PORT
+              value: {{ .Values.worker.redis.port | default "6379" | quote }}
+            # TLS configuration (always set when redis is enabled)
+            - name: REDIS_TLS_ENABLED
+              value: {{ .Values.worker.redis.tlsEnabled | quote }}
+            {{- if hasKey .Values.worker.redis "tlsRejectUnauthorized" }}
+            - name: REDIS_TLS_REJECT_UNAUTHORIZED
+              value: {{ .Values.worker.redis.tlsRejectUnauthorized | quote }}
+            {{- end }}
+            {{- end }}
+            # GCS/S3 configuration
+            {{- if .Values.worker.gcs.enabled }}
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_BUCKET
+              value: {{ .Values.worker.gcs.bucket | quote }}
+            - name: LANGFUSE_S3_EVENT_UPLOAD_BUCKET
+              value: {{ .Values.worker.gcs.bucket | quote }}
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_REGION
+              value: {{ .Values.worker.gcs.region | quote }}
+            - name: LANGFUSE_S3_EVENT_UPLOAD_REGION
+              value: {{ .Values.worker.gcs.region | quote }}
+            {{- if .Values.worker.gcs.emulatorHost }}
+            # Local dev: Use GCS SDK with fake-gcs emulator
+            - name: LANGFUSE_USE_GOOGLE_CLOUD_STORAGE
+              value: "true"
+            - name: STORAGE_EMULATOR_HOST
+              value: {{ .Values.worker.gcs.emulatorHost | quote }}
+            {{- else if .Values.worker.gcs.endpoint }}
+            # S3-compatible endpoint (MinIO, etc.)
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT
+              value: {{ .Values.worker.gcs.endpoint | quote }}
+            - name: LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT
+              value: {{ .Values.worker.gcs.endpoint | quote }}
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE
+              value: "true"
+            - name: LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE
+              value: "true"
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID
+              value: {{ .Values.worker.gcs.accessKeyId | default "fake-access-key" | quote }}
+            - name: LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY
+              value: {{ .Values.worker.gcs.secretAccessKey | default "fake-secret-key" | quote }}
+            - name: LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID
+              value: {{ .Values.worker.gcs.accessKeyId | default "fake-access-key" | quote }}
+            - name: LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY
+              value: {{ .Values.worker.gcs.secretAccessKey | default "fake-secret-key" | quote }}
+            {{- else }}
+            # Production: Use GCS via native SDK with Workload Identity
+            - name: LANGFUSE_USE_GOOGLE_CLOUD_STORAGE
+              value: "true"
+            {{- end }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3030
+            initialDelaySeconds: {{ .Values.worker.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.worker.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.worker.livenessProbe.timeoutSeconds }}
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3030
+            initialDelaySeconds: {{ .Values.worker.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.worker.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.worker.readinessProbe.timeoutSeconds }}
+{{- end }}

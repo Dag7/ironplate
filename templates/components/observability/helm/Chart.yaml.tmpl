@@ -1,23 +1,42 @@
-# =============================================================================
-# {{ .Project.Metadata.Name }}-observability - Helm Chart
-# =============================================================================
-# Observability stack for {{ .Project.Metadata.Name }}: OpenTelemetry Collector,
-# Grafana Tempo, Prometheus, and Grafana.
-# =============================================================================
 apiVersion: v2
-name: {{ .Project.Metadata.Name }}-observability
-description: Observability stack for {{ .Project.Metadata.Name }}
+name: observability-stack
+description: |
+  Complete observability stack for {{ .Project.Metadata.Name }} platform:
+    - kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
+    - Tempo (distributed tracing)
+    - OTEL Collector (trace ingestion gateway)
 type: application
-version: 0.1.0
-appVersion: "1.0.0"
+version: 0.3.0
+appVersion: "2.9.0"
 
 keywords:
-  - {{ .Project.Metadata.Name }}
-  - observability
-  - opentelemetry
   - prometheus
   - grafana
+  - alertmanager
   - tempo
+  - opentelemetry
+  - otel
+  - tracing
+  - monitoring
+  - observability
+  - metrics
 
 maintainers:
   - name: {{ .Project.Metadata.Name }} Team
+
+dependencies:
+  - name: kube-prometheus-stack
+    version: "80.9.2"
+    repository: https://prometheus-community.github.io/helm-charts
+    condition: prometheusStack.enabled
+
+  - name: tempo
+    version: "1.24.1"
+    repository: https://grafana.github.io/helm-charts
+    condition: tempo.enabled
+
+  - name: opentelemetry-collector
+    version: "0.141.1"
+    repository: https://open-telemetry.github.io/opentelemetry-helm-charts
+    condition: otel-collector.enabled
+    alias: otel-collector

@@ -9,8 +9,10 @@ def setup_dapr(environment):
     Args:
         environment: 'development', 'staging', or 'production'
     """
+
+    # Environment-specific overrides (merged with base values.yaml)
     env_values_file = {
-        "development": None,
+        "development": None,  # Use only base values.yaml
         "staging": "values-staging.yaml",
         "production": "values-prod.yaml",
     }.get(environment)
@@ -20,17 +22,17 @@ def setup_dapr(environment):
     # Create namespace
     create_namespace("dapr-system")
 
-    # Helm dependencies
+    # Helm dependencies (uses config.main_dir for absolute path)
     ensure_helm_deps(chart_path, "dapr", "https://dapr.github.io/helm-charts/")
 
-    # Build values files list
-    values_files = ["./%s/values.yaml" % chart_path]
+    # Build values files list (relative to this Tiltfile's directory)
+    values_files = ["./values.yaml"]
     if env_values_file:
-        values_files.append("./%s/%s" % (chart_path, env_values_file))
+        values_files.append("./%s" % env_values_file)
 
-    # Deploy via Helm
+    # Deploy Dapr operator via Helm (path relative to this Tiltfile's directory)
     k8s_yaml(helm(
-        "./%s" % chart_path,
+        ".",
         name="dapr",
         namespace="dapr-system",
         values=values_files
@@ -39,7 +41,9 @@ def setup_dapr(environment):
     # Dapr Namespace
     k8s_resource(
         new_name="dapr-namespace",
-        objects=["dapr-system:Namespace"],
+        objects=[
+            "dapr-system:Namespace",
+        ],
         labels=["dapr"]
     )
 
@@ -57,24 +61,31 @@ def setup_dapr(environment):
         labels=["dapr"]
     )
 
-    # Dapr RBAC
+    # Dapr RBAC - ALL ServiceAccounts, Roles, RoleBindings, ClusterRoles, ClusterRoleBindings
     k8s_resource(
         new_name="dapr-rbac",
         objects=[
+            # ServiceAccounts
             "dapr-injector:ServiceAccount:dapr-system",
             "dapr-operator:ServiceAccount:dapr-system",
             "dapr-placement:ServiceAccount:dapr-system",
             "dapr-sentry:ServiceAccount:dapr-system",
+            # Roles
             "dapr-injector:Role:dapr-system",
             "dapr-operator:Role:dapr-system",
+            # "secret-reader:Role:default",  # Disabled - we don't use default namespace
             "dapr-sentry:Role:dapr-system",
+            # ClusterRoles
             "dapr-injector:ClusterRole:dapr-system",
             "dapr-operator-admin:ClusterRole:dapr-system",
             "dapr-placement:ClusterRole:dapr-system",
             "dapr-sentry:ClusterRole:dapr-system",
+            # RoleBindings
             "dapr-injector:RoleBinding:dapr-system",
             "dapr-operator:RoleBinding:dapr-system",
+            # "dapr-secret-reader:RoleBinding:default",  # Disabled - we don't use default namespace
             "dapr-sentry:RoleBinding:dapr-system",
+            # ClusterRoleBindings
             "dapr-injector:ClusterRoleBinding:dapr-system",
             "dapr-operator-admin:ClusterRoleBinding:dapr-system",
             "dapr-placement:ClusterRoleBinding:dapr-system",
@@ -96,14 +107,15 @@ def setup_dapr(environment):
         labels=["dapr"]
     )
 
-    # Dapr Sentry (Certificate Authority)
+    # Dapr Sentry (Certificate Authority) - generates trust bundle
+    # Must run BEFORE operator so certs are available
     k8s_resource(
         "dapr-sentry",
         resource_deps=["dapr-config"],
         labels=["dapr"]
     )
 
-    # Dapr Operator
+    # Dapr Operator - depends on sentry for trust bundle
     k8s_resource(
         "dapr-operator",
         resource_deps=["dapr-sentry"],
@@ -126,8 +138,10 @@ def setup_dapr(environment):
         resource_deps=["dapr-operator"],
         labels=["dapr"]
     )
-{{ if .Computed.HasKafka }}
+
     # Dapr Components (Kafka pubsub, resiliency)
+    # NOTE: Subscriptions are now defined per-service in their own values.yaml files
+    # and tracked in each service's k8s_resource in the main Tiltfile
     k8s_resource(
         new_name="dapr-components",
         objects=[
@@ -137,5 +151,5 @@ def setup_dapr(environment):
         resource_deps=["dapr-sidecar-injector", "kafka-ready"],
         labels=["dapr"]
     )
-{{ end }}
+
 setup_dapr('development')

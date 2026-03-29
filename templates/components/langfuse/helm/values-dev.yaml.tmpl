@@ -1,0 +1,117 @@
+# =============================================================================
+# Langfuse LLM Observability - Local Development Values (v3)
+# =============================================================================
+# Enables v3 components with minimal resources, reusing existing Redis
+
+global:
+  environment: development
+
+# =============================================================================
+# Langfuse Web Configuration
+# =============================================================================
+langfuse:
+  # Override secrets - exclude langfuse-redis-credentials (local Redis has no auth)
+  secrets:
+    - langfuse-credentials
+    - langfuse-clickhouse-credentials
+  # Increase resources for local dev (Langfuse needs more memory)
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "200m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+  # Redis - reuse existing Redis in dev (no auth)
+  redis:
+    enabled: true
+    connectionString: "redis://redis:6379" # Use connection string to bypass Langfuse auth bug
+    port: "6379" # Still required by Langfuse env validation
+    tlsEnabled: "false"
+
+  # Use fake-gcs for local development via native GCS SDK
+  # fake-gcs-server works with STORAGE_EMULATOR_HOST for GCS JSON API
+  # Note: S3-compatible API doesn't work properly with fake-gcs (returns JSON errors)
+  gcs:
+    enabled: true
+    bucket: "langfuse-events"
+    region: "us-central1"
+    # Use native GCS SDK with emulator
+    emulatorHost: "http://fake-gcs:4443"
+
+# =============================================================================
+# PostgreSQL Configuration (local development)
+# =============================================================================
+postgres:
+  enabled: true
+
+  storage:
+    size: 100Mi
+    storageClassName: local-path
+
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# =============================================================================
+# ClickHouse Configuration (v3)
+# =============================================================================
+clickhouse:
+  enabled: true
+
+  storage:
+    size: 1Gi
+    storageClassName: local-path
+
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "100m"
+    limits:
+      memory: "1536Mi"
+      cpu: "500m"
+
+# =============================================================================
+# Worker Configuration (v3)
+# =============================================================================
+worker:
+  enabled: true
+  replicas: 1
+
+  # Override secrets - exclude langfuse-redis-credentials (local Redis has no auth)
+  secrets:
+    - langfuse-credentials
+    - langfuse-clickhouse-credentials
+
+  redis:
+    enabled: true
+    connectionString: "redis://redis:6379" # Use connection string to bypass Langfuse auth bug
+    port: "6379" # Still required by Langfuse env validation
+    tlsEnabled: "false"
+
+  # Use fake-gcs for local development via native GCS SDK
+  # Must match the langfuse web configuration above
+  gcs:
+    enabled: true
+    bucket: "langfuse-events"
+    region: "us-central1"
+    emulatorHost: "http://fake-gcs:4443"
+
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "50m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+
+# =============================================================================
+# Ingress - Disabled (using central {{ .Project.Metadata.Name }}/ingress chart instead)
+# =============================================================================
+ingress:
+  enabled: false

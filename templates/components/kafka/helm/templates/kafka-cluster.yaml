@@ -1,169 +1,155 @@
-{{/*
-=============================================================================
-Kafka Cluster - Strimzi Custom Resources
-=============================================================================
-Creates a single-node Kafka cluster using Strimzi KafkaNodePool + Kafka CRs.
-*/}}
-
-{{- if .Values.kafka }}
----
+{{- if .Values.kafka.kraft.enabled }}
+# =============================================================================
+# Kafka Cluster with KRaft Mode (No Zookeeper)
+# =============================================================================
 apiVersion: kafka.strimzi.io/v1beta2
 kind: KafkaNodePool
 metadata:
-  name: {{ .Values.kafka.clusterName }}-pool
+  name: {{ include "strimzi-kafka.clusterName" . }}-pool
   namespace: {{ .Values.namespace }}
   labels:
-    strimzi.io/cluster: {{ .Values.kafka.clusterName }}
-    app.kubernetes.io/name: kafka
-    app.kubernetes.io/part-of: {{ .Values.projectName }}
-    app.kubernetes.io/managed-by: helm
+    strimzi.io/cluster: {{ include "strimzi-kafka.clusterName" . }}
+    {{- include "strimzi-kafka.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.kafka.replicas | default 1 }}
+  replicas: {{ .Values.kafka.replicas }}
   roles:
     - controller
     - broker
+  {{- if or .Values.kafka.nodeSelector .Values.kafka.tolerations }}
+  template:
+    pod:
+      {{- if .Values.kafka.tolerations }}
+      tolerations:
+        {{- toYaml .Values.kafka.tolerations | nindent 8 }}
+      {{- end }}
+      {{- if .Values.kafka.nodeSelector }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                {{- range $key, $value := .Values.kafka.nodeSelector }}
+                  - key: {{ $key }}
+                    operator: In
+                    values:
+                      - {{ $value }}
+                {{- end }}
+      {{- end }}
+  {{- end }}
   storage:
-    type: {{ .Values.kafka.storage.type | default "ephemeral" }}
-    {{- if eq (default "ephemeral" .Values.kafka.storage.type) "persistent-claim" }}
-    size: {{ .Values.kafka.storage.size | default "10Gi" }}
-    {{- if .Values.kafka.storage.storageClass }}
-    class: {{ .Values.kafka.storage.storageClass }}
+    {{- if eq .Values.kafka.storage.type "ephemeral" }}
+    type: ephemeral
+    {{- else }}
+    type: jbod
+    volumes:
+      - id: 0
+        type: persistent-claim
+        size: {{ .Values.kafka.storage.size | default "10Gi" }}
+        {{- if .Values.kafka.storage.storageClass }}
+        class: {{ .Values.kafka.storage.storageClass }}
+        {{- end }}
+        deleteClaim: {{ .Values.kafka.storage.deleteClaim | default false }}
     {{- end }}
-    {{- end }}
-  {{- with .Values.kafka.resources }}
   resources:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
-  {{- with .Values.kafka.jvmOptions }}
-  jvmOptions:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- toYaml .Values.kafka.resources | nindent 4 }}
 ---
 apiVersion: kafka.strimzi.io/v1beta2
 kind: Kafka
 metadata:
-  name: {{ .Values.kafka.clusterName }}
+  name: {{ include "strimzi-kafka.clusterName" . }}
   namespace: {{ .Values.namespace }}
-  labels:
-    app.kubernetes.io/name: kafka
-    app.kubernetes.io/part-of: {{ .Values.projectName }}
-    app.kubernetes.io/managed-by: helm
   annotations:
-    strimzi.io/node-pools: enabled
-    strimzi.io/kraft: enabled
+    strimzi.io/kraft: "enabled"
+    strimzi.io/node-pools: "enabled"
+  labels:
+    {{- include "strimzi-kafka.labels" . | nindent 4 }}
 spec:
   kafka:
-    version: {{ .Values.kafka.version | default "3.7.0" | quote }}
-    replicas: {{ .Values.kafka.replicas | default 1 }}
+    version: {{ .Values.kafka.version }}
+    metadataVersion: {{ .Values.kafka.version }}
     listeners:
-      - name: plain
-        port: {{ .Values.kafka.listeners.plain.port | default 9092 }}
-        type: {{ .Values.kafka.listeners.plain.type | default "internal" }}
-        tls: {{ .Values.kafka.listeners.plain.tls | default false }}
-      - name: external
-        port: {{ .Values.kafka.listeners.external.port | default 9094 }}
-        type: {{ .Values.kafka.listeners.external.type | default "nodeport" }}
-        tls: {{ .Values.kafka.listeners.external.tls | default false }}
+      {{- range .Values.kafka.listeners }}
+      - name: {{ .name }}
+        port: {{ .port }}
+        type: {{ .type }}
+        tls: {{ .tls }}
+      {{- end }}
     config:
       {{- range $key, $value := .Values.kafka.config }}
-      {{ $key }}: {{ $value | quote }}
+      {{ $key }}: {{ $value }}
       {{- end }}
-    storage:
-      type: {{ .Values.kafka.storage.type | default "ephemeral" }}
-      {{- if eq (default "ephemeral" .Values.kafka.storage.type) "persistent-claim" }}
-      size: {{ .Values.kafka.storage.size | default "10Gi" }}
-      {{- if .Values.kafka.storage.storageClass }}
-      class: {{ .Values.kafka.storage.storageClass }}
-      {{- end }}
-      {{- end }}
-    {{- if .Values.metrics }}
-    {{- if .Values.metrics.enabled }}
+    {{- if .Values.kafka.metricsConfig.enabled }}
     metricsConfig:
       type: jmxPrometheusExporter
       valueFrom:
         configMapKeyRef:
-          name: {{ .Values.kafka.clusterName }}-metrics
+          name: {{ include "strimzi-kafka.clusterName" . }}-metrics
           key: kafka-metrics-config.yml
     {{- end }}
+  {{- if .Values.entityOperator.enabled }}
+  entityOperator:
+    {{- if .Values.entityOperator.topicOperator.enabled }}
+    topicOperator:
+      resources:
+        {{- toYaml .Values.entityOperator.topicOperator.resources | nindent 8 }}
     {{- end }}
+    {{- if .Values.entityOperator.userOperator.enabled }}
+    userOperator:
+      resources:
+        {{- toYaml .Values.entityOperator.userOperator.resources | nindent 8 }}
+    {{- end }}
+  {{- end }}
+{{- else }}
+# =============================================================================
+# Kafka Cluster with ZooKeeper (Legacy Mode)
+# =============================================================================
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: {{ include "strimzi-kafka.clusterName" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "strimzi-kafka.labels" . | nindent 4 }}
+spec:
+  kafka:
+    version: {{ .Values.kafka.version }}
+    replicas: {{ .Values.kafka.replicas }}
+    listeners:
+      {{- range .Values.kafka.listeners }}
+      - name: {{ .name }}
+        port: {{ .port }}
+        type: {{ .type }}
+        tls: {{ .tls }}
+      {{- end }}
+    storage:
+      {{- if eq .Values.kafka.storage.type "ephemeral" }}
+      type: ephemeral
+      {{- else }}
+      type: jbod
+      volumes:
+        - id: 0
+          type: persistent-claim
+          size: {{ .Values.kafka.storage.size | default "10Gi" }}
+          deleteClaim: {{ .Values.kafka.storage.deleteClaim | default false }}
+      {{- end }}
+    config:
+      {{- range $key, $value := .Values.kafka.config }}
+      {{ $key }}: {{ $value }}
+      {{- end }}
+    resources:
+      {{- toYaml .Values.kafka.resources | nindent 6 }}
+  zookeeper:
+    replicas: 3
+    storage:
+      type: ephemeral
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+      limits:
+        memory: "512Mi"
+        cpu: "200m"
   entityOperator:
     topicOperator: {}
     userOperator: {}
-
-{{/* Kafka Topics */}}
-{{- range .Values.topics }}
----
-apiVersion: kafka.strimzi.io/v1beta2
-kind: KafkaTopic
-metadata:
-  name: {{ .name }}
-  namespace: {{ $.Values.namespace }}
-  labels:
-    strimzi.io/cluster: {{ $.Values.kafka.clusterName }}
-    app.kubernetes.io/part-of: {{ $.Values.projectName }}
-spec:
-  partitions: {{ .partitions | default 1 }}
-  replicas: {{ .replicas | default 1 }}
-  {{- if .config }}
-  config:
-    {{- range $key, $value := .config }}
-    {{ $key }}: {{ $value | quote }}
-    {{- end }}
-  {{- end }}
-{{- end }}
-
-{{/* Metrics ConfigMap */}}
-{{- if .Values.metrics }}
-{{- if .Values.metrics.enabled }}
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: {{ .Values.kafka.clusterName }}-metrics
-  namespace: {{ .Values.namespace }}
-  labels:
-    app.kubernetes.io/name: kafka
-    app.kubernetes.io/part-of: {{ .Values.projectName }}
-data:
-  kafka-metrics-config.yml: |
-    lowercaseOutputName: true
-    lowercaseOutputLabelNames: true
-    rules:
-      # Broker metrics
-      - pattern: kafka.server<type=(.+), name=(.+), clientId=(.+), topic=(.+), partition=(.*)>Value
-        name: kafka_server_$1_$2
-        type: GAUGE
-        labels:
-          clientId: "$3"
-          topic: "$4"
-          partition: "$5"
-      - pattern: kafka.server<type=(.+), name=(.+), clientId=(.+), brokerHost=(.+), brokerPort=(.+)>Value
-        name: kafka_server_$1_$2
-        type: GAUGE
-        labels:
-          clientId: "$3"
-          broker: "$4:$5"
-      - pattern: kafka.server<type=(.+), name=(.+)>Value
-        name: kafka_server_$1_$2
-        type: GAUGE
-      # Controller metrics
-      - pattern: kafka.controller<type=(.+), name=(.+)>Value
-        name: kafka_controller_$1_$2
-        type: GAUGE
-      # Log metrics
-      - pattern: kafka.log<type=(.+), name=(.+), topic=(.+), partition=(.+)>Value
-        name: kafka_log_$1_$2
-        type: GAUGE
-        labels:
-          topic: "$3"
-          partition: "$4"
-      # Network metrics
-      - pattern: kafka.network<type=(.+), name=(.+), request=(.+)>Value
-        name: kafka_network_$1_$2
-        type: GAUGE
-        labels:
-          request: "$3"
-{{- end }}
-{{- end }}
-
 {{- end }}

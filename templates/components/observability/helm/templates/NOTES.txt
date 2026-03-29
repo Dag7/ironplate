@@ -1,0 +1,47 @@
+=============================================================================
+Observability Stack
+=============================================================================
+
+The complete observability stack has been deployed to the {{ .Values.namespace }} namespace.
+
+Components:
+  - Prometheus: Metrics collection and storage
+  - Grafana: Visualization and dashboards
+  - Alertmanager: Alert routing and notifications
+  - Tempo: Distributed tracing (Official Grafana chart)
+  - OTEL Collector: Trace ingestion gateway (Official OpenTelemetry chart)
+
+Access:
+  - Grafana:        kubectl port-forward -n {{ .Values.namespace }} svc/observability-stack-grafana 3000:80
+  - Prometheus:     kubectl port-forward -n {{ .Values.namespace }} svc/observability-stack-kube-p-prometheus 9090:9090
+  - Alertmanager:   kubectl port-forward -n {{ .Values.namespace }} svc/observability-stack-kube-p-alertmanager 9093:9093
+  - Tempo:          kubectl port-forward -n {{ .Values.namespace }} svc/observability-stack-tempo 3200:3200
+  - OTEL Collector: kubectl port-forward -n {{ .Values.namespace }} svc/observability-stack-otel-collector 4317:4317
+
+ServiceMonitors:
+{{- if .Values.serviceMonitors.enabled }}
+  The following services are being monitored:
+{{- range .Values.serviceMonitors.services }}
+  - {{ .name }} ({{ .namespace }})
+{{- end }}
+{{- else }}
+  ServiceMonitors are disabled.
+{{- end }}
+
+PrometheusRules:
+{{- if .Values.prometheusRules.enabled }}
+  Alerting rules are enabled.
+{{- else }}
+  PrometheusRules are disabled.
+{{- end }}
+
+Tempo:
+{{- if .Values.tempo.enabled }}
+  Tempo distributed tracing is enabled.
+  - Storage backend: {{ .Values.tempo.tempo.storage.trace.backend }}
+  - Block retention: {{ .Values.tempo.tempo.compactor.compaction.block_retention }}
+{{- else }}
+  Tempo is disabled.
+{{- end }}
+
+=============================================================================

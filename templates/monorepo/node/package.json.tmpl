@@ -14,6 +14,7 @@
     "dev": "tilt up",
     "build:all": "npx nx run-many --target=build --all",
     "build:packages:tsc": "npx nx run-many --target=build --all --exclude='apps/*'",
+    "watch:packages:tsc": "npx nx run-many --target=build --all --exclude='apps/*' --watch",
     "test": "npx nx run-many --target=test --all",
     "test:all": "vitest run --workspace vitest.workspace.ts",
     "test:watch": "vitest --workspace vitest.workspace.ts",

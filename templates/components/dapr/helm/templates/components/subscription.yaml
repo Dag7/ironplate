@@ -1,0 +1,39 @@
+{{- range $name, $sub := .Values.subscriptions }}
+{{- if $sub.enabled }}
+---
+apiVersion: dapr.io/v2alpha1
+kind: Subscription
+metadata:
+  name: {{ $name }}-subscription
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "dapr.labels" $ | nindent 4 }}
+{{- /* scopes is at root level, not under spec */ -}}
+{{- if $sub.scopes }}
+scopes:
+  {{- range $sub.scopes }}
+  - {{ . }}
+  {{- end }}
+{{- end }}
+spec:
+  pubsubname: {{ $sub.pubsubname }}
+  topic: {{ $sub.topic }}
+  routes:
+    default: {{ $sub.route }}
+  {{- if $sub.bulkSubscribe }}
+  bulkSubscribe:
+    enabled: {{ $sub.bulkSubscribe.enabled }}
+    maxMessagesCount: {{ $sub.bulkSubscribe.maxMessagesCount }}
+    maxAwaitDurationMs: {{ $sub.bulkSubscribe.maxAwaitDurationMs }}
+  {{- end }}
+  {{- if $sub.deadLetterTopic }}
+  deadLetterTopic: {{ $sub.deadLetterTopic }}
+  {{- end }}
+  {{- /* Use app-specific consumer group to prevent cross-app message delivery */ -}}
+  {{- /* spec.metadata is a map, not an array */ -}}
+  {{- if $sub.scopes }}
+  metadata:
+    consumerGroup: {{ index $sub.scopes 0 }}-{{ $name }}
+  {{- end }}
+{{- end }}
+{{- end }}

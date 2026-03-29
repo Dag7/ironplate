@@ -1,0 +1,62 @@
+================================================================================
+  Strimzi Kafka
+================================================================================
+
+Kafka cluster "{{ include "strimzi-kafka.clusterName" . }}" has been deployed!
+
+Mode: {{ if .Values.kafka.kraft.enabled }}KRaft (No Zookeeper){{ else }}ZooKeeper{{ end }}
+Replicas: {{ .Values.kafka.replicas }}
+Version: {{ .Values.kafka.version }}
+
+--------------------------------------------------------------------------------
+  Connection Information
+--------------------------------------------------------------------------------
+
+Internal Bootstrap Server:
+  {{ include "strimzi-kafka.bootstrapServer" . }}
+
+From within the cluster, connect using:
+  KAFKA_BROKERS={{ include "strimzi-kafka.clusterName" . }}-kafka-bootstrap.{{ .Values.namespace }}:9092
+
+--------------------------------------------------------------------------------
+  Topics Created
+--------------------------------------------------------------------------------
+{{- range .Values.topics }}
+  - {{ .name }} ({{ .partitions }} partitions, {{ .replicas }} replicas)
+{{- end }}
+
+--------------------------------------------------------------------------------
+  Useful Commands
+--------------------------------------------------------------------------------
+
+# Check Kafka pods status
+kubectl get pods -n {{ .Values.namespace }} -l strimzi.io/cluster={{ include "strimzi-kafka.clusterName" . }}
+
+# List topics
+kubectl exec -it {{ include "strimzi-kafka.clusterName" . }}-pool-0 -n {{ .Values.namespace }} -- \
+  bin/kafka-topics.sh --list --bootstrap-server localhost:9092
+
+# Describe a topic
+kubectl exec -it {{ include "strimzi-kafka.clusterName" . }}-pool-0 -n {{ .Values.namespace }} -- \
+  bin/kafka-topics.sh --describe --topic <TOPIC_NAME> --bootstrap-server localhost:9092
+
+# Produce a test message
+kubectl exec -it {{ include "strimzi-kafka.clusterName" . }}-pool-0 -n {{ .Values.namespace }} -- \
+  bin/kafka-console-producer.sh --topic <TOPIC_NAME> --bootstrap-server localhost:9092
+
+# Consume messages
+kubectl exec -it {{ include "strimzi-kafka.clusterName" . }}-pool-0 -n {{ .Values.namespace }} -- \
+  bin/kafka-console-consumer.sh --topic <TOPIC_NAME> --from-beginning --bootstrap-server localhost:9092
+
+{{- if .Values.kafkaUI.enabled }}
+--------------------------------------------------------------------------------
+  Kafka UI
+--------------------------------------------------------------------------------
+
+Kafka UI is enabled and available at:
+  kubectl port-forward svc/kafka-ui -n {{ .Values.namespace }} 8080:8080
+
+Then access: http://localhost:8080
+{{- end }}
+
+================================================================================

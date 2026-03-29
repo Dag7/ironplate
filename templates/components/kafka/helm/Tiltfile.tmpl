@@ -8,43 +8,46 @@ def setup_kafka(environment):
     Args:
         environment: 'development', 'staging', or 'production'
     """
+
+    # Environment-specific overrides (merged with base values.yaml)
     env_values_file = {
-        "development": None,
+        "development": None,  # Use only base values.yaml
         "staging": "values-staging.yaml",
         "production": "values-prod.yaml",
     }.get(environment)
 
     chart_path = "k8s/helm/infra/kafka"
 
-    # Helm dependencies
+    # Helm dependencies (uses config.main_dir for absolute path)
     ensure_helm_deps(chart_path, "strimzi", "https://strimzi.io/charts/")
 
-    # Build values files list
-    values_files = ["./%s/values.yaml" % chart_path]
+    # Build values files list (relative to this Tiltfile's directory)
+    values_files = ["./values.yaml"]
     if env_values_file:
-        values_files.append("./%s/%s" % (chart_path, env_values_file))
+        values_files.append("./%s" % env_values_file)
 
-    # Deploy via Helm
+    # Deploy via Helm (path relative to this Tiltfile's directory)
     k8s_yaml(helm(
-        "./%s" % chart_path,
+        ".",
         name="strimzi-kafka",
-        namespace="kafka",
+        namespace="{{ .Project.Metadata.Name }}-kafka",
         values=values_files
     ))
 
-    # Kafka Namespace
+    # Kafka Namespace - must exist before any kafka resources
     k8s_resource(
         new_name="kafka-namespace",
-        objects=["kafka:namespace"],
+        objects=["{{ .Project.Metadata.Name }}-kafka:namespace"],
         labels=["kafka"]
     )
 
-    # Strimzi Bootstrap - applies resources in correct order
+    # Strimzi Bootstrap - applies all Strimzi resources in correct order
+    # This fixes race conditions where Deployment is created before ClusterRoles
     local_resource(
         "strimzi-bootstrap",
         cmd="""
             echo "Bootstrapping Strimzi resources..."
-            helm template strimzi-kafka ./%s --namespace kafka --values ./%s/values.yaml | \
+            helm template strimzi-kafka ./%s --namespace {{ .Project.Metadata.Name }}-kafka --values ./%s/values.yaml | \
                 kubectl apply --server-side -f - 2>&1 | grep -v "unchanged" || true
             echo "Waiting for ClusterRoles..."
             kubectl wait --for=jsonpath='{.metadata.name}'=strimzi-cluster-operator-global clusterrole/strimzi-cluster-operator-global --timeout=30s
@@ -54,7 +57,8 @@ def setup_kafka(environment):
         labels=["kafka"]
     )
 
-    # Strimzi CRDs
+    # Strimzi CRDs (cluster-scoped, no namespace)
+    # Updated for Strimzi 0.49.1 - kafkamirrormakers removed (use kafkamirrormaker2s instead)
     k8s_resource(
         new_name="strimzi-crds",
         resource_deps=["strimzi-bootstrap"],
@@ -74,11 +78,15 @@ def setup_kafka(environment):
     )
 
     # Strimzi RBAC
+    # Note: Operator runs in project-kafka namespace (same as release namespace)
+    # ClusterRoles and ClusterRoleBindings are cluster-scoped (no namespace)
     k8s_resource(
         new_name="strimzi-rbac",
         objects=[
-            "strimzi-cluster-operator:ServiceAccount:kafka",
-            "strimzi-cluster-operator:ConfigMap:kafka",
+            # Namespaced resources (in kafka namespace where operator runs)
+            "strimzi-cluster-operator:ServiceAccount:{{ .Project.Metadata.Name }}-kafka",
+            "strimzi-cluster-operator:ConfigMap:{{ .Project.Metadata.Name }}-kafka",
+            # Cluster-scoped resources (no namespace)
             "strimzi-cluster-operator-namespaced:ClusterRole",
             "strimzi-cluster-operator-global:ClusterRole",
             "strimzi-cluster-operator-leader-election:ClusterRole",
@@ -89,10 +97,11 @@ def setup_kafka(environment):
             "strimzi-cluster-operator:ClusterRoleBinding",
             "strimzi-cluster-operator-kafka-broker-delegation:ClusterRoleBinding",
             "strimzi-cluster-operator-kafka-client-delegation:ClusterRoleBinding",
-            "strimzi-cluster-operator:RoleBinding:kafka",
-            "strimzi-cluster-operator-leader-election:RoleBinding:kafka",
-            "strimzi-cluster-operator-watched:RoleBinding:kafka",
-            "strimzi-cluster-operator-entity-operator-delegation:RoleBinding:kafka",
+            # RoleBindings in kafka namespace
+            "strimzi-cluster-operator:RoleBinding:{{ .Project.Metadata.Name }}-kafka",
+            "strimzi-cluster-operator-leader-election:RoleBinding:{{ .Project.Metadata.Name }}-kafka",
+            "strimzi-cluster-operator-watched:RoleBinding:{{ .Project.Metadata.Name }}-kafka",
+            "strimzi-cluster-operator-entity-operator-delegation:RoleBinding:{{ .Project.Metadata.Name }}-kafka",
         ],
         resource_deps=["strimzi-crds"],
         labels=["kafka"]
@@ -109,22 +118,24 @@ def setup_kafka(environment):
     k8s_resource(
         new_name="kafka-cluster",
         objects=[
-            "{{ .Project.Metadata.Name }}-kafka:Kafka:kafka",
-            "{{ .Project.Metadata.Name }}-kafka-pool:KafkaNodePool:kafka",
+            "{{ .Project.Metadata.Name }}-kafka:Kafka:{{ .Project.Metadata.Name }}-kafka",
+            "{{ .Project.Metadata.Name }}-kafka-pool:KafkaNodePool:{{ .Project.Metadata.Name }}-kafka",
+            "{{ .Project.Metadata.Name }}-kafka-metrics:configmap:{{ .Project.Metadata.Name }}-kafka",
         ],
         resource_deps=["strimzi-cluster-operator"],
         labels=["kafka"]
     )
 
-    # Kafka Ready - waits for broker pods
+    # Kafka Ready - waits for Kafka broker pods to be fully operational
+    # First waits for pods to exist, then waits for them to be Ready
     local_resource(
         "kafka-ready",
         cmd="""
             echo "Waiting for Kafka pods to be created..."
             for i in $(seq 1 60); do
-                if kubectl get pod -l strimzi.io/cluster={{ .Project.Metadata.Name }}-kafka,strimzi.io/kind=Kafka -n kafka 2>/dev/null | grep -q {{ .Project.Metadata.Name }}-kafka; then
+                if kubectl get pod -l strimzi.io/cluster={{ .Project.Metadata.Name }}-kafka,strimzi.io/kind=Kafka -n {{ .Project.Metadata.Name }}-kafka 2>/dev/null | grep -q {{ .Project.Metadata.Name }}-kafka; then
                     echo "Kafka pods found, waiting for Ready condition..."
-                    kubectl wait pod -l strimzi.io/cluster={{ .Project.Metadata.Name }}-kafka,strimzi.io/kind=Kafka -n kafka --for=condition=Ready --timeout=300s
+                    kubectl wait pod -l strimzi.io/cluster={{ .Project.Metadata.Name }}-kafka,strimzi.io/kind=Kafka -n {{ .Project.Metadata.Name }}-kafka --for=condition=Ready --timeout=300s
                     exit $?
                 fi
                 echo "No Kafka pods yet, waiting... ($i/60)"
@@ -137,13 +148,27 @@ def setup_kafka(environment):
         labels=["kafka"]
     )
 
-    # Kafka UI (dev only)
-    if environment == "development":
+    # Kafka Topics - only created when topics are defined in values.yaml
+    # To add topics, define them in values.yaml under the `topics` array,
+    # then add their object references here:
+    #   k8s_resource(
+    #       new_name="kafka-topics",
+    #       objects=[
+    #           "<project>-<topic-name>:KafkaTopic:<namespace>",
+    #       ],
+    #       resource_deps=["kafka-ready"],
+    #       labels=["kafka"]
+    #   )
+
+    # Kafka UI (dev/staging only)
+    # NOTE: Ingress managed centrally via ingress chart with IAP
+    if environment in ["development", "staging"]:
+        port = "9080:8080" if environment == "development" else "9081:8080"
         k8s_resource(
             "kafka-ui",
             resource_deps=["kafka-cluster"],
             labels=["kafka"],
-            port_forwards=["9080:8080"]
+            port_forwards=[port]
         )
 
 setup_kafka('development')

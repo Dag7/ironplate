@@ -1,0 +1,10 @@
+{{- if .Values.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespace }}
+  labels:
+    {{- include "dapr.labels" . | nindent 4 }}
+    # Enable Dapr sidecar injection for all pods in this namespace
+    dapr-injection: enabled
+{{- end }}

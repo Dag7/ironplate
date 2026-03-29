@@ -1,0 +1,31 @@
+{{/*
+=============================================================================
+ServiceMonitors for Project Services
+=============================================================================
+Creates ServiceMonitors for scraping metrics from project microservices.
+*/}}
+{{- if .Values.serviceMonitors.enabled }}
+{{- range .Values.serviceMonitors.services }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "prometheus-stack.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: servicemonitor
+spec:
+  namespaceSelector:
+    matchNames:
+      - {{ .namespace }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .name }}
+  endpoints:
+    - port: {{ .port }}
+      path: {{ .path }}
+      interval: {{ .interval }}
+      scrapeTimeout: {{ default "10s" .scrapeTimeout }}
+{{- end }}
+{{- end }}

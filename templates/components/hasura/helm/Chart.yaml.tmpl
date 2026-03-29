@@ -1,6 +1,22 @@
 apiVersion: v2
 name: hasura
-description: Hasura GraphQL Engine for {{ .Project.Metadata.Name }}
+description: Hasura GraphQL Engine deployment for {{ .Project.Metadata.Name }}
 type: application
-version: 0.1.0
+version: 1.0.0
 appVersion: "2.40.0"
+
+keywords:
+  - hasura
+  - graphql
+  - api
+  - database
+
+home: https://hasura.io
+sources:
+  - https://github.com/hasura/graphql-engine
+
+maintainers:
+  - name: {{ .Project.Metadata.Organization }}
+
+# No dependencies - we use Cloud SQL, not in-cluster postgres
+# External secrets are managed separately

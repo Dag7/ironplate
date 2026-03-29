@@ -1,0 +1,56 @@
+{{- if .Values.resiliency.enabled }}
+apiVersion: dapr.io/v1alpha1
+kind: Resiliency
+metadata:
+  name: {{ .Values.namespace }}-resiliency
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "dapr.labels" . | nindent 4 }}
+spec:
+  policies:
+    {{- if .Values.resiliency.policies.retries }}
+    retries:
+      {{- range $name, $config := .Values.resiliency.policies.retries }}
+      {{ $name }}:
+        policy: {{ $config.policy }}
+        maxRetries: {{ $config.maxRetries }}
+        duration: {{ $config.duration }}
+        {{- if $config.maxInterval }}
+        maxInterval: {{ $config.maxInterval }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+
+    {{- if .Values.resiliency.policies.circuitBreakers }}
+    circuitBreakers:
+      {{- range $name, $config := .Values.resiliency.policies.circuitBreakers }}
+      {{ $name }}:
+        maxRequests: {{ $config.maxRequests }}
+        interval: {{ $config.interval }}
+        timeout: {{ $config.timeout }}
+        trip: {{ $config.trip }}
+      {{- end }}
+    {{- end }}
+
+  {{- if .Values.resiliency.targets }}
+  targets:
+    {{- if .Values.resiliency.targets.components }}
+    components:
+      {{- range $name, $config := .Values.resiliency.targets.components }}
+      {{ $name }}:
+        {{- if $config.inbound }}
+        inbound:
+          {{- if $config.inbound.retry }}
+          retry: {{ $config.inbound.retry }}
+          {{- end }}
+        {{- end }}
+        {{- if $config.outbound }}
+        outbound:
+          {{- if $config.outbound.retry }}
+          retry: {{ $config.outbound.retry }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+  {{- end }}
+{{- end }}

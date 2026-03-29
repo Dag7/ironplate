@@ -1,0 +1,31 @@
+================================================================================
+  Dapr Runtime - {{ .Chart.Name }}
+================================================================================
+
+Dapr has been configured for the {{ .Values.namespace }} platform.
+
+Components deployed:
+{{- if .Values.components.kafkaPubsub.enabled }}
+  - kafka-pubsub: Kafka pub/sub component for event streaming
+{{- end }}
+
+{{- if .Values.resiliency.enabled }}
+Resiliency policies:
+{{- range $name, $config := .Values.resiliency.policies.retries }}
+  - {{ $name }}: {{ $config.policy }} retry (max {{ $config.maxRetries }} retries)
+{{- end }}
+{{- end }}
+
+To enable Dapr sidecar injection, add these annotations to your deployment:
+
+  annotations:
+    dapr.io/enabled: "true"
+    dapr.io/app-id: "your-service-name"
+    dapr.io/app-port: "3000"
+    dapr.io/log-level: "info"
+
+Dapr HTTP API (from within the pod):
+  - Publish event: POST http://localhost:3500/v1.0/publish/kafka-pubsub/topic-name
+  - State: GET/POST http://localhost:3500/v1.0/state/statestore
+
+================================================================================
