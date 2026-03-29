@@ -2,7 +2,9 @@
 package engine
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -50,6 +52,10 @@ func IronFuncMap() template.FuncMap {
 		"list":    list,
 
 		// Encoding
+		"sha256Hex": func(s string) string {
+			h := sha256.Sum256([]byte(s))
+			return hex.EncodeToString(h[:])
+		},
 		"b64enc": func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) },
 		"b64dec": func(s string) (string, error) {
 			data, err := base64.StdEncoding.DecodeString(s)

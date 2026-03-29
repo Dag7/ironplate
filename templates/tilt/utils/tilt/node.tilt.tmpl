@@ -151,7 +151,7 @@ def client_node_service(
     name,
     target,
     context='.',
-    dockerfile='dockerfiles/nextjs.node.Dockerfile',
+    dockerfile='dockerfiles/nextjs.Dockerfile',
     node_version='node:{{ .Project.Spec.Monorepo.NodeVersion }}-alpine',
     src_folder='apps',
     workspace_name=None,

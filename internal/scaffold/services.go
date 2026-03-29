@@ -52,12 +52,14 @@ func DefaultExampleServices(cfg *config.ProjectConfig) []ExampleService {
 	}
 
 	if cfg.Spec.HasLanguage("go") {
+		name := "api"
 		port := 3000
 		if cfg.Spec.HasLanguage("node") {
-			port = 3200 // Don't conflict with node services
+			name = "api-go" // Avoid collision with node-api service
+			port = 3200     // Don't conflict with node services
 		}
 		services = append(services, ExampleService{
-			Name:  "api",
+			Name:  name,
 			Type:  "go-api",
 			Group: "core",
 			Port:  port,

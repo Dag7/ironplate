@@ -11,16 +11,18 @@ load('../../../../utils/tilt/k8s/helm.utils.tilt', 'ensure_helm_deps')
 def setup_{{ snakeCase .Service.Group }}():
     """
     Setup {{ .Service.Group }} services.
-    Returns the rendered YAML for k8s_yaml().
+    Applies the rendered Helm YAML to K8s.
     """
     chart_path = "k8s/helm/{{ .Project.Metadata.Name }}/{{ .Service.Group }}"
     ensure_helm_deps(chart_path)
 
-    return helm(
+    k8s_yaml(helm(
         "./%s" % chart_path,
         name="{{ .Service.Group }}",
         namespace="{{ .Project.Metadata.Name }}",
         values=[
             "./%s/values.yaml" % chart_path
         ]
-    )
+    ))
+
+setup_{{ snakeCase .Service.Group }}()

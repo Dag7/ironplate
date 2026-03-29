@@ -23,6 +23,12 @@ corepack enable
 corepack prepare --activate
 {{ if eq .Project.Spec.Monorepo.PackageManager "yarn" -}}
 yarn config set --home enableTelemetry 0
+# Ensure local yarn binary is available (matches bundled yarnPath in .yarnrc.yml)
+yarn_version=$(node -p "require('$base_path/package.json').packageManager.split('@')[1]")
+if [ ! -f "$base_path/.yarn/releases/yarn-${yarn_version}.cjs" ]; then
+    echo "Downloading yarn ${yarn_version} binary..."
+    cd "$base_path" && yarn set version "$yarn_version"
+fi
 {{ end -}}
 {{ end -}}
 

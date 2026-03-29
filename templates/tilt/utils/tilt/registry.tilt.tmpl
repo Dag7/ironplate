@@ -154,13 +154,17 @@ def setup_services(target, profile, builders):
     """
     Setup all services for the active profile using the given builders.
 
+    1. Builds Docker images via the appropriate builder function
+    2. Loads service group Helm charts (which call k8s_yaml)
+    3. Applies k8s_resource labels and port-forwards from registry
+
     Args:
         target:   build target ('development' / 'production')
         profile:  resolved profile struct
         builders: dict of { 'node-api': builder_fn, 'go-api': builder_fn, ... }
     """
     all_services = profile.registry.get('services', {})
-    groups_setup = {}
+    groups_loaded = {}
 
     for svc_name in profile.services:
         svc = all_services.get(svc_name)
@@ -184,11 +188,26 @@ def setup_services(target, profile, builders):
         else:
             builder(svc_name, target)
 
-        # Track group for Helm chart loading
-        if group not in groups_setup:
-            groups_setup[group] = True
+        # Load group Helm chart once per group (Tiltfile calls k8s_yaml itself)
+        if group not in groups_loaded:
+            group_tiltfile = './k8s/helm/{{ .Project.Metadata.Name }}/%s/Tiltfile' % group
+            include(group_tiltfile)
+            groups_loaded[group] = True
 
-    return list(groups_setup.keys())
+        # Apply labels and port-forwards from registry
+        labels = svc.get('labels', [group])
+        port = svc.get('port', 3000)
+        debug_port = svc.get('debugPort', 0)
+        port_forwards = ['%d:3000' % port]
+        if debug_port:
+            port_forwards.append('%d:9229' % debug_port)
+
+        k8s_resource(
+            svc_name,
+            resource_deps=['packages-build'],
+            labels=labels,
+            port_forwards=port_forwards,
+        )
 
 
 # ---------------------------------------------------------------------------
