@@ -33,9 +33,7 @@ def development_configs(name, src_folder):
 {{ else }}        sync('pnpm-lock.yaml', '/app/pnpm-lock.yaml'),
 {{ end }}        sync('nx.json', '/app/nx.json'),
         sync("tsconfig.json", "/app/tsconfig.json"),
-        sync("tsconfig.app.json", "/app/tsconfig.app.json"),
         sync("tsconfig.base.json", "/app/tsconfig.base.json"),
-        sync("tsconfig.spec.json", "/app/tsconfig.spec.json"),
     ])
 
     ignore = [
@@ -67,11 +65,10 @@ def only(name, src_folder):
         ".yarnrc.yml",
 {{ else }}        "pnpm-lock.yaml",
 {{ end }}        "tsconfig.json",
-        "tsconfig.app.json",
         "tsconfig.base.json",
-        "tsconfig.spec.json",
         "scripts",
         "nx.json",
+        "packages/node",
     ]
 
     for pkg in used_packages:
@@ -94,6 +91,7 @@ def only_ui(name, src_folder):
 {{ end }}        "tsconfig.json",
         "tsconfig.base.json",
         "nx.json",
+        "packages",
     ]
 
     for pkg in used_packages:
@@ -151,7 +149,7 @@ def client_node_service(
     name,
     target,
     context='.',
-    dockerfile='dockerfiles/nextjs.Dockerfile',
+    dockerfile='dockerfiles/nextjs.node.Dockerfile',
     node_version='node:{{ .Project.Spec.Monorepo.NodeVersion }}-alpine',
     src_folder='apps',
     workspace_name=None,

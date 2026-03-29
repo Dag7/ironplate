@@ -27,10 +27,16 @@ def deploy_local_infra():
 
     # Admin tools
     k8s_yaml(os.path.join(local_dir, 'pgadmin.yaml'))
-    k8s_resource('pgadmin', labels=['01_infra_dashboard'])
+    k8s_resource('pgadmin', objects=[
+        'pgadmin-data-claim:persistentvolumeclaim',
+        'pgadmin-servers-config:configmap',
+        'pgadmin-pgpass-config:configmap',
+    ], labels=['01_infra_dashboard'])
 
     k8s_yaml(os.path.join(local_dir, 'redisinsight.yaml'))
-    k8s_resource('redisinsight', labels=['01_infra_dashboard'])
+    k8s_resource('redisinsight', objects=[
+        'redisinsight-pv-claim:persistentvolumeclaim',
+    ], labels=['01_infra_dashboard'])
 
     # Traefik dashboard (k3d installs Traefik; this exposes the dashboard)
     k8s_yaml(os.path.join(local_dir, 'traefik.yaml'))
@@ -42,6 +48,9 @@ def deploy_local_infra():
 {{ if eq .Project.Spec.Cloud.Provider "gcp" }}
     # GCS emulator for local development
     k8s_yaml(os.path.join(local_dir, 'fake-gcs.yaml'))
-    k8s_resource('fake-gcs', labels=['01_infra'], port_forwards=['4443:4443'])
+    k8s_resource('fake-gcs', objects=[
+        'fake-gcs-nginx-config:configmap',
+        '{{ .Project.Metadata.Name }}-fake-gcs-data:persistentvolumeclaim',
+    ], labels=['01_infra'], port_forwards=['4443:4443'])
 {{ end }}
 deploy_local_infra()

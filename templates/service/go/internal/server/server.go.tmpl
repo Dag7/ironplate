@@ -1,24 +1,21 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
-
-	"github.com/dag7/ironplate/packages/go/health"
 
 	"{{ .GoModule }}/{{ .Service.SrcFolder }}/{{ .Service.Name }}/internal/config"
 )
 
 // Server holds the HTTP server dependencies.
 type Server struct {
-	cfg    *config.Config
-	health *health.Handler
+	cfg *config.Config
 }
 
 // New creates a new Server.
 func New(cfg *config.Config) *Server {
 	return &Server{
-		cfg:    cfg,
-		health: health.NewHandler("{{ .Service.Name }}"),
+		cfg: cfg,
 	}
 }
 
@@ -27,10 +24,18 @@ func (s *Server) Router() http.Handler {
 	mux := http.NewServeMux()
 
 	// Health probes
-	s.health.RegisterRoutes(mux)
+	mux.HandleFunc("GET /healthz", s.handleHealth)
 
 	// Application routes
 	// mux.HandleFunc("GET /api/...", s.handleExample)
 
 	return mux
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"service": "{{ .Service.Name }}",
+	})
 }

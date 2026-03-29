@@ -24,19 +24,30 @@ defaults:
   serviceType: ClusterIP
   resources:
     requests:
-      cpu: 50m
+{{ if eq .Service.Type "nextjs" }}      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+{{ else }}      cpu: 50m
       memory: 128Mi
     limits:
       cpu: 200m
       memory: 256Mi
+{{ end }}
   healthCheck:
     enabled: true
     readinessPath: /healthz
     livenessPath: /healthz
-    initialDelaySeconds: 5
+{{ if eq .Service.Type "nextjs" }}    initialDelaySeconds: 30
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 10
+{{ else }}    initialDelaySeconds: 5
     periodSeconds: 10
     timeoutSeconds: 5
     failureThreshold: 5
+{{ end }}
   autoscaling:
     enabled: false
   pdb:

@@ -6,7 +6,7 @@
 
 # Configuration
 HASURA_NAMESPACE = "{{ .Project.Metadata.Name }}"
-HASURA_ADMIN_SECRET = "{{ .Project.Metadata.Name }}"  # From .devcontainer/k3s/manifests/_secrets/{{ .Project.Metadata.Name }}.yaml
+HASURA_ADMIN_SECRET = "{{ .Project.Metadata.Name }}-hasura-admin-secret"  # From .devcontainer/k3s/manifests/_secrets/secrets.yaml
 
 def setup_hasura(environment):
     """

@@ -212,6 +212,7 @@ def setup_services(target, profile, builders):
 
         k8s_resource(
             svc_name,
+            objects=['%s:serviceaccount' % svc_name],
             resource_deps=deps,
             labels=labels,
             port_forwards=port_forwards,

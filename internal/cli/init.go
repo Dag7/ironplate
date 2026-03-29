@@ -171,10 +171,12 @@ func runInteractivePrompts(name, org, domain, language, provider, preset string)
 
 	// Organization
 	if org == "" {
+		defaultOrg := name
+		org = defaultOrg
 		err := huh.NewInput().
 			Title("Organization").
-			Description("Used for package scope and namespacing (e.g., myorg)").
-			Placeholder("myorg").
+			Description("npm scope (@org/pkg) and Go module path (github.com/org/project)").
+			Placeholder(defaultOrg).
 			Value(&org).
 			Validate(func(s string) error {
 				if s == "" {

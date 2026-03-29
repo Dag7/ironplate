@@ -59,7 +59,7 @@ def dev_resources():
             echo "📦 Syncing Go workspace..."
             go work sync
             echo "📦 Running go mod tidy on workspace modules..."
-            for mod in $(go work edit -json | jq -r '.Use[].DiskPath'); do
+            for mod in $(go work edit -json | jq -r '.Use[]?.DiskPath // empty'); do
                 echo "  → Tidying $mod"
                 (cd "$mod" && go mod tidy)
             done
@@ -95,7 +95,7 @@ def dev_resources():
         'gql-codegen-init',
         cmd='''
             echo "🔄 Running initial GraphQL codegen..."
-            HASURA_GRAPHQL_ADMIN_SECRET={{ .Project.Metadata.Name }} {{ .Project.Spec.Monorepo.PackageManager }} gql:codegen
+            HASURA_GRAPHQL_ADMIN_SECRET={{ .Project.Metadata.Name }}-hasura-admin-secret {{ .Project.Spec.Monorepo.PackageManager }} gql:codegen
             echo "✅ GraphQL types generated!"
         ''',
         resource_deps=['hasura-setup', 'packages-build'],
@@ -134,7 +134,7 @@ def dev_resources():
                 --ext 'graphql,gql' \
                 --ignore '**/generated/**' \
                 --delay 2 \
-                --exec 'echo "🔄 GraphQL files changed, regenerating..." && HASURA_GRAPHQL_ADMIN_SECRET={{ .Project.Metadata.Name }} {{ .Project.Spec.Monorepo.PackageManager }} gql:codegen && echo "✅ Codegen complete!"'
+                --exec 'echo "🔄 GraphQL files changed, regenerating..." && HASURA_GRAPHQL_ADMIN_SECRET={{ .Project.Metadata.Name }}-hasura-admin-secret {{ .Project.Spec.Monorepo.PackageManager }} gql:codegen && echo "✅ Codegen complete!"'
         ''',
         resource_deps=['gql-codegen-init'],
         labels=['01_dev-tools'],

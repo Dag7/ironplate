@@ -115,13 +115,18 @@ def setup_kafka(environment):
     )
 
     # Kafka Cluster
+    kafka_cluster_objects = [
+        "{{ .Project.Metadata.Name }}-kafka:Kafka:{{ .Project.Metadata.Name }}-kafka",
+        "{{ .Project.Metadata.Name }}-kafka-pool:KafkaNodePool:{{ .Project.Metadata.Name }}-kafka",
+    ]
+
+    # Metrics configmap is only created when metricsConfig.enabled is true in values.yaml
+    # Uncomment below if you enable kafka.metricsConfig.enabled:
+    # kafka_cluster_objects.append("{{ .Project.Metadata.Name }}-kafka-metrics:configmap:{{ .Project.Metadata.Name }}-kafka")
+
     k8s_resource(
         new_name="kafka-cluster",
-        objects=[
-            "{{ .Project.Metadata.Name }}-kafka:Kafka:{{ .Project.Metadata.Name }}-kafka",
-            "{{ .Project.Metadata.Name }}-kafka-pool:KafkaNodePool:{{ .Project.Metadata.Name }}-kafka",
-            "{{ .Project.Metadata.Name }}-kafka-metrics:configmap:{{ .Project.Metadata.Name }}-kafka",
-        ],
+        objects=kafka_cluster_objects,
         resource_deps=["strimzi-cluster-operator"],
         labels=["kafka"]
     )

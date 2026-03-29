@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
-
-	"github.com/dag7/ironplate/packages/go/graceful"
 
 	"{{ .GoModule }}/{{ .Service.SrcFolder }}/{{ .Service.Name }}/internal/config"
 	"{{ .GoModule }}/{{ .Service.SrcFolder }}/{{ .Service.Name }}/internal/server"
@@ -25,7 +27,27 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	if err := graceful.ListenAndServe(httpServer, nil); err != nil {
-		log.Fatalf("server error: %v", err)
+	// Start server in a goroutine.
+	go func() {
+		log.Printf("starting {{ .Service.Name }} on port %d", cfg.Port)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	// Wait for interrupt signal for graceful shutdown.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	log.Println("shutting down server...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := httpServer.Shutdown(ctx); err != nil {
+		log.Fatalf("forced shutdown: %v", err)
 	}
+
+	log.Println("server stopped")
 }

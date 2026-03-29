@@ -20,15 +20,7 @@
     "helmet": "^8.0.0",
     "compression": "^1.7.5",
     "dotenv": "^16.4.5",
-    "zod": "^3.23.8",
-    "@ironplate/logger": "^0.0.1",
-    "@ironplate/config": "^0.0.1",
-    "@ironplate/errors": "^0.0.1",
-    "@ironplate/health": "^0.0.1",
-    "@ironplate/http-client": "^0.0.1"{{ if hasItem .Service.Features "eventbus" }},
-    "@ironplate/eventbus": "^0.0.1"{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }},
-    "@ironplate/graphql": "^0.0.1"{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "redis" }},
-    "@ironplate/cache": "^0.0.1"{{ end }}
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
