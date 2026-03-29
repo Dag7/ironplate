@@ -85,7 +85,7 @@ spec:
 }
 
 func TestNewDefaultConfig(t *testing.T) {
-	cfg := NewDefaultConfig("my-app", "myorg")
+	cfg := NewDefaultConfig("my-app", "myorg", "myorg.dev")
 
 	assert.Equal(t, CurrentAPIVersion, cfg.APIVersion)
 	assert.Equal(t, CurrentKind, cfg.Kind)
@@ -583,7 +583,7 @@ spec:
 }
 
 func TestNewDefaultConfig_Fields(t *testing.T) {
-	cfg := NewDefaultConfig("my-platform", "acme")
+	cfg := NewDefaultConfig("my-platform", "acme", "acme.dev")
 
 	// Top-level
 	assert.Equal(t, "ironplate.dev/v1", cfg.APIVersion)
@@ -592,7 +592,7 @@ func TestNewDefaultConfig_Fields(t *testing.T) {
 	// Metadata
 	assert.Equal(t, "my-platform", cfg.Metadata.Name)
 	assert.Equal(t, "acme", cfg.Metadata.Organization)
-	assert.Empty(t, cfg.Metadata.Domain, "domain should be empty by default")
+	assert.Equal(t, "acme.dev", cfg.Metadata.Domain)
 	assert.Empty(t, cfg.Metadata.Description, "description should be empty by default")
 
 	// Languages

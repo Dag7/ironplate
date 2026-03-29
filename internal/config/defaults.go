@@ -1,13 +1,14 @@
 package config
 
 // NewDefaultConfig creates a ProjectConfig with sensible defaults.
-func NewDefaultConfig(name, org string) *ProjectConfig {
+func NewDefaultConfig(name, org, domain string) *ProjectConfig {
 	return &ProjectConfig{
 		APIVersion: CurrentAPIVersion,
 		Kind:       CurrentKind,
 		Metadata: Metadata{
 			Name:         name,
 			Organization: org,
+			Domain:       domain,
 		},
 		Spec: ProjectSpec{
 			Languages: []string{"node"},

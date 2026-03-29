@@ -772,45 +772,45 @@ token: $slack-token
 `,
       "template.app-deployed": `
 message: |
-  :white_check_mark: *{{.app.metadata.name}}* deployed successfully to *${environment}*
-  {{if .app.status.sync.revision}}Revision: \`{{.app.status.sync.revision | substr 0 7}}\`{{end}}
+  :white_check_mark: *{{ "{{" }}.app.metadata.name{{ "}}" }}* deployed successfully to *${environment}*
+  {{ "{{" }}if .app.status.sync.revision{{ "}}" }}Revision: \`{{ "{{" }}.app.status.sync.revision | substr 0 7{{ "}}" }}\`{{ "{{" }}end{{ "}}" }}
 slack:
   attachments: |
     [{
       "color": "#18be52",
       "fields": [
-        {"title": "Application", "value": "{{.app.metadata.name}}", "short": true},
+        {"title": "Application", "value": "{{ "{{" }}.app.metadata.name{{ "}}" }}", "short": true},
         {"title": "Environment", "value": "${environment}", "short": true},
-        {"title": "Sync Status", "value": "{{.app.status.sync.status}}", "short": true}
+        {"title": "Sync Status", "value": "{{ "{{" }}.app.status.sync.status{{ "}}" }}", "short": true}
       ]
     }]
 `,
       "template.app-sync-failed": `
 message: |
-  :x: *{{.app.metadata.name}}* sync failed in *${environment}*
-  {{if .app.status.operationState.message}}Error: {{.app.status.operationState.message}}{{end}}
+  :x: *{{ "{{" }}.app.metadata.name{{ "}}" }}* sync failed in *${environment}*
+  {{ "{{" }}if .app.status.operationState.message{{ "}}" }}Error: {{ "{{" }}.app.status.operationState.message{{ "}}" }}{{ "{{" }}end{{ "}}" }}
 slack:
   attachments: |
     [{
       "color": "#E96D76",
       "fields": [
-        {"title": "Application", "value": "{{.app.metadata.name}}", "short": true},
+        {"title": "Application", "value": "{{ "{{" }}.app.metadata.name{{ "}}" }}", "short": true},
         {"title": "Environment", "value": "${environment}", "short": true},
-        {"title": "Error", "value": "{{.app.status.operationState.message}}", "short": false}
+        {"title": "Error", "value": "{{ "{{" }}.app.status.operationState.message{{ "}}" }}", "short": false}
       ]
     }]
 `,
       "template.app-health-degraded": `
 message: |
-  :warning: *{{.app.metadata.name}}* health degraded in *${environment}*
-  Status: {{.app.status.health.status}}
+  :warning: *{{ "{{" }}.app.metadata.name{{ "}}" }}* health degraded in *${environment}*
+  Status: {{ "{{" }}.app.status.health.status{{ "}}" }}
 slack:
   attachments: |
     [{
       "color": "#f4c030",
       "fields": [
-        {"title": "Application", "value": "{{.app.metadata.name}}", "short": true},
-        {"title": "Health", "value": "{{.app.status.health.status}}", "short": true}
+        {"title": "Application", "value": "{{ "{{" }}.app.metadata.name{{ "}}" }}", "short": true},
+        {"title": "Health", "value": "{{ "{{" }}.app.status.health.status{{ "}}" }}", "short": true}
       ]
     }]
 `,

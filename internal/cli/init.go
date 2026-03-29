@@ -19,6 +19,7 @@ func newInitCmd() *cobra.Command {
 	var (
 		name           string
 		organization   string
+		domain         string
 		language       string
 		provider       string
 		preset         string
@@ -50,13 +51,16 @@ Use --non-interactive with flags for scripted usage.`,
 				if organization == "" {
 					return fmt.Errorf("--organization is required in non-interactive mode")
 				}
+				if domain == "" {
+					return fmt.Errorf("--domain is required in non-interactive mode")
+				}
 
-				cfg = config.NewDefaultConfig(name, organization)
+				cfg = config.NewDefaultConfig(name, organization, domain)
 				applyFlags(cfg, language, provider, preset, tools)
 			} else {
 				// Interactive TUI prompts
 				var err error
-				cfg, err = runInteractivePrompts(name, organization, language, provider, preset)
+				cfg, err = runInteractivePrompts(name, organization, domain, language, provider, preset)
 				if err != nil {
 					return err
 				}
@@ -99,6 +103,7 @@ Use --non-interactive with flags for scripted usage.`,
 			printer.Section("Configuration Summary")
 			fmt.Printf("  Project:    %s\n", cfg.Metadata.Name)
 			fmt.Printf("  Org:        %s\n", cfg.Metadata.Organization)
+			fmt.Printf("  Domain:     %s\n", cfg.Metadata.Domain)
 			fmt.Printf("  Languages:  %v\n", cfg.Spec.Languages)
 			fmt.Printf("  Provider:   %s\n", cfg.Spec.Cloud.Provider)
 			fmt.Printf("  Components: %v\n", cfg.Spec.Infrastructure.Components)
@@ -120,6 +125,7 @@ Use --non-interactive with flags for scripted usage.`,
 
 	cmd.Flags().StringVar(&name, "name", "", "Project name (kebab-case)")
 	cmd.Flags().StringVar(&organization, "org", "", "Organization name")
+	cmd.Flags().StringVar(&domain, "domain", "", "Base domain (e.g., myplatform.dev)")
 	cmd.Flags().StringVar(&language, "language", "", "Primary language: node, go, mixed")
 	cmd.Flags().StringVar(&provider, "provider", "", "Cloud provider: gcp, aws, azure, none")
 	cmd.Flags().StringVar(&preset, "preset", "", "Component preset: minimal, standard, full")
@@ -129,7 +135,7 @@ Use --non-interactive with flags for scripted usage.`,
 	return cmd
 }
 
-func runInteractivePrompts(name, org, language, provider, preset string) (*config.ProjectConfig, error) {
+func runInteractivePrompts(name, org, domain, language, provider, preset string) (*config.ProjectConfig, error) {
 	// Project Name
 	if name == "" {
 		err := huh.NewInput().
@@ -159,6 +165,25 @@ func runInteractivePrompts(name, org, language, provider, preset string) (*confi
 			Validate(func(s string) error {
 				if s == "" {
 					return fmt.Errorf("organization is required")
+				}
+				return nil
+			}).
+			Run()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Domain
+	if domain == "" {
+		err := huh.NewInput().
+			Title("Domain").
+			Description("Base domain for your project (e.g., myplatform.dev)").
+			Placeholder("myplatform.dev").
+			Value(&domain).
+			Validate(func(s string) error {
+				if s == "" {
+					return fmt.Errorf("domain is required")
 				}
 				return nil
 			}).
@@ -236,7 +261,7 @@ func runInteractivePrompts(name, org, language, provider, preset string) (*confi
 		return nil, err
 	}
 
-	cfg := config.NewDefaultConfig(name, org)
+	cfg := config.NewDefaultConfig(name, org, domain)
 	applyFlags(cfg, language, provider, preset, "")
 	cfg.Spec.DevEnvironment.Tools = selectedTools
 

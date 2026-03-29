@@ -50,7 +50,7 @@ infrastructure: {}
 	err = os.WriteFile(filepath.Join(regDir, "registry.yaml"), []byte(regContent), 0o644)
 	require.NoError(t, err)
 
-	cfg := config.NewDefaultConfig("my-platform", "acme")
+	cfg := config.NewDefaultConfig("my-platform", "acme", "acme.dev")
 	ctx := engine.NewTemplateContext(cfg)
 	ctx.Service = &engine.ServiceTemplateData{
 		Name:      "auth-service",
@@ -98,7 +98,7 @@ infrastructure: {}
 	err = os.WriteFile(filepath.Join(regDir, "registry.yaml"), []byte(regContent), 0o644)
 	require.NoError(t, err)
 
-	cfg := config.NewDefaultConfig("my-platform", "acme")
+	cfg := config.NewDefaultConfig("my-platform", "acme", "acme.dev")
 	ctx := engine.NewTemplateContext(cfg)
 	ctx.Service = &engine.ServiceTemplateData{
 		Name:      "auth-service",
@@ -147,7 +147,7 @@ infrastructure: {}
 	err = os.WriteFile(filepath.Join(regDir, "registry.yaml"), []byte(regContent), 0o644)
 	require.NoError(t, err)
 
-	cfg := config.NewDefaultConfig("my-platform", "acme")
+	cfg := config.NewDefaultConfig("my-platform", "acme", "acme.dev")
 	ctx := engine.NewTemplateContext(cfg)
 	ctx.Service = &engine.ServiceTemplateData{
 		Name:      "auth-worker",
@@ -175,7 +175,7 @@ func TestRegisterServiceInRegistry_CreatesNew(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// No tilt/ directory or registry file exists
-	cfg := config.NewDefaultConfig("my-platform", "acme")
+	cfg := config.NewDefaultConfig("my-platform", "acme", "acme.dev")
 	ctx := engine.NewTemplateContext(cfg)
 	ctx.Service = &engine.ServiceTemplateData{
 		Name:      "web-app",
@@ -274,7 +274,7 @@ serviceGroups: {}
 	err = os.WriteFile(filepath.Join(argoDir, "values.yaml"), []byte(valuesContent), 0o644)
 	require.NoError(t, err)
 
-	cfg := config.NewDefaultConfig("my-platform", "acme")
+	cfg := config.NewDefaultConfig("my-platform", "acme", "acme.dev")
 	cfg.Spec.GitOps.Enabled = true
 	cfg.Spec.Infrastructure.Components = append(cfg.Spec.Infrastructure.Components, "argocd")
 
@@ -316,7 +316,7 @@ serviceGroups:
 	err = os.WriteFile(filepath.Join(argoDir, "values.yaml"), []byte(valuesContent), 0o644)
 	require.NoError(t, err)
 
-	cfg := config.NewDefaultConfig("my-platform", "acme")
+	cfg := config.NewDefaultConfig("my-platform", "acme", "acme.dev")
 	ctx := engine.NewTemplateContext(cfg)
 	ctx.Service = &engine.ServiceTemplateData{
 		Name:  "auth-worker",
@@ -353,7 +353,7 @@ serviceGroups:
 	err = os.WriteFile(filepath.Join(argoDir, "values.yaml"), []byte(valuesContent), 0o644)
 	require.NoError(t, err)
 
-	cfg := config.NewDefaultConfig("my-platform", "acme")
+	cfg := config.NewDefaultConfig("my-platform", "acme", "acme.dev")
 	ctx := engine.NewTemplateContext(cfg)
 	ctx.Service = &engine.ServiceTemplateData{
 		Name:  "auth-service",

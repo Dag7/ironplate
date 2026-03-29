@@ -62,7 +62,7 @@ func templateFS() fstest.MapFS {
 }
 
 func TestNewScaffolder(t *testing.T) {
-	cfg := config.NewDefaultConfig("test-project", "acme")
+	cfg := config.NewDefaultConfig("test-project", "acme", "acme.dev")
 	outputDir := t.TempDir()
 	tmplFS := templateFS()
 
