@@ -1,0 +1,8 @@
+def create_namespace(namespace):
+    namespaceYaml = blob("""
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: {}
+    """.format(namespace))
+    k8s_yaml(namespaceYaml)

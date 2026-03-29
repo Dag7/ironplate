@@ -3,6 +3,7 @@ package engine
 import (
 	"time"
 
+	"github.com/dag7/ironplate/internal/components"
 	"github.com/dag7/ironplate/internal/config"
 )
 
@@ -92,12 +93,16 @@ type ComputedValues struct {
 	HasMC          bool
 	HasKompose     bool
 
+	// InfraEntries holds the Tilt registry entries for selected components.
+	// Populated after dependency resolution; used by registry.yaml.tmpl.
+	InfraEntries []components.InfraRegistryEntry
+
 	// Year for copyright and license templates.
 	Year int
 }
 
-// UpdateComputedComponents refreshes component flags from a resolved list
-// (which may include auto-resolved dependencies not in the original config).
+// UpdateComputedComponents refreshes component flags and infra registry entries
+// from a resolved list (which may include auto-resolved dependencies not in the original config).
 func (ctx *TemplateContext) UpdateComputedComponents(resolved []string) {
 	has := make(map[string]bool, len(resolved))
 	for _, c := range resolved {
@@ -111,6 +116,9 @@ func (ctx *TemplateContext) UpdateComputedComponents(resolved []string) {
 	ctx.Computed.HasExternalSecrets = has["external-secrets"]
 	ctx.Computed.HasArgoCD = has["argocd"]
 	ctx.Computed.HasLangfuse = has["langfuse"]
+
+	// Build infra registry entries from resolved components (single source of truth)
+	ctx.Computed.InfraEntries = components.InfraRegistryEntries(resolved)
 }
 
 // NewTemplateContext creates a TemplateContext from a ProjectConfig.

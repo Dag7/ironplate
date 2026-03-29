@@ -41,29 +41,11 @@ infrastructure:
     enabled: true
     required: true
     local: true
-{{ if .Computed.HasRedis }}  redis:
+{{ range .Computed.InfraEntries }}  {{ .Name }}:
     enabled: true
-    local: true
-{{ end }}{{ if .Computed.HasKafka }}  kafka:
-    enabled: true
-    helmPath: k8s/helm/infra/kafka
-    setupFn: setup_kafka
-{{ end }}{{ if .Computed.HasHasura }}  hasura:
-    enabled: true
-    helmPath: k8s/helm/infra/hasura
-    setupFn: setup_hasura
-    deps: [postgres]
-{{ end }}{{ if .Computed.HasDapr }}  dapr:
-    enabled: true
-    helmPath: k8s/helm/infra/dapr
-    setupFn: setup_dapr
-{{ end }}{{ if .Computed.HasObservability }}  observability:
-    enabled: true
-    helmPath: k8s/helm/infra/observability-stack
-    setupFn: setup_observability_stack
-{{ end }}{{ if .Computed.HasLangfuse }}  langfuse:
-    enabled: true
-    helmPath: k8s/helm/infra/langfuse
-    setupFn: setup_langfuse
-    deps: [redis, postgres]
-{{ end }}
+{{ if .HelmPath }}    helmPath: {{ .HelmPath }}
+{{ end }}{{ if .SetupFn }}    setupFn: {{ .SetupFn }}
+{{ end }}{{ if .Local }}    local: true
+{{ end }}{{ if .Required }}    required: true
+{{ end }}{{ if .InfraDeps }}    deps: [{{ join ", " .InfraDeps }}]
+{{ end }}{{ end }}

@@ -1,0 +1,86 @@
+def setup_lib_watcher(lib_path, charts_base_path, labels=['01_dev-tools']):
+    """
+    Sets up a local_resource that watches a Helm library chart and updates
+    all dependent charts when the library changes.
+    """
+    update_script = '''
+        set -e
+        CHARTS_BASE="{charts_base}"
+        LIB_NAME=$(basename "{lib_path}")
+
+        echo "Finding charts that depend on $LIB_NAME..."
+
+        updated=0
+        for chart_yaml in "$CHARTS_BASE"/*/Chart.yaml; do
+            chart_dir=$(dirname "$chart_yaml")
+            chart_name=$(basename "$chart_dir")
+
+            if [ "$chart_name" = "$LIB_NAME" ] || [ "$chart_name" = "_lib" ]; then
+                continue
+            fi
+
+            if grep -q "doorz-service\\|{lib_name}" "$chart_yaml" 2>/dev/null; then
+                echo "Updating $chart_name..."
+                helm dependency update "$chart_dir" --skip-refresh 2>/dev/null || helm dependency update "$chart_dir"
+                updated=$((updated + 1))
+            fi
+        done
+
+        if [ $updated -gt 0 ]; then
+            echo "Updated $updated chart(s)"
+        else
+            echo "No charts needed updating"
+        fi
+    '''.format(
+        charts_base=charts_base_path,
+        lib_path=lib_path,
+        lib_name=lib_path.rsplit('/', 1)[-1] if '/' in lib_path else lib_path
+    )
+
+    local_resource(
+        name='helm-lib-watcher',
+        cmd=update_script,
+        deps=[lib_path],
+        labels=labels,
+        auto_init=False,
+        allow_parallel=True
+    )
+
+
+def ensure_helm_deps(chart_path, repo_name=None, repo_url=None):
+    """
+    Ensures helm chart dependencies are fetched if not present.
+    Uses local() for synchronous execution during Tiltfile load.
+    """
+    abs_chart_path = os.path.join(config.main_dir, chart_path)
+
+    if repo_name and repo_url:
+        cmd = """
+            set -e
+            CHART_PATH="{abs_chart_path}"
+            if [ ! -d "$CHART_PATH/charts" ] || [ -z "$(ls -A "$CHART_PATH/charts" 2>/dev/null)" ]; then
+                echo "Fetching {repo_name} helm dependencies..."
+                helm repo add {repo_name} {repo_url} 2>/dev/null || true
+                helm repo update {repo_name}
+                helm dependency update "$CHART_PATH"
+            fi
+        """.format(
+            abs_chart_path=abs_chart_path,
+            repo_name=repo_name,
+            repo_url=repo_url
+        )
+    else:
+        cmd = """
+            set -e
+            CHART_PATH="{abs_chart_path}"
+            if [ ! -d "$CHART_PATH/charts" ] || [ -z "$(ls -A "$CHART_PATH/charts" 2>/dev/null)" ]; then
+                echo "Updating helm dependencies for {chart_path}..."
+                helm dependency update "$CHART_PATH"
+            fi
+        """.format(
+            abs_chart_path=abs_chart_path,
+            chart_path=chart_path
+        )
+
+    local(cmd, quiet=True)
+    return chart_path

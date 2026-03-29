@@ -1,0 +1,8 @@
+def clear_pvc(pvc_name, namespace='default', labels=['01_cleanup']):
+    name = 'clear-%s' % pvc_name
+    local_resource(
+        name,
+        cmd='kubectl patch pvc %s -p \'{"metadata":{"finalizers":null}}\' --type=merge -n %s || true' % (pvc_name, namespace),
+        auto_init=False,
+        labels=labels)
+    return name

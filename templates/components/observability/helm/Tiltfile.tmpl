@@ -1,0 +1,201 @@
+# Load utilities
+load('../../../../utils/tilt/k8s/namespace.utils.tilt', 'create_namespace')
+load('../../../../utils/tilt/k8s/helm.utils.tilt', 'ensure_helm_deps')
+
+# Set to True for full Prometheus + Grafana stack in local dev
+ENABLE_FULL_STACK = True
+
+def setup_observability_stack(environment, full_stack=None):
+    """
+    Setup observability stack: OTEL Collector + Tempo + (optionally) Prometheus + Grafana.
+
+    Args:
+        environment: 'development', 'staging', or 'production'
+        full_stack: Override full Prometheus stack (None = use ENABLE_FULL_STACK)
+    """
+    enable_full = ENABLE_FULL_STACK
+    if full_stack != None:
+        enable_full = full_stack
+
+    chart_path = "k8s/helm/infra/observability"
+
+    # Build values files list
+    values_files = ["./%s/values.yaml" % chart_path]
+    if environment == "development" and enable_full:
+        values_files.append("./%s/values-dev-full.yaml" % chart_path)
+    elif environment == "staging":
+        values_files.append("./%s/values-staging.yaml" % chart_path)
+    elif environment == "production":
+        values_files.append("./%s/values-prod.yaml" % chart_path)
+
+    # Create monitoring namespace
+    create_namespace("monitoring")
+
+    # Ensure helm dependencies
+    ensure_helm_deps(chart_path)
+
+    # Deploy via Helm
+    k8s_yaml(helm(
+        "./%s" % chart_path,
+        name="observability-stack",
+        namespace="monitoring",
+        values=values_files
+    ))
+
+    # Monitoring Namespace
+    k8s_resource(
+        new_name="monitoring-namespace",
+        objects=["monitoring:namespace"],
+        labels=["observability"]
+    )
+
+    # Tempo (distributed tracing)
+    k8s_resource(
+        "observability-stack-tempo",
+        new_name="tempo",
+        objects=[
+            "observability-stack-tempo:serviceaccount:monitoring",
+            "tempo:configmap:monitoring",
+        ],
+        labels=["observability"],
+        port_forwards=["3200:3200"],
+        resource_deps=["monitoring-namespace"]
+    )
+
+    # OTEL Collector (trace ingestion)
+    k8s_resource(
+        "observability-stack-otel-collector",
+        new_name="otel-collector",
+        objects=[
+            "observability-stack-otel-collector:serviceaccount:monitoring",
+            "observability-stack-otel-collector:configmap:monitoring",
+        ],
+        labels=["observability"],
+        port_forwards=["4317:4317", "4318:4318"],
+        resource_deps=["monitoring-namespace", "tempo"]
+    )
+
+    # Full Stack Resources (Prometheus, Grafana, Alertmanager)
+    if enable_full:
+        # Prometheus CRDs
+        k8s_resource(
+            new_name="prometheus-crds",
+            objects=[
+                "alertmanagerconfigs.monitoring.coreos.com:customresourcedefinition",
+                "alertmanagers.monitoring.coreos.com:customresourcedefinition",
+                "podmonitors.monitoring.coreos.com:customresourcedefinition",
+                "probes.monitoring.coreos.com:customresourcedefinition",
+                "prometheusagents.monitoring.coreos.com:customresourcedefinition",
+                "prometheuses.monitoring.coreos.com:customresourcedefinition",
+                "prometheusrules.monitoring.coreos.com:customresourcedefinition",
+                "scrapeconfigs.monitoring.coreos.com:customresourcedefinition",
+                "servicemonitors.monitoring.coreos.com:customresourcedefinition",
+                "thanosrulers.monitoring.coreos.com:customresourcedefinition",
+            ],
+            labels=["observability"]
+        )
+
+        # Admission webhooks
+        k8s_resource(
+            "observability-stack-kube-p-admission-create",
+            new_name="prom-admission-create",
+            objects=[
+                "observability-stack-kube-p-admission:serviceaccount:monitoring",
+                "observability-stack-kube-p-admission:role:monitoring",
+                "observability-stack-kube-p-admission:rolebinding:monitoring",
+                "observability-stack-kube-p-admission:clusterrole",
+                "observability-stack-kube-p-admission:clusterrolebinding",
+                "observability-stack-kube-p-admission:mutatingwebhookconfiguration",
+                "observability-stack-kube-p-admission:validatingwebhookconfiguration",
+            ],
+            labels=["observability"],
+            resource_deps=["monitoring-namespace", "prometheus-crds"]
+        )
+
+        k8s_resource(
+            "observability-stack-kube-p-admission-patch",
+            new_name="prom-admission-patch",
+            labels=["observability"],
+            resource_deps=["prom-admission-create"]
+        )
+
+        # Prometheus Operator
+        k8s_resource(
+            "observability-stack-kube-p-operator",
+            new_name="prometheus-operator",
+            objects=[
+                "observability-stack-kube-p-operator:clusterrole",
+                "observability-stack-kube-p-operator:clusterrolebinding",
+                "observability-stack-kube-p-operator:serviceaccount:monitoring",
+                "observability-stack-kube-p-operator:servicemonitor:monitoring",
+                "observability-stack-kube-p-prometheus-operator:prometheusrule:monitoring",
+            ],
+            labels=["observability"],
+            resource_deps=["prom-admission-patch"]
+        )
+
+        # Prometheus & Alertmanager
+        k8s_resource(
+            new_name="prometheus-alertmanager",
+            objects=[
+                "observability-stack-kube-p-prometheus:Prometheus:monitoring",
+                "observability-stack-kube-p-prometheus:clusterrole",
+                "observability-stack-kube-p-prometheus:clusterrolebinding",
+                "observability-stack-kube-p-prometheus:serviceaccount:monitoring",
+                "observability-stack-kube-p-prometheus:service:monitoring",
+                "observability-stack-kube-p-prometheus:servicemonitor:monitoring",
+                "observability-stack-kube-p-prometheus:configmap:monitoring",
+                "observability-stack-kube-p-alertmanager:Alertmanager:monitoring",
+                "observability-stack-kube-p-alertmanager:serviceaccount:monitoring",
+                "observability-stack-kube-p-alertmanager:service:monitoring",
+                "observability-stack-kube-p-alertmanager:servicemonitor:monitoring",
+                "alertmanager-observability-stack-kube-p-alertmanager:secret:monitoring",
+            ],
+            labels=["observability"],
+            port_forwards=["9090:9090", "9093:9093"],
+            resource_deps=["prometheus-operator"]
+        )
+
+        # Kube State Metrics
+        k8s_resource(
+            "observability-stack-kube-state-metrics",
+            new_name="kube-state-metrics",
+            objects=[
+                "observability-stack-kube-state-metrics:clusterrole",
+                "observability-stack-kube-state-metrics:clusterrolebinding",
+                "observability-stack-kube-state-metrics:serviceaccount:monitoring",
+            ],
+            labels=["observability"],
+            resource_deps=["monitoring-namespace"]
+        )
+
+        # Grafana RBAC
+        k8s_resource(
+            new_name="grafana-rbac",
+            objects=[
+                "observability-stack-grafana:serviceaccount:monitoring",
+                "observability-stack-grafana:role:monitoring",
+                "observability-stack-grafana:rolebinding:monitoring",
+                "observability-stack-grafana-clusterrole:clusterrole",
+                "observability-stack-grafana-clusterrolebinding:clusterrolebinding",
+            ],
+            labels=["observability"],
+            resource_deps=["monitoring-namespace"]
+        )
+
+        # Grafana
+        k8s_resource(
+            "observability-stack-grafana",
+            new_name="grafana",
+            objects=[
+                "observability-stack-grafana-config-dashboards:configmap:monitoring",
+                "observability-stack-grafana:configmap:monitoring",
+                "observability-stack-grafana:secret:monitoring",
+                "observability-stack-kube-p-grafana-datasource:configmap:monitoring",
+            ],
+            labels=["observability"],
+            port_forwards=["3050:3000"],
+            resource_deps=["grafana-rbac", "prometheus-alertmanager"]
+        )
+
+setup_observability_stack('development')

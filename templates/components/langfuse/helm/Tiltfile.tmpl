@@ -1,0 +1,72 @@
+# Load utilities
+load('../../../../utils/tilt/k8s/pvc.utils.tilt', 'clear_pvc')
+
+def setup_langfuse(environment):
+    """
+    Setup Langfuse LLM Observability.
+
+    Args:
+        environment: 'development', 'staging', or 'production'
+    """
+    env_values_file = {
+        "development": "values-dev.yaml",
+        "staging": "values-staging.yaml",
+        "production": "values-prod.yaml",
+    }.get(environment)
+
+    chart_path = "k8s/helm/infra/langfuse"
+
+    # Build values files list
+    values_files = ["./%s/values.yaml" % chart_path]
+    if env_values_file:
+        values_files.append("./%s/%s" % (chart_path, env_values_file))
+
+    # Deploy via Helm
+    k8s_yaml(helm(
+        "./%s" % chart_path,
+        name="langfuse",
+        namespace="{{ .Project.Metadata.Name }}",
+        values=values_files
+    ))
+
+    # Base resource dependencies
+    web_deps = ["langfuse-clickhouse"]
+    worker_deps = ["langfuse-clickhouse"]
+
+    # PostgreSQL StatefulSet (dev only)
+    if environment == "development":
+        clear_pvc('data-langfuse-postgres-0', '{{ .Project.Metadata.Name }}')
+        clear_pvc('data-langfuse-clickhouse-0', '{{ .Project.Metadata.Name }}')
+
+        k8s_resource(
+            "langfuse-postgres",
+            labels=["langfuse"],
+        )
+        web_deps.append("langfuse-postgres")
+        web_deps.append("redis")
+
+    # ClickHouse StatefulSet
+    k8s_resource(
+        "langfuse-clickhouse",
+        labels=["langfuse"],
+    )
+
+    # Langfuse Web
+    k8s_resource(
+        "langfuse",
+        objects=[
+            "langfuse:ServiceAccount:{{ .Project.Metadata.Name }}",
+        ],
+        resource_deps=web_deps,
+        labels=["langfuse"],
+        port_forwards=["4000:80"]
+    )
+
+    # Langfuse Worker
+    k8s_resource(
+        "langfuse-worker",
+        resource_deps=worker_deps + (["redis"] if environment == "development" else []),
+        labels=["langfuse"],
+    )
+
+setup_langfuse('development')

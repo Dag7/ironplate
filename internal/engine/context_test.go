@@ -162,6 +162,72 @@ func TestNewTemplateContext_Year(t *testing.T) {
 	assert.Equal(t, time.Now().Year(), ctx.Computed.Year)
 }
 
+func TestUpdateComputedComponents(t *testing.T) {
+	t.Run("sets flags and infra entries from resolved list", func(t *testing.T) {
+		cfg := newTestConfig()
+		cfg.Spec.Infrastructure.Components = []string{}
+		ctx := NewTemplateContext(cfg)
+
+		// All flags should be false initially
+		assert.False(t, ctx.Computed.HasKafka)
+		assert.False(t, ctx.Computed.HasRedis)
+		assert.Nil(t, ctx.Computed.InfraEntries)
+
+		// Simulate dependency resolution adding kafka and redis
+		ctx.UpdateComputedComponents([]string{"kafka", "redis"})
+
+		assert.True(t, ctx.Computed.HasKafka)
+		assert.True(t, ctx.Computed.HasRedis)
+		assert.False(t, ctx.Computed.HasHasura)
+		assert.False(t, ctx.Computed.HasDapr)
+		assert.False(t, ctx.Computed.HasObservability)
+		assert.False(t, ctx.Computed.HasExternalSecrets)
+		assert.False(t, ctx.Computed.HasArgoCD)
+		assert.False(t, ctx.Computed.HasLangfuse)
+
+		// InfraEntries should be populated for components with Tilt config
+		assert.NotEmpty(t, ctx.Computed.InfraEntries)
+		names := make([]string, len(ctx.Computed.InfraEntries))
+		for i, e := range ctx.Computed.InfraEntries {
+			names[i] = e.Name
+		}
+		assert.Contains(t, names, "kafka")
+		assert.Contains(t, names, "redis")
+	})
+
+	t.Run("all components", func(t *testing.T) {
+		cfg := newTestConfig()
+		ctx := NewTemplateContext(cfg)
+
+		all := []string{"kafka", "hasura", "dapr", "redis", "observability", "external-secrets", "argocd", "langfuse"}
+		ctx.UpdateComputedComponents(all)
+
+		assert.True(t, ctx.Computed.HasKafka)
+		assert.True(t, ctx.Computed.HasHasura)
+		assert.True(t, ctx.Computed.HasDapr)
+		assert.True(t, ctx.Computed.HasRedis)
+		assert.True(t, ctx.Computed.HasObservability)
+		assert.True(t, ctx.Computed.HasExternalSecrets)
+		assert.True(t, ctx.Computed.HasArgoCD)
+		assert.True(t, ctx.Computed.HasLangfuse)
+	})
+
+	t.Run("empty list clears all flags", func(t *testing.T) {
+		cfg := newTestConfig()
+		ctx := NewTemplateContext(cfg)
+
+		// Initially has components from config
+		assert.True(t, ctx.Computed.HasKafka)
+
+		// Update with empty list
+		ctx.UpdateComputedComponents([]string{})
+
+		assert.False(t, ctx.Computed.HasKafka)
+		assert.False(t, ctx.Computed.HasRedis)
+		assert.Empty(t, ctx.Computed.InfraEntries)
+	})
+}
+
 func TestServiceTemplateData_HasFeature(t *testing.T) {
 	svc := &ServiceTemplateData{
 		Name:     "auth-service",

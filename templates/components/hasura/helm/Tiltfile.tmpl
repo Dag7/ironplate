@@ -1,0 +1,83 @@
+# =============================================================================
+# Hasura GraphQL Engine - Tiltfile
+# =============================================================================
+
+HASURA_NAMESPACE = "{{ .Project.Metadata.Name }}"
+HASURA_ADMIN_SECRET = "{{ .Project.Metadata.Name }}"
+
+def setup_hasura(environment):
+    """
+    Setup Hasura GraphQL Engine.
+
+    Args:
+        environment: 'development', 'staging', or 'production'
+    """
+    env_values_file = {
+        "development": None,
+        "staging": "values-staging.yaml",
+        "production": "values-prod.yaml",
+    }.get(environment)
+
+    chart_path = "k8s/helm/infra/hasura"
+
+    # Build values files list
+    values_files = ["./%s/values.yaml" % chart_path]
+    if env_values_file:
+        values_files.append("./%s/%s" % (chart_path, env_values_file))
+
+    # Deploy via Helm
+    k8s_yaml(helm(
+        "./%s" % chart_path,
+        name="hasura",
+        namespace=HASURA_NAMESPACE,
+        values=values_files
+    ))
+
+    # Hasura deployment
+    k8s_resource(
+        "hasura",
+        objects=[
+            "hasura:ServiceAccount:%s" % HASURA_NAMESPACE,
+        ],
+        resource_deps=["postgresql"],
+        labels=["hasura"],
+        port_forwards=["8080:8080"]
+    )
+
+    # Development-only resources
+    if environment == "development":
+        _setup_development_resources()
+
+
+def _setup_development_resources():
+    """Setup hasura-setup and hasura-console for local development."""
+
+    local_resource(
+        "hasura-setup",
+        dir="/workspaces/{{ .Project.Metadata.Name }}/hasura",
+        cmd="""
+            set -e
+            echo "Applying metadata..."
+            hasura metadata apply --admin-secret {secret}
+            echo "Applying migrations..."
+            hasura migrate apply --all-databases --admin-secret {secret}
+            echo "Reloading metadata..."
+            hasura metadata reload --admin-secret {secret}
+            echo "Applying seeds..."
+            hasura seed apply --database-name default --admin-secret {secret} || echo "No seeds to apply"
+            echo "Hasura setup complete"
+        """.format(secret=HASURA_ADMIN_SECRET),
+        auto_init=True,
+        resource_deps=["hasura"],
+        labels=["hasura"],
+    )
+
+    local_resource(
+        "hasura-console",
+        serve_dir="/workspaces/{{ .Project.Metadata.Name }}/hasura",
+        serve_cmd="hasura console --endpoint http://localhost:8080 --admin-secret {}".format(HASURA_ADMIN_SECRET),
+        auto_init=False,
+        labels=["hasura"],
+    )
+
+setup_hasura('development')

@@ -1,0 +1,141 @@
+# Load utilities
+load('../../../../utils/tilt/k8s/namespace.utils.tilt', 'create_namespace')
+load('../../../../utils/tilt/k8s/helm.utils.tilt', 'ensure_helm_deps')
+
+def setup_dapr(environment):
+    """
+    Setup Dapr runtime and components.
+
+    Args:
+        environment: 'development', 'staging', or 'production'
+    """
+    env_values_file = {
+        "development": None,
+        "staging": "values-staging.yaml",
+        "production": "values-prod.yaml",
+    }.get(environment)
+
+    chart_path = "k8s/helm/infra/dapr"
+
+    # Create namespace
+    create_namespace("dapr-system")
+
+    # Helm dependencies
+    ensure_helm_deps(chart_path, "dapr", "https://dapr.github.io/helm-charts/")
+
+    # Build values files list
+    values_files = ["./%s/values.yaml" % chart_path]
+    if env_values_file:
+        values_files.append("./%s/%s" % (chart_path, env_values_file))
+
+    # Deploy via Helm
+    k8s_yaml(helm(
+        "./%s" % chart_path,
+        name="dapr",
+        namespace="dapr-system",
+        values=values_files
+    ))
+
+    # Dapr Namespace
+    k8s_resource(
+        new_name="dapr-namespace",
+        objects=["dapr-system:Namespace"],
+        labels=["dapr"]
+    )
+
+    # Dapr CRDs
+    k8s_resource(
+        new_name="dapr-crds",
+        objects=[
+            "components.dapr.io:CustomResourceDefinition",
+            "configurations.dapr.io:CustomResourceDefinition",
+            "resiliencies.dapr.io:CustomResourceDefinition",
+            "subscriptions.dapr.io:CustomResourceDefinition",
+            "httpendpoints.dapr.io:CustomResourceDefinition",
+        ],
+        resource_deps=["dapr-namespace"],
+        labels=["dapr"]
+    )
+
+    # Dapr RBAC
+    k8s_resource(
+        new_name="dapr-rbac",
+        objects=[
+            "dapr-injector:ServiceAccount:dapr-system",
+            "dapr-operator:ServiceAccount:dapr-system",
+            "dapr-placement:ServiceAccount:dapr-system",
+            "dapr-sentry:ServiceAccount:dapr-system",
+            "dapr-injector:Role:dapr-system",
+            "dapr-operator:Role:dapr-system",
+            "dapr-sentry:Role:dapr-system",
+            "dapr-injector:ClusterRole:dapr-system",
+            "dapr-operator-admin:ClusterRole:dapr-system",
+            "dapr-placement:ClusterRole:dapr-system",
+            "dapr-sentry:ClusterRole:dapr-system",
+            "dapr-injector:RoleBinding:dapr-system",
+            "dapr-operator:RoleBinding:dapr-system",
+            "dapr-sentry:RoleBinding:dapr-system",
+            "dapr-injector:ClusterRoleBinding:dapr-system",
+            "dapr-operator-admin:ClusterRoleBinding:dapr-system",
+            "dapr-placement:ClusterRoleBinding:dapr-system",
+            "dapr-sentry:ClusterRoleBinding:dapr-system",
+        ],
+        resource_deps=["dapr-crds"],
+        labels=["dapr"]
+    )
+
+    # Dapr Configuration and Trust Bundle
+    k8s_resource(
+        new_name="dapr-config",
+        objects=[
+            "daprsystem:Configuration:dapr-system",
+            "dapr-trust-bundle:ConfigMap:dapr-system",
+            "dapr-trust-bundle:Secret:dapr-system",
+        ],
+        resource_deps=["dapr-rbac"],
+        labels=["dapr"]
+    )
+
+    # Dapr Sentry (Certificate Authority)
+    k8s_resource(
+        "dapr-sentry",
+        resource_deps=["dapr-config"],
+        labels=["dapr"]
+    )
+
+    # Dapr Operator
+    k8s_resource(
+        "dapr-operator",
+        resource_deps=["dapr-sentry"],
+        labels=["dapr"]
+    )
+
+    # Dapr Sidecar Injector
+    k8s_resource(
+        "dapr-sidecar-injector",
+        objects=[
+            "dapr-sidecar-injector:MutatingWebhookConfiguration:dapr-system",
+        ],
+        resource_deps=["dapr-operator"],
+        labels=["dapr"]
+    )
+
+    # Dapr Placement
+    k8s_resource(
+        "dapr-placement-server",
+        resource_deps=["dapr-operator"],
+        labels=["dapr"]
+    )
+{{ if .Computed.HasKafka }}
+    # Dapr Components (Kafka pubsub, resiliency)
+    k8s_resource(
+        new_name="dapr-components",
+        objects=[
+            "kafka-pubsub:Component:{{ .Project.Metadata.Name }}",
+            "{{ .Project.Metadata.Name }}-resiliency:Resiliency:{{ .Project.Metadata.Name }}",
+        ],
+        resource_deps=["dapr-sidecar-injector", "kafka-ready"],
+        labels=["dapr"]
+    )
+{{ end }}
+setup_dapr('development')
