@@ -20,7 +20,7 @@ defaults:
   serviceAccount:
     create: true
   replicas: 1
-  port: {{ .Service.Port }}
+  port: 3000
   serviceType: ClusterIP
   resources:
     requests:
@@ -59,7 +59,7 @@ defaults:
 services:
   {{ .Service.Name }}:
     enabled: true
-    port: {{ .Service.Port }}
+    port: 3000
     image:
       tag: latest
     env:
@@ -70,6 +70,6 @@ services:
     podAnnotations:
       dapr.io/enabled: "true"
       dapr.io/app-id: {{ .Service.Name }}
-      dapr.io/app-port: "{{ .Service.Port }}"{{ end }}{{ if hasItem .Service.Features "cache" }}
+      dapr.io/app-port: "3000"{{ end }}{{ if hasItem .Service.Features "cache" }}
     secrets:
       - redis-credentials{{ end }}

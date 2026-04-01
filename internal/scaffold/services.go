@@ -25,45 +25,59 @@ var serviceTemplateDirs = map[string]string{
 
 // ExampleService defines an example service to generate during init.
 type ExampleService struct {
-	Name     string
-	Type     string // "node-api", "go-api", "nextjs"
-	Group    string
-	Port     int
-	Features []string
+	Name      string
+	Type      string // "node-api", "go-api", "nextjs"
+	Group     string
+	Port      int // Host-side Tilt port-forward (container always listens on 3000)
+	DebugPort int // Host-side debug port-forward (container: 9229 node, 40000 go)
+	Features  []string
 }
 
 // DefaultExampleServices returns the example services based on the project's language selection.
+// All containers listen on port 3000 (HTTP) and 9229 (node debug) / 40000 (go debug).
+// The Port/DebugPort here are host-side Tilt port-forwards, incrementally assigned.
 func DefaultExampleServices(cfg *config.ProjectConfig) []ExampleService {
 	var services []ExampleService
+	portCounter := 3010       // Host-side HTTP forward ports start at 3010
+	nodeDebugCounter := 9230  // Host-side node debug forward ports
+	goDebugCounter := 40001   // Host-side go debug forward ports
 
 	if cfg.Spec.HasLanguage("node") {
 		services = append(services, ExampleService{
-			Name:  "api",
-			Type:  "node-api",
-			Group: "core",
-			Port:  3000,
+			Name:      "api",
+			Type:      "node-api",
+			Group:     "core",
+			Port:      portCounter,
+			DebugPort: nodeDebugCounter,
 		})
+		portCounter++
+		nodeDebugCounter++
+
 		services = append(services, ExampleService{
-			Name:  "web",
-			Type:  "nextjs",
-			Group: "frontend",
-			Port:  3100,
+			Name:      "web",
+			Type:      "nextjs",
+			Group:     "frontend",
+			Port:      portCounter,
+			DebugPort: nodeDebugCounter,
 		})
+		portCounter++
+		nodeDebugCounter++
 	}
 
 	if cfg.Spec.HasLanguage("go") {
 		name := "api"
-		port := 3000
 		if cfg.Spec.HasLanguage("node") {
-			name = "api-go" // Avoid collision with node-api service
-			port = 3200     // Don't conflict with node services
+			name = "api-go"
 		}
 		services = append(services, ExampleService{
-			Name:  name,
-			Type:  "go-api",
-			Group: "core",
-			Port:  port,
+			Name:      name,
+			Type:      "go-api",
+			Group:     "core",
+			Port:      portCounter,
+			DebugPort: goDebugCounter,
 		})
+		portCounter++
+		goDebugCounter++
 	}
 
 	return services
@@ -92,7 +106,7 @@ func GenerateExampleServices(cfg *config.ProjectConfig, outputDir string, templa
 			Type:      svc.Type,
 			Group:     svc.Group,
 			Port:      svc.Port,
-			DebugPort: 9229 + i,
+			DebugPort: svc.DebugPort,
 			SrcFolder: "apps",
 			Features:  svc.Features,
 		}
@@ -269,8 +283,9 @@ func AppendServiceToUmbrellaValues(groupChartDir string, svc *engine.ServiceTemp
 		return nil
 	}
 
-	entry := fmt.Sprintf("\n  %s:\n    enabled: true\n    port: %d\n    image:\n      tag: latest\n    env:\n      LOG_LEVEL: debug\n",
-		svc.Name, svc.Port)
+	// Helm port is always 3000 (container port), not the host-side forward port
+	entry := fmt.Sprintf("\n  %s:\n    enabled: true\n    port: 3000\n    image:\n      tag: latest\n    env:\n      LOG_LEVEL: debug\n",
+		svc.Name)
 
 	content += entry
 	return os.WriteFile(valuesPath, []byte(content), 0o644)

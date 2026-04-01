@@ -2,55 +2,61 @@
 # {{ .Project.Metadata.Name }} - Local Infrastructure
 # =============================================================================
 # Deploys local development services: database, cache, and tools.
-# Loaded by the main Tiltfile.
+# Loaded by the main Tiltfile via include().
+# Default namespace is set by k3d init script (kubectl config set-context).
 # =============================================================================
 
-def deploy_local_infra():
-    """Deploy local development infrastructure."""
+# =============================================================================
+# Traefik Dashboard Service (k3d installs Traefik, we just expose the dashboard)
+# =============================================================================
+k8s_yaml("traefik.yaml")
+k8s_resource(
+    new_name="traefik-dashboard-svc",
+    objects=["traefik-dashboard:service"],
+    labels=["01_infra"]
+)
 
-    local_dir = os.path.join(config.main_dir, 'k8s', 'deployment', 'local')
+# =============================================================================
+# PostgreSQL
+# =============================================================================
+k8s_yaml("postgres.yaml")
+k8s_resource("postgresql", objects=[
+    "postgres-init-scripts:configmap",
+    "postgres-data-claim:persistentvolumeclaim",
+], port_forwards=["5432:5432"], labels=["01_infra"])
 
-    # Note: Project namespace is created by k3d init script (k3s/manifests/setup/namespace.yaml)
-    # with appropriate labels (dapr-injection, etc). No need to create it here.
+# =============================================================================
+# Redis
+# =============================================================================
+k8s_yaml("redis.yaml")
+k8s_resource("redis", objects=[
+    "redis-data-claim:persistentvolumeclaim",
+], labels=["01_infra"])
 
-    # Core services
-    k8s_yaml(os.path.join(local_dir, 'postgres.yaml'))
-    k8s_resource('postgresql', objects=[
-        'postgres-init-scripts:configmap',
-        'postgres-data-claim:persistentvolumeclaim',
-    ], port_forwards=['5432:5432'], labels=['01_infra'])
+# =============================================================================
+# pgAdmin
+# =============================================================================
+k8s_yaml("pgadmin.yaml")
+k8s_resource("pgadmin", objects=[
+    "pgadmin-data-claim:persistentvolumeclaim",
+    "pgadmin-servers-config:configmap",
+    "pgadmin-pgpass-config:configmap",
+], labels=["01_infra_dashboard"])
 
-    k8s_yaml(os.path.join(local_dir, 'redis.yaml'))
-    k8s_resource('redis', objects=[
-        'redis-data-claim:persistentvolumeclaim',
-    ], labels=['01_infra'])
-
-    # Admin tools
-    k8s_yaml(os.path.join(local_dir, 'pgadmin.yaml'))
-    k8s_resource('pgadmin', objects=[
-        'pgadmin-data-claim:persistentvolumeclaim',
-        'pgadmin-servers-config:configmap',
-        'pgadmin-pgpass-config:configmap',
-    ], labels=['01_infra_dashboard'])
-
-    k8s_yaml(os.path.join(local_dir, 'redisinsight.yaml'))
-    k8s_resource('redisinsight', objects=[
-        'redisinsight-pv-claim:persistentvolumeclaim',
-    ], labels=['01_infra_dashboard'])
-
-    # Traefik dashboard (k3d installs Traefik; this exposes the dashboard)
-    k8s_yaml(os.path.join(local_dir, 'traefik.yaml'))
-    k8s_resource(
-        new_name='traefik-dashboard-svc',
-        objects=['traefik-dashboard:service'],
-        labels=['01_infra']
-    )
+# =============================================================================
+# Redis Insight
+# =============================================================================
+k8s_yaml("redisinsight.yaml")
+k8s_resource("redisinsight", objects=[
+    "redisinsight-pv-claim:persistentvolumeclaim",
+], labels=["01_infra_dashboard"])
 {{ if eq .Project.Spec.Cloud.Provider "gcp" }}
-    # GCS emulator for local development
-    k8s_yaml(os.path.join(local_dir, 'fake-gcs.yaml'))
-    k8s_resource('fake-gcs', objects=[
-        'fake-gcs-nginx-config:configmap',
-        '{{ .Project.Metadata.Name }}-fake-gcs-data:persistentvolumeclaim',
-    ], labels=['01_infra'], port_forwards=['4443:4443'])
+# =============================================================================
+# Fake GCS Server (GCS emulator for local development)
+# =============================================================================
+k8s_yaml("fake-gcs.yaml")
+k8s_resource("fake-gcs", objects=[
+    "fake-gcs-nginx-config:configmap",
+    "{{ .Project.Metadata.Name }}-fake-gcs-data:persistentvolumeclaim",
+], labels=["01_infra"], port_forwards=["4443:4443"])
 {{ end }}
-deploy_local_infra()

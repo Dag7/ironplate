@@ -2,6 +2,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: pgadmin-data-claim
+
 spec:
   accessModes:
     - ReadWriteOnce
@@ -13,6 +14,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: pgadmin-servers-config
+
 data:
   servers.json: |
     {
@@ -34,6 +36,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: pgadmin-pgpass-config
+
 data:
   pgpass: |
     postgresql:5432:{{ .Project.Metadata.Name }}:postgres:postgres
@@ -42,6 +45,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: pgadmin
+
 spec:
   replicas: 1
   selector:
@@ -126,6 +130,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: pgadmin
+
 spec:
   selector:
     app: pgadmin

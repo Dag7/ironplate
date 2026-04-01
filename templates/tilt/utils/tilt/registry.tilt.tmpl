@@ -195,14 +195,15 @@ def setup_services(target, profile, builders):
             groups_loaded[group] = True
 
         # Apply labels and port-forwards from registry
+        # All containers listen on port 3000; registry port is the host-side forward
         labels = svc.get('labels', [group])
-        port = svc.get('port', 3000)
-        debug_port = svc.get('debugPort', 0)
-        port_forwards = ['%d:%d' % (port, port)]
-        if debug_port:
-            # Node.js uses inspector on 9229, Go uses delve on 40000
+        forward_port = svc.get('port', 3000)
+        debug_forward_port = svc.get('debugPort', 0)
+        port_forwards = ['%d:3000' % forward_port]
+        if debug_forward_port:
+            # Node.js inspector listens on 9229, Go delve on 40000
             internal_debug = 9229 if svc_type in ['node-api', 'nextjs'] else 40000
-            port_forwards.append('%d:%d' % (debug_port, internal_debug))
+            port_forwards.append('%d:%d' % (debug_forward_port, internal_debug))
 
         # Node services depend on packages-build; Go services depend on go-mod-tidy
         if svc_type in ['node-api', 'nextjs']:

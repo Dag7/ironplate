@@ -6,7 +6,7 @@
     "build": "tsc -p tsconfig.build.json",
     "build:nx": "nx build",
     "start": "node dist/index.js",
-    "start:dev": "NODE_ENV=development node ../../scripts/utils/nodemon-runner.cjs --inspect=0.0.0.0:{{ .Service.DebugPort }}",
+    "start:dev": "NODE_ENV=development node ../../scripts/utils/nodemon-runner.cjs --inspect=0.0.0.0:9229",
     "watch": "tsc -p tsconfig.build.json --watch",
     "test": "vitest run",
     "test:watch": "vitest",

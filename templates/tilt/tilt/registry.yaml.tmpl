@@ -9,9 +9,12 @@
 # ---------------------------------------------------------------------------
 # Services
 # ---------------------------------------------------------------------------
-# Each service declares its type, group, port, and dependencies.
+# Each service declares its type, group, forward port, and dependencies.
 # The registry module uses this to call the correct builder function
 # and resolve infrastructure dependencies per profile.
+#
+# All containers listen on port 3000. The port/debugPort here are
+# host-side Tilt port-forwards (e.g., port 3010 → container 3000).
 #
 # Supported types: node-api, go-api, nextjs
 # ---------------------------------------------------------------------------
@@ -20,8 +23,8 @@ services: {}
 #   auth-service:
 #     type: node-api
 #     group: auth
-#     port: 3001
-#     debugPort: 9229
+#     port: 3012          # host-side forward → container 3000
+#     debugPort: 9232     # host-side forward → container 9229
 #     src: apps/auth-service
 #     labels: [backend, auth]
 #     deps:

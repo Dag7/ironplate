@@ -228,7 +228,7 @@ func TestAppendServiceToUmbrellaValues(t *testing.T) {
 
 	result := string(data)
 	assert.Contains(t, result, "  auth-worker:")
-	assert.Contains(t, result, "    port: 3002")
+	assert.Contains(t, result, "    port: 3000")
 	assert.Contains(t, result, "    enabled: true")
 	// Original content preserved
 	assert.Contains(t, result, "  auth-service:")

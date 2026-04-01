@@ -1,0 +1,18 @@
+# Load utilities
+load('../../../../utils/tilt/k8s/helm.utils.tilt', 'ensure_helm_deps')
+
+def setup_ingress():
+    """Deploy centralized ingress routes via Traefik (*.localhost:8081)."""
+    chart_path = "k8s/helm/{{ .Project.Metadata.Name }}/ingress"
+    ensure_helm_deps(chart_path)
+
+    k8s_yaml(helm(
+        "./%s" % chart_path,
+        name="ingress",
+        namespace="{{ .Project.Metadata.Name }}",
+        values=[
+            "./%s/values.yaml" % chart_path
+        ]
+    ))
+
+setup_ingress()

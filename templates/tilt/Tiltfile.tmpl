@@ -53,6 +53,48 @@ dev_resources()
 # --- Services (from registry) ---
 setup_services(target, profile, builders)
 
+# ==============================================================================
+# Ingress Resources
+# ==============================================================================
+# Centralized routing via Traefik (*.localhost:8081)
+include('./k8s/helm/{{ .Project.Metadata.Name }}/ingress/Tiltfile')
+
+# Infrastructure ingress (dashboards, admin tools)
+k8s_resource(
+    new_name='ingress-infra',
+    objects=[
+{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}        'ingress-hasura:ingress:{{ .Project.Metadata.Name }}',
+{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "redis" }}        'ingress-redis:ingress:{{ .Project.Metadata.Name }}',
+{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "kafka" }}        'ingress-kafka:ingress:kafka',
+{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "langfuse" }}        'ingress-langfuse:ingress:{{ .Project.Metadata.Name }}',
+{{ end }}        'ingress-traefik:ingress:kube-system',
+        'ingress-pgadmin:ingress:{{ .Project.Metadata.Name }}',
+    ],
+    labels=['99_ingress']
+)
+{{ if hasItem .Project.Spec.Infrastructure.Components "observability" }}
+# Observability ingress (grafana, prometheus)
+k8s_resource(
+    new_name='ingress-observability',
+    objects=[
+        'ingress-grafana:ingress:monitoring',
+        'ingress-prometheus:ingress:monitoring',
+    ],
+    labels=['99_ingress'],
+    resource_deps=['grafana']
+)
+{{ end }}
+# Middlewares (security, rate limiting, CORS)
+k8s_resource(
+    new_name='middlewares',
+    objects=[
+        '{{ .Project.Metadata.Name }}-rate-limit:middleware:{{ .Project.Metadata.Name }}',
+        '{{ .Project.Metadata.Name }}-security-headers:middleware:{{ .Project.Metadata.Name }}',
+        '{{ .Project.Metadata.Name }}-cors:middleware:{{ .Project.Metadata.Name }}',
+    ],
+    labels=['99_ingress']
+)
+
 # --- Apply profile resource filter ---
 enabled = get_enabled_resources(profile)
 if enabled != None:

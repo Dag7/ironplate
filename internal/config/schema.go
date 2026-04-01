@@ -118,7 +118,7 @@ type ServiceSpec struct {
 	Name     string   `yaml:"name"`     // Service name (kebab-case)
 	Type     string   `yaml:"type"`     // "node-api" | "go-api" | "nextjs" | "go-worker"
 	Group    string   `yaml:"group"`    // Helm umbrella chart group
-	Port     int      `yaml:"port"`     // Application port
+	Port     int      `yaml:"port"`     // Host-side Tilt port-forward (container always 3000)
 	Features []string `yaml:"features"` // ["hasura", "cache", "dapr", "eventbus"]
 }
 
