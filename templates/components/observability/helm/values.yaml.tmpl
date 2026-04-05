@@ -10,7 +10,7 @@
 # =============================================================================
 
 # Namespace for monitoring resources
-namespace: {{ .Project.Metadata.Name }}
+namespace: monitoring
 
 # Disable heavy Prometheus stack in local dev (enable via values-dev-full.yaml)
 # Set to true to enable Prometheus, Grafana, Alertmanager
@@ -32,7 +32,7 @@ kube-prometheus-stack:
   # Global settings
   # ---------------------------------------------------------------------------
   fullnameOverride: ""
-  namespaceOverride: {{ .Project.Metadata.Name }}
+  namespaceOverride: monitoring
 
   # ---------------------------------------------------------------------------
   # Prometheus Operator

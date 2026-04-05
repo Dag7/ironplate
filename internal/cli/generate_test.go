@@ -16,8 +16,8 @@ import (
 func TestServiceTemplateDirs(t *testing.T) {
 	expectedKeys := []string{"node-api", "go-api", "nextjs"}
 
-	require.Len(t, serviceTemplateDirs, len(expectedKeys),
-		"serviceTemplateDirs should have exactly %d entries", len(expectedKeys))
+	require.Len(t, config.ServiceTemplateDirs, len(expectedKeys),
+		"ServiceTemplateDirs should have exactly %d entries", len(expectedKeys))
 
 	tests := []struct {
 		serviceType string
@@ -30,8 +30,8 @@ func TestServiceTemplateDirs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.serviceType, func(t *testing.T) {
-			dir, ok := serviceTemplateDirs[tt.serviceType]
-			require.True(t, ok, "expected key %q to exist in serviceTemplateDirs", tt.serviceType)
+			dir, ok := config.ServiceTemplateDirs[tt.serviceType]
+			require.True(t, ok, "expected key %q to exist in ServiceTemplateDirs", tt.serviceType)
 			assert.Equal(t, tt.expectedDir, dir)
 		})
 	}

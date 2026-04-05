@@ -17,11 +17,11 @@ metadata:
 
 data:
   init-databases.sql: |
-    CREATE DATABASE {{ .Project.Metadata.Name }};{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}
+    CREATE DATABASE "{{ .Project.Metadata.Name }}";{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}
     CREATE DATABASE hasura_metadata;{{ end }}
-    GRANT ALL PRIVILEGES ON DATABASE {{ .Project.Metadata.Name }} TO postgres;{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}
+    GRANT ALL PRIVILEGES ON DATABASE "{{ .Project.Metadata.Name }}" TO postgres;{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}
     GRANT ALL PRIVILEGES ON DATABASE hasura_metadata TO postgres;{{ end }}
-    \c {{ .Project.Metadata.Name }}
+    \c "{{ .Project.Metadata.Name }}"
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
     CREATE EXTENSION IF NOT EXISTS "pgcrypto";{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }}
     \c hasura_metadata

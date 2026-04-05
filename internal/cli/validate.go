@@ -104,58 +104,11 @@ func newValidateCmd() *cobra.Command {
 
 			// 4. Feature consistency
 			printer.Section("Feature Consistency")
-			{
-				installedComponents := make(map[string]bool)
-				for _, c := range cfg.Spec.Infrastructure.Components {
-					installedComponents[c] = true
-				}
-
-				featureComponentMap := map[string]string{
-					"hasura":   "hasura",
-					"cache":    "redis",
-					"dapr":     "dapr",
-					"eventbus": "kafka",
-				}
-
-				hasIssue := false
-				for _, svc := range cfg.Spec.Services {
-					for _, feature := range svc.Features {
-						requiredComponent, known := featureComponentMap[feature]
-						if known && !installedComponents[requiredComponent] {
-							printer.Warning(fmt.Sprintf("Service %q uses feature %q but component %q is not installed", svc.Name, feature, requiredComponent))
-							warnings++
-							hasIssue = true
-						}
-					}
-				}
-				if !hasIssue {
-					printer.Success("All service features have required components")
-				}
-			}
+			warnings += checkFeatureConsistency(printer, cfg)
 
 			// 5. Language consistency
 			printer.Section("Language Consistency")
-			{
-				typeLanguageMap := map[string]string{
-					"node-api":  "node",
-					"nextjs":    "node",
-					"go-api":    "go",
-					"go-worker": "go",
-				}
-
-				hasIssue := false
-				for _, svc := range cfg.Spec.Services {
-					requiredLang, known := typeLanguageMap[svc.Type]
-					if known && !cfg.Spec.HasLanguage(requiredLang) {
-						printer.Warning(fmt.Sprintf("Service %q has type %q but %q is not in spec.languages", svc.Name, svc.Type, requiredLang))
-						warnings++
-						hasIssue = true
-					}
-				}
-				if !hasIssue {
-					printer.Success("All service types match configured languages")
-				}
-			}
+			warnings += checkLanguageConsistency(printer, cfg)
 
 			// Summary
 			fmt.Println()
@@ -183,4 +136,43 @@ func newValidateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&strict, "strict", false, "Fail on warnings")
 
 	return cmd
+}
+
+// checkFeatureConsistency validates that service features have their required components installed.
+func checkFeatureConsistency(printer *tui.StatusPrinter, cfg *config.ProjectConfig) int {
+	installedComponents := make(map[string]bool, len(cfg.Spec.Infrastructure.Components))
+	for _, c := range cfg.Spec.Infrastructure.Components {
+		installedComponents[c] = true
+	}
+
+	warnings := 0
+	for _, svc := range cfg.Spec.Services {
+		for _, feature := range svc.Features {
+			required, known := config.FeatureComponentMap[feature]
+			if known && !installedComponents[required] {
+				printer.Warning(fmt.Sprintf("Service %q uses feature %q but component %q is not installed", svc.Name, feature, required))
+				warnings++
+			}
+		}
+	}
+	if warnings == 0 {
+		printer.Success("All service features have required components")
+	}
+	return warnings
+}
+
+// checkLanguageConsistency validates that service types match configured languages.
+func checkLanguageConsistency(printer *tui.StatusPrinter, cfg *config.ProjectConfig) int {
+	warnings := 0
+	for _, svc := range cfg.Spec.Services {
+		required, known := config.TypeLanguageMap[svc.Type]
+		if known && !cfg.Spec.HasLanguage(required) {
+			printer.Warning(fmt.Sprintf("Service %q has type %q but %q is not in spec.languages", svc.Name, svc.Type, required))
+			warnings++
+		}
+	}
+	if warnings == 0 {
+		printer.Success("All service types match configured languages")
+	}
+	return warnings
 }

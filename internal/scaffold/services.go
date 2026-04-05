@@ -12,16 +12,9 @@ import (
 
 	"github.com/dag7/ironplate/internal/config"
 	"github.com/dag7/ironplate/internal/engine"
-	"github.com/dag7/ironplate/internal/tui"
 	"github.com/dag7/ironplate/pkg/fsutil"
 )
 
-// serviceTemplateDirs maps service types to their template directories.
-var serviceTemplateDirs = map[string]string{
-	"node-api": "service/node",
-	"go-api":   "service/go",
-	"nextjs":   "service/nextjs",
-}
 
 // ExampleService defines an example service to generate during init.
 type ExampleService struct {
@@ -37,31 +30,15 @@ type ExampleService struct {
 // All containers listen on port 3000 (HTTP) and 9229 (node debug) / 40000 (go debug).
 // The Port/DebugPort here are host-side Tilt port-forwards, incrementally assigned.
 func DefaultExampleServices(cfg *config.ProjectConfig) []ExampleService {
+	pa := newPortAllocator()
+
 	var services []ExampleService
-	portCounter := 3010       // Host-side HTTP forward ports start at 3010
-	nodeDebugCounter := 9230  // Host-side node debug forward ports
-	goDebugCounter := 40001   // Host-side go debug forward ports
 
 	if cfg.Spec.HasLanguage("node") {
-		services = append(services, ExampleService{
-			Name:      "api",
-			Type:      "node-api",
-			Group:     "core",
-			Port:      portCounter,
-			DebugPort: nodeDebugCounter,
-		})
-		portCounter++
-		nodeDebugCounter++
-
-		services = append(services, ExampleService{
-			Name:      "web",
-			Type:      "nextjs",
-			Group:     "frontend",
-			Port:      portCounter,
-			DebugPort: nodeDebugCounter,
-		})
-		portCounter++
-		nodeDebugCounter++
+		services = append(services,
+			pa.allocate("api", "node-api", "core"),
+			pa.allocate("web", "nextjs", "frontend"),
+		)
 	}
 
 	if cfg.Spec.HasLanguage("go") {
@@ -69,36 +46,120 @@ func DefaultExampleServices(cfg *config.ProjectConfig) []ExampleService {
 		if cfg.Spec.HasLanguage("node") {
 			name = "api-go"
 		}
-		services = append(services, ExampleService{
-			Name:      name,
-			Type:      "go-api",
-			Group:     "core",
-			Port:      portCounter,
-			DebugPort: goDebugCounter,
-		})
-		portCounter++
-		goDebugCounter++
+		services = append(services, pa.allocate(name, "go-api", "core"))
 	}
 
 	return services
 }
 
+// portAllocator tracks port assignments to avoid collisions.
+type portAllocator struct {
+	nextPort      int
+	nextNodeDebug int
+	nextGoDebug   int
+}
+
+func newPortAllocator() *portAllocator {
+	return &portAllocator{
+		nextPort:      BaseForwardPort,
+		nextNodeDebug: BaseNodeDebugPort,
+		nextGoDebug:   BaseGoDebugPort,
+	}
+}
+
+func (pa *portAllocator) allocate(name, serviceType, group string) ExampleService {
+	svc := ExampleService{
+		Name:  name,
+		Type:  serviceType,
+		Group: group,
+		Port:  pa.nextPort,
+	}
+	pa.nextPort++
+
+	if isGoService(serviceType) {
+		svc.DebugPort = pa.nextGoDebug
+		pa.nextGoDebug++
+	} else {
+		svc.DebugPort = pa.nextNodeDebug
+		pa.nextNodeDebug++
+	}
+
+	return svc
+}
+
+// RenderServiceParams holds parameters for the shared service rendering pipeline.
+type RenderServiceParams struct {
+	Renderer    *engine.Renderer
+	Templates   fs.FS
+	ProjectRoot string
+	Config      *config.ProjectConfig
+	Ctx         *engine.TemplateContext
+}
+
+// RenderService executes the core service generation pipeline shared by both
+// `iron generate service` and `iron init --example-services`:
+//  1. Render service source files (excluding helm/)
+//  2. Create or update the group umbrella Helm chart
+//  3. Register the service in the Tilt registry
+//  4. Register with ArgoCD (if enabled)
+//
+// It returns non-fatal warnings as a string slice; only fatal errors return an error.
+func RenderService(p RenderServiceParams) (warnings []string, err error) {
+	svc := p.Ctx.Service
+	templateDir, ok := config.ServiceTemplateDirs[svc.Type]
+	if !ok {
+		return nil, fmt.Errorf("unsupported service type %q", svc.Type)
+	}
+
+	// 1. Render service source files (exclude helm/ — chart is handled in step 2)
+	serviceDir := filepath.Join(p.ProjectRoot, "apps", svc.Name)
+	if err := p.Renderer.RenderFS(p.Templates, templateDir, serviceDir, p.Ctx, "helm"); err != nil {
+		return nil, fmt.Errorf("render service files for %s: %w", svc.Name, err)
+	}
+
+	// 2. Create or update group umbrella Helm chart
+	groupChartDir := filepath.Join(p.ProjectRoot, "k8s", "helm", p.Config.Metadata.Name, svc.Group)
+	chartYAML := filepath.Join(groupChartDir, "Chart.yaml")
+	if !fsutil.FileExists(chartYAML) {
+		if err := p.Renderer.RenderFS(p.Templates, "service/helm", groupChartDir, p.Ctx); err != nil {
+			return nil, fmt.Errorf("render umbrella chart for group %s: %w", svc.Group, err)
+		}
+	} else {
+		if err := AppendServiceToUmbrellaValues(groupChartDir, svc); err != nil {
+			return nil, fmt.Errorf("update umbrella values for %s: %w", svc.Name, err)
+		}
+	}
+
+	// 3. Register in Tilt registry
+	if err := RegisterServiceInRegistry(p.ProjectRoot, p.Ctx); err != nil {
+		warnings = append(warnings, fmt.Sprintf("Could not update Tilt registry: %s", err))
+	}
+
+	// 4. Register in centralized ingress chart
+	if err := RegisterServiceIngress(p.ProjectRoot, p.Config, p.Ctx); err != nil {
+		warnings = append(warnings, fmt.Sprintf("Could not update ingress: %s", err))
+	}
+
+	// 5. Register with ArgoCD (if enabled)
+	if p.Config.Spec.GitOps.Enabled && p.Config.Spec.Infrastructure.HasComponent("argocd") {
+		if err := RegisterArgoCDService(p.ProjectRoot, p.Config, p.Ctx); err != nil {
+			warnings = append(warnings, fmt.Sprintf("Could not update ArgoCD: %s", err))
+		}
+	}
+
+	return warnings, nil
+}
+
 // GenerateExampleServices generates example services in a scaffolded project.
 // Called after the main scaffold pipeline to add starter services.
-func GenerateExampleServices(cfg *config.ProjectConfig, outputDir string, templates fs.FS, services []ExampleService) error {
-	printer := tui.NewStatusPrinter()
+func GenerateExampleServices(cfg *config.ProjectConfig, outputDir string, tmplFS fs.FS, services []ExampleService) error {
 	renderer := engine.NewRenderer()
 
-	printer.Section("Generating example services")
+	fmt.Println()
+	fmt.Println("  Generating example services")
 
 	for i, svc := range services {
-		templateDir, ok := serviceTemplateDirs[svc.Type]
-		if !ok {
-			printer.Warning(fmt.Sprintf("Unknown service type %q, skipping", svc.Type))
-			continue
-		}
-
-		printer.Step(i+1, len(services), fmt.Sprintf("Creating %s (%s)", svc.Name, svc.Type))
+		fmt.Printf("  [%d/%d] Creating %s (%s)\n", i+1, len(services), svc.Name, svc.Type)
 
 		ctx := engine.NewTemplateContext(cfg)
 		ctx.Service = &engine.ServiceTemplateData{
@@ -111,38 +172,20 @@ func GenerateExampleServices(cfg *config.ProjectConfig, outputDir string, templa
 			Features:  svc.Features,
 		}
 
-		// 1. Render service source files (exclude helm/)
-		serviceDir := filepath.Join(outputDir, "apps", svc.Name)
-		if err := renderer.RenderFS(templates, templateDir, serviceDir, ctx, "helm"); err != nil {
-			return fmt.Errorf("render service %s: %w", svc.Name, err)
+		warnings, err := RenderService(RenderServiceParams{
+			Renderer:    renderer,
+			Templates:   tmplFS,
+			ProjectRoot: outputDir,
+			Config:      cfg,
+			Ctx:         ctx,
+		})
+		if err != nil {
+			return fmt.Errorf("generate service %s: %w", svc.Name, err)
+		}
+		for _, w := range warnings {
+			fmt.Printf("  ! %s\n", w)
 		}
 
-		// 2. Create group umbrella Helm chart
-		groupChartDir := filepath.Join(outputDir, "k8s", "helm", cfg.Metadata.Name, svc.Group)
-		chartYAML := filepath.Join(groupChartDir, "Chart.yaml")
-		if !fsutil.FileExists(chartYAML) {
-			if err := renderer.RenderFS(templates, "service/helm", groupChartDir, ctx); err != nil {
-				return fmt.Errorf("render umbrella chart for %s: %w", svc.Group, err)
-			}
-		} else {
-			if err := AppendServiceToUmbrellaValues(groupChartDir, ctx.Service); err != nil {
-				return fmt.Errorf("update umbrella values for %s: %w", svc.Name, err)
-			}
-		}
-
-		// 3. Register in Tilt registry
-		if err := RegisterServiceInRegistry(outputDir, ctx); err != nil {
-			printer.Warning(fmt.Sprintf("Could not update Tilt registry: %s", err))
-		}
-
-		// 4. Register with ArgoCD (if enabled)
-		if cfg.Spec.GitOps.Enabled && cfg.Spec.Infrastructure.HasComponent("argocd") {
-			if err := RegisterArgoCDService(outputDir, cfg, ctx); err != nil {
-				printer.Warning(fmt.Sprintf("Could not update ArgoCD: %s", err))
-			}
-		}
-
-		// 5. Add to config services list
 		cfg.Spec.Services = append(cfg.Spec.Services, config.ServiceSpec{
 			Name:     svc.Name,
 			Type:     svc.Type,
@@ -152,17 +195,13 @@ func GenerateExampleServices(cfg *config.ProjectConfig, outputDir string, templa
 		})
 	}
 
-	// Write updated ironplate.yaml
+	// Save updated config using the canonical Save path
 	cfgPath := filepath.Join(outputDir, "ironplate.yaml")
-	cfgData, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("marshal config: %w", err)
-	}
-	if err := os.WriteFile(cfgPath, cfgData, 0o644); err != nil {
-		return fmt.Errorf("write config: %w", err)
+	if err := config.Save(cfg, cfgPath); err != nil {
+		return fmt.Errorf("save config: %w", err)
 	}
 
-	printer.Success(fmt.Sprintf("Created %d example service(s)", len(services)))
+	fmt.Printf("  ✓ Created %d example service(s)\n", len(services))
 	return nil
 }
 
@@ -360,4 +399,52 @@ func RegisterArgoCDService(projectRoot string, cfg *config.ProjectConfig, ctx *e
 	}
 
 	return os.WriteFile(valuesPath, out, 0o644)
+}
+
+// RegisterServiceIngress adds a service ingress entry to the centralized ingress
+// chart's values.yaml. Each service gets a {name}.localhost route.
+func RegisterServiceIngress(projectRoot string, cfg *config.ProjectConfig, ctx *engine.TemplateContext) error {
+	svc := ctx.Service
+	valuesPath := filepath.Join(projectRoot, "k8s", "helm", cfg.Metadata.Name, "ingress", "values.yaml")
+
+	if !fsutil.FileExists(valuesPath) {
+		return nil // ingress chart not scaffolded yet
+	}
+
+	data, err := os.ReadFile(valuesPath)
+	if err != nil {
+		return fmt.Errorf("read ingress values: %w", err)
+	}
+
+	content := string(data)
+
+	// Check if this service already has an ingress entry (use host to avoid
+	// matching other YAML keys like middlewarePresets.api)
+	marker := fmt.Sprintf("host: %s.localhost", svc.Name)
+	if strings.Contains(content, marker) {
+		return nil
+	}
+
+	// Determine the middleware preset based on service type
+	preset := "api"
+	if svc.Type == "nextjs" {
+		preset = "default"
+	}
+
+	// Build the ingress entry (port 80 = k8s Service port, not container port)
+	entry := fmt.Sprintf("  %s:\n    enabled: true\n    host: %s.localhost\n    middlewarePreset: %s\n    routes:\n      - path: /\n        service: %s\n        port: 80\n",
+		svc.Name, svc.Name, preset, svc.Name)
+
+	// Replace empty `ingresses: {}` or append after `ingresses:` line
+	if strings.Contains(content, "ingresses: {}") {
+		content = strings.Replace(content, "ingresses: {}", "ingresses:\n"+entry, 1)
+	} else if strings.Contains(content, "ingresses:\n") {
+		// Find the ingresses block and append before infraIngresses
+		infraIdx := strings.Index(content, "\ninfraIngresses:")
+		if infraIdx > 0 {
+			content = content[:infraIdx] + "\n" + entry + content[infraIdx:]
+		}
+	}
+
+	return os.WriteFile(valuesPath, []byte(content), 0o644)
 }

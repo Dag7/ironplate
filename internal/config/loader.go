@@ -57,6 +57,15 @@ func FindConfigFile(startDir string) (string, error) {
 	return "", fmt.Errorf("no %s found in %s or any parent directory", DefaultConfigFile, startDir)
 }
 
+// Save marshals and writes a ProjectConfig to the given path.
+func Save(cfg *ProjectConfig, path string) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
 // validate performs structural validation on a ProjectConfig.
 func validate(cfg *ProjectConfig) error {
 	if cfg.APIVersion != CurrentAPIVersion {

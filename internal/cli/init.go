@@ -297,53 +297,57 @@ func runInteractivePrompts(name, org, domain, language, provider, preset string)
 }
 
 func applyFlags(cfg *config.ProjectConfig, language, provider, preset, tools string) {
-	// Apply language
-	switch language {
-	case "node":
-		cfg.Spec.Languages = []string{"node"}
-	case "go":
-		cfg.Spec.Languages = []string{"go"}
-	case "mixed":
-		cfg.Spec.Languages = []string{"node", "go"}
-	}
+	applyLanguage(cfg, language)
+	applyProvider(cfg, provider)
+	applyPreset(cfg, preset)
+	applyTools(cfg, tools)
+	syncGitOpsFlag(cfg)
+}
 
-	// Apply cloud provider
-	if provider != "" {
-		cfg.Spec.Cloud.Provider = provider
+var languageMap = map[string][]string{
+	"node":  {"node"},
+	"go":    {"go"},
+	"mixed": {"node", "go"},
+}
+
+func applyLanguage(cfg *config.ProjectConfig, language string) {
+	if langs, ok := languageMap[language]; ok {
+		cfg.Spec.Languages = langs
 	}
+}
+
+func applyProvider(cfg *config.ProjectConfig, provider string) {
+	if provider == "" {
+		return
+	}
+	cfg.Spec.Cloud.Provider = provider
 	if provider == "none" {
-		cfg.Spec.Cloud.Provider = "none"
 		cfg.Spec.Cloud.Environments = nil
 		cfg.Spec.GitOps.Enabled = false
 	}
+}
 
-	// Apply preset
-	if preset != "" {
-		if components, ok := config.Presets[preset]; ok {
-			cfg.Spec.Infrastructure.Components = components
-		}
+func applyPreset(cfg *config.ProjectConfig, preset string) {
+	if comps, ok := config.Presets[preset]; ok {
+		cfg.Spec.Infrastructure.Components = comps
 	}
+}
 
-	// If GitOps components are not in the list, disable GitOps
-	hasArgoCD := false
-	for _, c := range cfg.Spec.Infrastructure.Components {
-		if c == "argocd" {
-			hasArgoCD = true
-			break
-		}
-	}
-	if !hasArgoCD {
-		cfg.Spec.GitOps.Enabled = false
-	}
-
-	// Apply tools
-	if tools == "all" {
+func applyTools(cfg *config.ProjectConfig, tools string) {
+	switch {
+	case tools == "all":
 		allTools := make([]string, 0, len(config.AvailableDevTools))
 		for _, t := range config.AvailableDevTools {
 			allTools = append(allTools, t.Name)
 		}
 		cfg.Spec.DevEnvironment.Tools = allTools
-	} else if tools != "" {
+	case tools != "":
 		cfg.Spec.DevEnvironment.Tools = strings.Split(tools, ",")
+	}
+}
+
+func syncGitOpsFlag(cfg *config.ProjectConfig) {
+	if !cfg.Spec.Infrastructure.HasComponent("argocd") {
+		cfg.Spec.GitOps.Enabled = false
 	}
 }

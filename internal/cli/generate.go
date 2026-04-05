@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 
 	"github.com/dag7/ironplate/internal/config"
 	"github.com/dag7/ironplate/internal/engine"
@@ -16,14 +15,6 @@ import (
 	"github.com/dag7/ironplate/pkg/fsutil"
 	"github.com/dag7/ironplate/templates"
 )
-
-// serviceTemplateDirs maps service types to their template directories.
-// Add new service types here — no need to modify command logic.
-var serviceTemplateDirs = map[string]string{
-	"node-api": "service/node",
-	"go-api":   "service/go",
-	"nextjs":   "service/nextjs",
-}
 
 func newGenerateCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -62,23 +53,11 @@ Examples:
 			serviceName := args[0]
 			printer := tui.NewStatusPrinter()
 
-			// Find and load project config
-			cfgPath, err := config.FindConfigFile(".")
+			pc, err := loadProject()
 			if err != nil {
-				return fmt.Errorf("not in an ironplate project: %w", err)
+				return err
 			}
-
-			cfgData, err := os.ReadFile(cfgPath)
-			if err != nil {
-				return fmt.Errorf("read config: %w", err)
-			}
-
-			cfg, err := config.Parse(cfgData)
-			if err != nil {
-				return fmt.Errorf("parse config: %w", err)
-			}
-
-			projectRoot := filepath.Dir(cfgPath)
+			cfg := pc.Config
 
 			// Check for duplicate service name
 			for _, svc := range cfg.Spec.Services {
@@ -87,97 +66,57 @@ Examples:
 				}
 			}
 
-			// Determine template type via registry lookup
-			templateDir, ok := serviceTemplateDirs[serviceType]
-			if !ok {
-				supported := make([]string, 0, len(serviceTemplateDirs))
-				for k := range serviceTemplateDirs {
+			// Validate service type
+			if _, ok := config.ServiceTemplateDirs[serviceType]; !ok {
+				supported := make([]string, 0, len(config.ServiceTemplateDirs))
+				for k := range config.ServiceTemplateDirs {
 					supported = append(supported, k)
 				}
 				return fmt.Errorf("unsupported service type %q — supported: %s", serviceType, strings.Join(supported, ", "))
 			}
 
-			// Default group
 			if group == "" {
 				group = "core"
 			}
-
-			// Default port allocation
 			if port == 0 {
-				port = 3000 + len(cfg.Spec.Services)
+				port = scaffold.NextForwardPort(cfg.Spec.Services)
 			}
+			debugPort := scaffold.NextDebugForwardPort(cfg.Spec.Services, serviceType)
 
-			// Parse features
 			var featureList []string
 			if features != "" {
 				featureList = strings.Split(features, ",")
 			}
 
-			// Build template context
 			ctx := engine.NewTemplateContext(cfg)
 			ctx.Service = &engine.ServiceTemplateData{
 				Name:      serviceName,
 				Type:      serviceType,
 				Group:     group,
 				Port:      port,
-				DebugPort: 9229 + len(cfg.Spec.Services),
+				DebugPort: debugPort,
 				SrcFolder: "apps",
 				Features:  featureList,
 			}
 
-			renderer := engine.NewRenderer()
-			totalSteps := 6
-			step := 0
-
 			printer.Section("Generating service: " + serviceName)
 
-			// 1. Render service source files (exclude helm/ — chart is handled in step 2)
-			step++
-			serviceDir := filepath.Join(projectRoot, "apps", serviceName)
-			printer.Step(step, totalSteps, "Creating service source files")
-			if err := renderer.RenderFS(templates.FS, templateDir, serviceDir, ctx, "helm"); err != nil {
-				return fmt.Errorf("render service files: %w", err)
+			// Use the shared service rendering pipeline
+			warnings, renderErr := scaffold.RenderService(scaffold.RenderServiceParams{
+				Renderer:    engine.NewRenderer(),
+				Templates:   templates.FS,
+				ProjectRoot: pc.ProjectRoot,
+				Config:      cfg,
+				Ctx:         ctx,
+			})
+			if renderErr != nil {
+				return renderErr
+			}
+			for _, w := range warnings {
+				printer.Warning(w)
 			}
 
-			// 2. Create or update group umbrella Helm chart
-			step++
-			groupChartDir := filepath.Join(projectRoot, "k8s", "helm", cfg.Metadata.Name, group)
-			chartYAML := filepath.Join(groupChartDir, "Chart.yaml")
-			if !fsutil.FileExists(chartYAML) {
-				// First service in this group — render the umbrella chart template
-				printer.Step(step, totalSteps, "Creating group umbrella chart")
-				if err := renderer.RenderFS(templates.FS, "service/helm", groupChartDir, ctx); err != nil {
-					return fmt.Errorf("render umbrella chart: %w", err)
-				}
-			} else {
-				// Additional service — append to existing values.yaml
-				printer.Step(step, totalSteps, "Adding service to group umbrella chart")
-				if err := scaffold.AppendServiceToUmbrellaValues(groupChartDir, ctx.Service); err != nil {
-					return fmt.Errorf("update umbrella values: %w", err)
-				}
-			}
-
-			// 3. Register service in Tilt registry
-			step++
-			printer.Step(step, totalSteps, "Updating Tilt registry")
-			if err := scaffold.RegisterServiceInRegistry(projectRoot, ctx); err != nil {
-				printer.Warning(fmt.Sprintf("Could not update registry: %s", err))
-			}
-
-			// 4. Register with ArgoCD
-			step++
-			printer.Step(step, totalSteps, "Registering with ArgoCD")
-			if cfg.Spec.GitOps.Enabled && cfg.Spec.Infrastructure.HasComponent("argocd") {
-				if err := scaffold.RegisterArgoCDService(projectRoot, cfg, ctx); err != nil {
-					printer.Warning(fmt.Sprintf("Could not update ArgoCD: %s", err))
-				}
-			} else {
-				printer.Info("ArgoCD not enabled — skipped")
-			}
-
-			// 5. Update ironplate.yaml
-			step++
-			printer.Step(step, totalSteps, "Updating ironplate.yaml")
+			// Update ironplate.yaml
 			cfg.Spec.Services = append(cfg.Spec.Services, config.ServiceSpec{
 				Name:     serviceName,
 				Type:     serviceType,
@@ -185,18 +124,10 @@ Examples:
 				Port:     port,
 				Features: featureList,
 			})
-
-			cfgData, err = yaml.Marshal(cfg)
-			if err != nil {
-				return fmt.Errorf("marshal config: %w", err)
-			}
-			if err := os.WriteFile(cfgPath, cfgData, 0o644); err != nil {
-				return fmt.Errorf("write config: %w", err)
+			if err := pc.saveConfig(); err != nil {
+				return fmt.Errorf("save config: %w", err)
 			}
 
-			// 6. Summary
-			step++
-			printer.Step(step, totalSteps, "Done")
 			fmt.Println()
 			printer.Success(fmt.Sprintf("Service %s created successfully!", serviceName))
 			printer.Info(fmt.Sprintf("Source:   apps/%s/", serviceName))
@@ -240,23 +171,13 @@ Examples:
 			packageName := args[0]
 			printer := tui.NewStatusPrinter()
 
-			// Find and load project config
-			cfgPath, err := config.FindConfigFile(".")
+			// Load project config
+			pc, err := loadProject()
 			if err != nil {
-				return fmt.Errorf("not in an ironplate project: %w", err)
+				return err
 			}
-
-			cfgData, err := os.ReadFile(cfgPath)
-			if err != nil {
-				return fmt.Errorf("read config: %w", err)
-			}
-
-			cfg, err := config.Parse(cfgData)
-			if err != nil {
-				return fmt.Errorf("parse config: %w", err)
-			}
-
-			projectRoot := filepath.Dir(cfgPath)
+			cfg := pc.Config
+			projectRoot := pc.ProjectRoot
 
 			// Check for duplicate package
 			for _, pkg := range cfg.Spec.Packages {
@@ -324,12 +245,8 @@ Examples:
 				Language: language,
 			})
 
-			cfgData, err = yaml.Marshal(cfg)
-			if err != nil {
-				return fmt.Errorf("marshal config: %w", err)
-			}
-			if err := os.WriteFile(cfgPath, cfgData, 0o644); err != nil {
-				return fmt.Errorf("write config: %w", err)
+			if err := pc.saveConfig(); err != nil {
+				return fmt.Errorf("save config: %w", err)
 			}
 
 			// 4. Summary

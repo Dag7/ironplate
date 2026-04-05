@@ -136,8 +136,8 @@ func TestE2E_ScaffoldMinimalNode(t *testing.T) {
 	// Dockerfiles
 	assertFileExists(t, out, "dockerfiles/node.Dockerfile")
 
-	// Helm library chart
-	assertFileExists(t, out, "k8s/helm/_lib/service/Chart.yaml")
+	// Helm library chart (under project name)
+	assertFileExists(t, out, "k8s/helm/mini-node/_lib/service/Chart.yaml")
 
 	// Local deployment manifests
 	assertFileExists(t, out, "k8s/deployment/local/postgres.yaml")
@@ -276,9 +276,9 @@ func TestE2E_ScaffoldFullStack(t *testing.T) {
 	// Verify init script is used instead of inline command
 	assertFileContains(t, out, ".devcontainer/devcontainer.json", "init_host.sh")
 
-	// --- k3d ---
-	assertFileExists(t, out, ".devcontainer/k3s/cluster-config.yaml")
-	assertFileContains(t, out, ".devcontainer/k3s/cluster-config.yaml", "full-platform")
+	// --- k3d (dynamic name: {project}-cluster.config.yaml) ---
+	assertFileExists(t, out, ".devcontainer/k3s/full-platform-cluster.config.yaml")
+	assertFileContains(t, out, ".devcontainer/k3s/full-platform-cluster.config.yaml", "full-platform")
 
 	// --- Dockerfiles ---
 	assertFileExists(t, out, "dockerfiles/node.Dockerfile")
@@ -316,13 +316,13 @@ func TestE2E_ScaffoldFullStack(t *testing.T) {
 	assertFileExists(t, out, "utils/tilt/packages.tilt")
 	assertFileExists(t, out, "utils/tilt/dict.tilt")
 
-	// --- Helm library chart ---
-	assertFileExists(t, out, "k8s/helm/_lib/service/Chart.yaml")
-	assertValidYAML(t, out, "k8s/helm/_lib/service/Chart.yaml")
-	assertFileExists(t, out, "k8s/helm/_lib/service/templates/_service.tpl")
+	// --- Helm library chart (under project name) ---
+	assertFileExists(t, out, "k8s/helm/full-platform/_lib/service/Chart.yaml")
+	assertValidYAML(t, out, "k8s/helm/full-platform/_lib/service/Chart.yaml")
+	assertFileExists(t, out, "k8s/helm/full-platform/_lib/service/templates/_service.tpl")
 
 	// --- Ingress chart ---
-	assertFileExists(t, out, "k8s/helm/ingress/Chart.yaml")
+	assertFileExists(t, out, "k8s/helm/full-platform/ingress/Chart.yaml")
 
 	// --- Local deployment ---
 	assertFileExists(t, out, "k8s/deployment/local/postgres.yaml")
@@ -405,8 +405,8 @@ func TestE2E_ScaffoldFullStack(t *testing.T) {
 	assertFileExists(t, out, "scripts/utils/nodemon-runner.cjs")
 
 	// --- AI ---
-	assertFileExists(t, out, "header.md")
-	assertFileContains(t, out, "header.md", "full-platform")
+	assertFileExists(t, out, "CLAUDE.md")
+	assertFileContains(t, out, "CLAUDE.md", "full-platform")
 	assertFileExists(t, out, ".claude/skills")
 
 	// --- Template variables fully resolved ---
@@ -774,9 +774,9 @@ func TestE2E_HelmChartYAMLValidity(t *testing.T) {
 		})
 	}
 
-	// Helm library chart
-	assertValidYAML(t, out, "k8s/helm/_lib/service/Chart.yaml")
-	assertValidYAML(t, out, "k8s/helm/_lib/service/values.yaml")
+	// Helm library chart (under project name)
+	assertValidYAML(t, out, "k8s/helm/yaml-test/_lib/service/Chart.yaml")
+	assertValidYAML(t, out, "k8s/helm/yaml-test/_lib/service/values.yaml")
 }
 
 // ============================================================================

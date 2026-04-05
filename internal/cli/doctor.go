@@ -15,12 +15,12 @@ import (
 
 // toolCheck describes a prerequisite tool to verify.
 type toolCheck struct {
-	name       string   // human-readable name
-	command    string   // command to run (e.g., "docker")
-	args       []string // args (e.g., ["--version"])
-	minVersion string   // minimum version (e.g., "20.0.0")
-	required   bool     // is it required or optional?
-	condition  string   // when is this needed? e.g., "devcontainer", "k3d", "go", "node", "yarn", "pnpm", "tilt", "argocd", "pulumi", "hasura", "gcloud"
+	name       string                               // human-readable name
+	command    string                               // command to run (e.g., "docker")
+	args       []string                             // args (e.g., ["--version"])
+	minVersion string                               // minimum version (e.g., "20.0.0")
+	required   bool                                 // is it required or optional?
+	condition  func(cfg *config.ProjectConfig) bool // predicate: nil means always check
 }
 
 // semver holds a parsed semantic version.
@@ -126,6 +126,7 @@ func coreChecks() []toolCheck {
 			args:       []string{"--version"},
 			minVersion: "20.0.0",
 			required:   true,
+			condition:  nil,
 		},
 		{
 			name:       "kubectl",
@@ -133,6 +134,7 @@ func coreChecks() []toolCheck {
 			args:       []string{"version", "--client", "--short"},
 			minVersion: "1.27.0",
 			required:   true,
+			condition:  nil,
 		},
 		{
 			name:       "k3d",
@@ -140,7 +142,7 @@ func coreChecks() []toolCheck {
 			args:       []string{"version"},
 			minVersion: "5.0.0",
 			required:   true,
-			condition:  "k3d",
+			condition:  func(cfg *config.ProjectConfig) bool { return cfg != nil && cfg.Spec.DevEnvironment.K8sLocal == "k3d" },
 		},
 		{
 			name:       "Helm",
@@ -148,6 +150,7 @@ func coreChecks() []toolCheck {
 			args:       []string{"version", "--short"},
 			minVersion: "3.12.0",
 			required:   true,
+			condition:  nil,
 		},
 		{
 			name:       "Tilt",
@@ -155,7 +158,7 @@ func coreChecks() []toolCheck {
 			args:       []string{"version"},
 			minVersion: "0.33.0",
 			required:   true,
-			condition:  "tilt",
+			condition:  func(cfg *config.ProjectConfig) bool { return cfg != nil && cfg.Spec.DevEnvironment.DevTool == "tilt" },
 		},
 	}
 }
@@ -169,7 +172,7 @@ func languageChecks() []toolCheck {
 			args:       []string{"version"},
 			minVersion: "1.22.0",
 			required:   true,
-			condition:  "go",
+			condition:  func(cfg *config.ProjectConfig) bool { return cfg != nil && cfg.Spec.HasLanguage("go") },
 		},
 		{
 			name:       "Node.js",
@@ -177,7 +180,7 @@ func languageChecks() []toolCheck {
 			args:       []string{"--version"},
 			minVersion: "20.0.0",
 			required:   true,
-			condition:  "node",
+			condition:  func(cfg *config.ProjectConfig) bool { return cfg != nil && cfg.Spec.HasLanguage("node") },
 		},
 		{
 			name:       "Yarn",
@@ -185,7 +188,9 @@ func languageChecks() []toolCheck {
 			args:       []string{"--version"},
 			minVersion: "4.0.0",
 			required:   true,
-			condition:  "yarn",
+			condition: func(cfg *config.ProjectConfig) bool {
+				return cfg != nil && cfg.Spec.HasLanguage("node") && cfg.Spec.Monorepo.PackageManager == "yarn"
+			},
 		},
 		{
 			name:       "pnpm",
@@ -193,7 +198,9 @@ func languageChecks() []toolCheck {
 			args:       []string{"--version"},
 			minVersion: "8.0.0",
 			required:   true,
-			condition:  "pnpm",
+			condition: func(cfg *config.ProjectConfig) bool {
+				return cfg != nil && cfg.Spec.HasLanguage("node") && cfg.Spec.Monorepo.PackageManager == "pnpm"
+			},
 		},
 	}
 }
@@ -207,7 +214,9 @@ func optionalChecks() []toolCheck {
 			args:       []string{"version", "--client"},
 			minVersion: "2.8.0",
 			required:   false,
-			condition:  "argocd",
+			condition: func(cfg *config.ProjectConfig) bool {
+				return cfg != nil && cfg.Spec.GitOps.Enabled && cfg.Spec.GitOps.Tool == "argocd"
+			},
 		},
 		{
 			name:       "Pulumi",
@@ -215,7 +224,7 @@ func optionalChecks() []toolCheck {
 			args:       []string{"version"},
 			minVersion: "3.0.0",
 			required:   false,
-			condition:  "pulumi",
+			condition:  func(cfg *config.ProjectConfig) bool { return cfg != nil && cfg.Spec.DevEnvironment.HasTool("pulumi") },
 		},
 		{
 			name:       "Hasura CLI",
@@ -223,7 +232,7 @@ func optionalChecks() []toolCheck {
 			args:       []string{"version"},
 			minVersion: "2.0.0",
 			required:   false,
-			condition:  "hasura",
+			condition:  func(cfg *config.ProjectConfig) bool { return cfg != nil && cfg.Spec.Infrastructure.HasComponent("hasura") },
 		},
 		{
 			name:       "gcloud",
@@ -231,73 +240,31 @@ func optionalChecks() []toolCheck {
 			args:       []string{"version"},
 			minVersion: "400.0.0",
 			required:   false,
-			condition:  "gcloud",
+			condition:  func(cfg *config.ProjectConfig) bool { return cfg != nil && cfg.Spec.Cloud.Provider == "gcp" },
 		},
 	}
 }
 
 // shouldCheck determines whether a tool check should be executed based on the
-// loaded project configuration. When no config is available, core checks always
-// run and conditional checks are skipped unless they have no condition.
+// loaded project configuration. A nil condition means the check always applies.
+// Each predicate receives the config and decides for itself (including handling
+// the cfg == nil case).
 func shouldCheck(tc toolCheck, cfg *config.ProjectConfig) bool {
-	// No condition means always check.
-	if tc.condition == "" {
+	if tc.condition == nil {
 		return true
 	}
-
-	// No project config: skip conditional checks.
-	if cfg == nil {
-		return false
-	}
-
-	switch tc.condition {
-	case "k3d":
-		return cfg.Spec.DevEnvironment.K8sLocal == "k3d"
-	case "tilt":
-		return cfg.Spec.DevEnvironment.DevTool == "tilt"
-	case "go":
-		return cfg.Spec.HasLanguage("go")
-	case "node":
-		return cfg.Spec.HasLanguage("node")
-	case "yarn":
-		return cfg.Spec.HasLanguage("node") && cfg.Spec.Monorepo.PackageManager == "yarn"
-	case "pnpm":
-		return cfg.Spec.HasLanguage("node") && cfg.Spec.Monorepo.PackageManager == "pnpm"
-	case "argocd":
-		return cfg.Spec.GitOps.Enabled && cfg.Spec.GitOps.Tool == "argocd"
-	case "pulumi":
-		// Check if pulumi is listed as an additional tool.
-		for _, t := range cfg.Spec.DevEnvironment.Tools {
-			if t == "pulumi" {
-				return true
-			}
-		}
-		return false
-	case "hasura":
-		return cfg.Spec.Infrastructure.HasComponent("hasura")
-	case "gcloud":
-		return cfg.Spec.Cloud.Provider == "gcp"
-	}
-
-	return false
+	return tc.condition(cfg)
 }
 
 func newDoctorCmd() *cobra.Command {
-	var fix bool
-
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Validate environment prerequisites",
 		Long:  `Check that all required tools (docker, kubectl, k3d, helm, tilt, etc.) are installed and meet minimum version requirements.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_ = fix
 			return runDoctor()
 		},
 	}
-
-	cmd.Flags().BoolVar(&fix, "fix", false, "Attempt to fix missing tools")
-
-	return cmd
 }
 
 func runDoctor() error {

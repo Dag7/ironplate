@@ -30,14 +30,14 @@ def setup_kafka(environment):
     k8s_yaml(helm(
         ".",
         name="strimzi-kafka",
-        namespace="{{ .Project.Metadata.Name }}-kafka",
+        namespace="kafka",
         values=values_files
     ))
 
     # Kafka Namespace - must exist before any kafka resources
     k8s_resource(
         new_name="kafka-namespace",
-        objects=["{{ .Project.Metadata.Name }}-kafka:namespace"],
+        objects=["kafka:namespace"],
         labels=["kafka"]
     )
 
@@ -47,7 +47,7 @@ def setup_kafka(environment):
         "strimzi-bootstrap",
         cmd="""
             echo "Bootstrapping Strimzi resources..."
-            helm template strimzi-kafka ./%s --namespace {{ .Project.Metadata.Name }}-kafka --values ./%s/values.yaml | \
+            helm template strimzi-kafka ./%s --namespace kafka --values ./%s/values.yaml | \
                 kubectl apply --server-side -f - 2>&1 | grep -v "unchanged" || true
             echo "Waiting for ClusterRoles..."
             kubectl wait --for=jsonpath='{.metadata.name}'=strimzi-cluster-operator-global clusterrole/strimzi-cluster-operator-global --timeout=30s
@@ -78,14 +78,14 @@ def setup_kafka(environment):
     )
 
     # Strimzi RBAC
-    # Note: Operator runs in project-kafka namespace (same as release namespace)
+    # Note: Operator runs in kafka namespace (same as release namespace)
     # ClusterRoles and ClusterRoleBindings are cluster-scoped (no namespace)
     k8s_resource(
         new_name="strimzi-rbac",
         objects=[
             # Namespaced resources (in kafka namespace where operator runs)
-            "strimzi-cluster-operator:ServiceAccount:{{ .Project.Metadata.Name }}-kafka",
-            "strimzi-cluster-operator:ConfigMap:{{ .Project.Metadata.Name }}-kafka",
+            "strimzi-cluster-operator:ServiceAccount:kafka",
+            "strimzi-cluster-operator:ConfigMap:kafka",
             # Cluster-scoped resources (no namespace)
             "strimzi-cluster-operator-namespaced:ClusterRole",
             "strimzi-cluster-operator-global:ClusterRole",
@@ -98,10 +98,10 @@ def setup_kafka(environment):
             "strimzi-cluster-operator-kafka-broker-delegation:ClusterRoleBinding",
             "strimzi-cluster-operator-kafka-client-delegation:ClusterRoleBinding",
             # RoleBindings in kafka namespace
-            "strimzi-cluster-operator:RoleBinding:{{ .Project.Metadata.Name }}-kafka",
-            "strimzi-cluster-operator-leader-election:RoleBinding:{{ .Project.Metadata.Name }}-kafka",
-            "strimzi-cluster-operator-watched:RoleBinding:{{ .Project.Metadata.Name }}-kafka",
-            "strimzi-cluster-operator-entity-operator-delegation:RoleBinding:{{ .Project.Metadata.Name }}-kafka",
+            "strimzi-cluster-operator:RoleBinding:kafka",
+            "strimzi-cluster-operator-leader-election:RoleBinding:kafka",
+            "strimzi-cluster-operator-watched:RoleBinding:kafka",
+            "strimzi-cluster-operator-entity-operator-delegation:RoleBinding:kafka",
         ],
         resource_deps=["strimzi-crds"],
         labels=["kafka"]
@@ -116,12 +116,12 @@ def setup_kafka(environment):
 
     # Kafka Cluster
     kafka_cluster_objects = [
-        "{{ .Project.Metadata.Name }}-kafka:Kafka:{{ .Project.Metadata.Name }}-kafka",
-        "{{ .Project.Metadata.Name }}-kafka-pool:KafkaNodePool:{{ .Project.Metadata.Name }}-kafka",
+        "{{ .Project.Metadata.Name }}-kafka:Kafka:kafka",
+        "{{ .Project.Metadata.Name }}-kafka-pool:KafkaNodePool:kafka",
     ]
 
 {{ if .Computed.HasObservability }}    # Metrics configmap (metricsConfig.enabled=true when observability is active)
-    kafka_cluster_objects.append("{{ .Project.Metadata.Name }}-kafka-metrics:configmap:{{ .Project.Metadata.Name }}-kafka")
+    kafka_cluster_objects.append("{{ .Project.Metadata.Name }}-kafka-metrics:configmap:kafka")
 {{ end }}
 
     k8s_resource(
@@ -138,9 +138,9 @@ def setup_kafka(environment):
         cmd="""
             echo "Waiting for Kafka pods to be created..."
             for i in $(seq 1 60); do
-                if kubectl get pod -l strimzi.io/cluster={{ .Project.Metadata.Name }}-kafka,strimzi.io/kind=Kafka -n {{ .Project.Metadata.Name }}-kafka 2>/dev/null | grep -q {{ .Project.Metadata.Name }}-kafka; then
+                if kubectl get pod -l strimzi.io/cluster={{ .Project.Metadata.Name }}-kafka,strimzi.io/kind=Kafka -n kafka 2>/dev/null | grep -q {{ .Project.Metadata.Name }}-kafka; then
                     echo "Kafka pods found, waiting for Ready condition..."
-                    kubectl wait pod -l strimzi.io/cluster={{ .Project.Metadata.Name }}-kafka,strimzi.io/kind=Kafka -n {{ .Project.Metadata.Name }}-kafka --for=condition=Ready --timeout=300s
+                    kubectl wait pod -l strimzi.io/cluster={{ .Project.Metadata.Name }}-kafka,strimzi.io/kind=Kafka -n kafka --for=condition=Ready --timeout=300s
                     exit $?
                 fi
                 echo "No Kafka pods yet, waiting... ($i/60)"

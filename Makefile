@@ -8,7 +8,7 @@ LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.Commit=$(COMMIT) \
 	-X $(MODULE)/internal/version.Date=$(DATE)
 
-.PHONY: build install install-local completion test test-golden test-integration lint fmt vet clean help
+.PHONY: build install install-local completion test test-golden test-integration test-e2e lint fmt vet clean help
 
 ## Build
 
@@ -40,6 +40,9 @@ test-golden: ## Run golden file tests
 
 test-integration: ## Run integration tests
 	go test -race -count=1 -tags=integration ./...
+
+test-e2e: build ## Run E2E runtime tests (requires Docker)
+	cd test/e2e && go test -tags=e2e -v -timeout 45m -count=1 ./...
 
 test-all: test test-integration ## Run all tests
 

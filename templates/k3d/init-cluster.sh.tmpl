@@ -16,8 +16,8 @@ set_docker_permissions
 
 CLUSTER_NAME={{ .Project.Metadata.Name }}-cluster
 
-# Check if cluster exists
-IS_K3S_INIT=$(k3d cluster ls 2>/dev/null | grep "$CLUSTER_NAME" | wc -l)
+# Check if cluster exists (grep -c || true to avoid pipefail exit on no match)
+IS_K3S_INIT=$(k3d cluster ls 2>/dev/null | grep -c "$CLUSTER_NAME" || true)
 
 # Parse command-line options
 while getopts ":fh" opt; do
