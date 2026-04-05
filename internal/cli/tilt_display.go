@@ -89,18 +89,28 @@ func printProfileList(pm *tiltmgr.ProfileManager) error {
 	}
 
 	if len(profiles) == 0 {
-		tui.NewStatusPrinter().Info("No profiles found. Create one with: iron tilt profile create <name>")
+		tui.NewStatusPrinter().Info("No profiles found in tilt/profiles.yaml")
 		return nil
 	}
 
-	fmt.Printf("\n  %-20s %-10s %-10s %s\n", "NAME", "SERVICES", "INFRA", "DESCRIPTION")
-	fmt.Printf("  %s\n", strings.Repeat("─", 60))
+	active, _ := pm.ActiveProfile()
+
+	fmt.Printf("\n  %-15s %-15s %-15s %s\n", "NAME", "SERVICES", "INFRA", "DESCRIPTION")
+	fmt.Printf("  %s\n", strings.Repeat("─", 70))
 
 	for _, p := range profiles {
-		fmt.Printf("  %-20s %-10d %-10d %s\n",
-			p.Name, len(p.Services), len(p.Infra), p.Description)
+		marker := "  "
+		if p.Name == active {
+			marker = "→ "
+		}
+		svcDisplay := tiltmgr.FormatServicesDisplay(p.ServicesRaw)
+		infraDisplay := tiltmgr.FormatInfraDisplay(p.InfraRaw)
+		fmt.Printf("%s%-15s %-15s %-15s %s\n",
+			marker, p.Name, svcDisplay, infraDisplay, tui.MutedStyle.Render(p.Description))
 	}
-	fmt.Printf("\n  %s\n\n", tui.MutedStyle.Render(fmt.Sprintf("Total: %d profiles", len(profiles))))
+
+	fmt.Printf("\n  %s\n\n", tui.MutedStyle.Render(
+		fmt.Sprintf("Active: %s  |  %d profiles  |  Set with: iron tilt profile set <name>", active, len(profiles))))
 	return nil
 }
 
@@ -118,49 +128,53 @@ func printProfileBox(profile *tiltmgr.Profile) {
 	}
 	content.WriteString("\n")
 
-	if len(profile.Infra) > 0 {
-		content.WriteString(tui.BoldStyle.Render("Infrastructure") + "\n")
-		for _, r := range profile.Infra {
-			content.WriteString("  " + r + "\n")
-		}
-		content.WriteString("\n")
-	}
-	if len(profile.Services) > 0 {
-		content.WriteString(tui.BoldStyle.Render("Services") + "\n")
-		for _, r := range profile.Services {
-			content.WriteString("  " + r + "\n")
-		}
-	}
-
-	total := len(profile.Infra) + len(profile.Services)
-	content.WriteString("\n" + tui.MutedStyle.Render(fmt.Sprintf("Total: %d resources", total)))
+	content.WriteString(tui.BoldStyle.Render("Services: ") +
+		tiltmgr.FormatServicesDisplay(profile.ServicesRaw) + "\n")
+	content.WriteString(tui.BoldStyle.Render("Infra:    ") +
+		tiltmgr.FormatInfraDisplay(profile.InfraRaw) + "\n")
 
 	fmt.Println()
 	fmt.Println(boxStyle.Render(content.String()))
 }
 
 func printServiceList(discovered *tiltmgr.DiscoveredResources) error {
-	fmt.Printf("\n  %-30s %-15s %s\n", "NAME", "GROUP", "TYPE")
-	fmt.Printf("  %s\n", strings.Repeat("─", 55))
+	fmt.Printf("\n  %-25s %-12s %-12s %-8s %s\n", "NAME", "GROUP", "TYPE", "PORT", "LABELS")
+	fmt.Printf("  %s\n", strings.Repeat("─", 70))
 
-	for _, name := range discovered.Infra {
-		fmt.Printf("  %-30s %-15s %s\n", name, "infra", tui.MutedStyle.Render("infra"))
-	}
 	for _, svc := range discovered.Services {
-		fmt.Printf("  %-30s %-15s %s\n", svc.Name, svc.Group, "service")
+		labels := strings.Join(svc.Labels, ", ")
+		fmt.Printf("  %-25s %-12s %-12s %-8d %s\n",
+			svc.Name, svc.Group, svc.Type, svc.Port, tui.MutedStyle.Render(labels))
+	}
+
+	fmt.Println()
+	for _, infra := range discovered.Infra {
+		status := tui.MutedStyle.Render("disabled")
+		if infra.Enabled {
+			status = tui.SuccessStyle.Render("enabled")
+		}
+		deps := ""
+		if len(infra.Deps) > 0 {
+			deps = tui.MutedStyle.Render("deps: " + strings.Join(infra.Deps, ", "))
+		}
+		tags := ""
+		if infra.Required {
+			tags = tui.WarningStyle.Render("[required]")
+		}
+		if infra.Local {
+			tags += " " + tui.MutedStyle.Render("[local]")
+		}
+		fmt.Printf("  %-25s %-12s %-12s %s %s\n", infra.Name, "infra", status, tags, deps)
 	}
 
 	fmt.Printf("\n  %s\n\n",
-		tui.MutedStyle.Render(fmt.Sprintf("%d services, %d infra resources",
+		tui.MutedStyle.Render(fmt.Sprintf("%d services, %d infra components",
 			len(discovered.Services), len(discovered.Infra))))
 	return nil
 }
 
 func printServiceGroups(discovered *tiltmgr.DiscoveredResources) error {
 	groups := make(map[string][]string)
-	if len(discovered.Infra) > 0 {
-		groups["infra"] = discovered.Infra
-	}
 	for _, svc := range discovered.Services {
 		groups[svc.Group] = append(groups[svc.Group], svc.Name)
 	}
@@ -175,5 +189,18 @@ func printServiceGroups(discovered *tiltmgr.DiscoveredResources) error {
 		}
 		fmt.Println()
 	}
+
+	if len(discovered.Infra) > 0 {
+		fmt.Printf("  %s %s\n",
+			tui.BoldStyle.Render("infrastructure"),
+			tui.MutedStyle.Render(fmt.Sprintf("(%d)", len(discovered.Infra))))
+		for _, infra := range discovered.Infra {
+			if infra.Enabled {
+				fmt.Printf("    • %s\n", infra.Name)
+			}
+		}
+		fmt.Println()
+	}
+
 	return nil
 }

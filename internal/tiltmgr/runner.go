@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"syscall"
 )
 
 // TiltResource represents a running Tilt resource's status.
 type TiltResource struct {
 	Name         string
-	Status       string // ok, pending, error, unknown
+	Status       string // ok, pending, error, disabled, unknown
 	Type         string
 	UpdateStatus string
 }
@@ -24,17 +26,39 @@ func IsRunning() bool {
 	return cmd.Run() == nil
 }
 
-// Up starts Tilt with the given profile's resources.
-func Up(profile *Profile, noBrowser bool) error {
-	args := buildTiltArgs(profile, noBrowser)
+// Up starts Tilt with the given profile name.
+// The Tiltfile handles profile resolution via config.define_string('profile', args=True).
+func Up(profileName string, noBrowser bool) error {
+	args := []string{"up"}
+	if noBrowser {
+		args = append(args, "--no-browser")
+	}
+	// Pass profile name as a Tilt config arg (positional after --)
+	if profileName != "" {
+		args = append(args, "--", profileName)
+	}
+
 	cmd := exec.Command("tilt", args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+
+	// Forward signals so Ctrl+C reaches the child process
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		for sig := range sigCh {
+			if cmd.Process != nil {
+				_ = cmd.Process.Signal(sig)
+			}
+		}
+	}()
+	defer signal.Stop(sigCh)
+
 	return cmd.Run()
 }
 
-// Down stops the running Tilt instance.
+// Down stops the running Tilt instance and cleans up K8s resources.
 func Down() error {
 	cmd := exec.Command("tilt", "down")
 	cmd.Stdin = os.Stdin
@@ -78,24 +102,6 @@ func GetStatus() ([]TiltResource, error) {
 		})
 	}
 	return resources, nil
-}
-
-func buildTiltArgs(profile *Profile, noBrowser bool) []string {
-	args := []string{"up"}
-
-	allResources := make([]string, 0, len(profile.Services)+len(profile.Infra))
-	allResources = append(allResources, profile.Infra...)
-	allResources = append(allResources, profile.Services...)
-
-	for _, r := range allResources {
-		args = append(args, "--only", r)
-	}
-
-	if noBrowser {
-		args = append(args, "--no-browser")
-	}
-
-	return args
 }
 
 // Enable enables disabled Tilt resources.

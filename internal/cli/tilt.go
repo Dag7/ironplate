@@ -3,7 +3,6 @@ package cli
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -41,15 +40,17 @@ func newTiltUpCmd() *cobra.Command {
 	var (
 		force     bool
 		noBrowser bool
-		all       bool
 		add       string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "up [profile]",
 		Short: "Start Tilt with a profile",
-		Long:  `Start Tilt using the specified profile. Defaults to "default" if no profile is given.`,
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Start Tilt using the specified profile. Uses the active profile from
+tilt/profiles.yaml if no profile is given.
+
+Profiles are defined in tilt/profiles.yaml and resolved by the Tiltfile.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectRoot, _, err := findProject()
 			if err != nil {
@@ -57,11 +58,9 @@ func newTiltUpCmd() *cobra.Command {
 			}
 
 			printer := tui.NewStatusPrinter()
-			pm := tiltmgr.NewProfileManager(filepath.Join(projectRoot, ".tilt-profiles"))
 
 			// Check if Tilt is already running
 			if !force && tiltmgr.IsRunning() {
-				// If --add is specified, enable additional services
 				if add != "" {
 					services := strings.Split(add, ",")
 					printer.Info(fmt.Sprintf("Enabling %d additional resources...", len(services)))
@@ -71,39 +70,44 @@ func newTiltUpCmd() *cobra.Command {
 				return nil
 			}
 
-			// --all: start everything
-			if all {
-				printer.Info("Starting all Tilt resources...")
-				if err := chdir(projectRoot); err != nil {
-					return err
-				}
-				return tiltmgr.Up(&tiltmgr.Profile{}, noBrowser)
-			}
+			pm := tiltmgr.NewProfileManager(projectRoot)
 
-			// Load profile
-			profileName := "default"
+			// Resolve profile name
+			profileName := ""
 			if len(args) > 0 {
 				profileName = args[0]
 			}
 
+			// Validate profile exists
+			if profileName != "" {
+				if _, err := pm.Load(profileName); err != nil {
+					return err
+				}
+			} else {
+				// Use active profile from profiles.yaml
+				profileName, err = pm.ActiveProfile()
+				if err != nil {
+					return fmt.Errorf("resolve active profile: %w", err)
+				}
+			}
+
 			profile, err := pm.Load(profileName)
 			if err != nil {
-				return fmt.Errorf("profile %q: %w", profileName, err)
-			}
-
-			totalResources := len(profile.Services) + len(profile.Infra)
-			printer.Info(fmt.Sprintf("Starting Tilt with profile %q (%d resources)", profileName, totalResources))
-
-			if err := chdir(projectRoot); err != nil {
 				return err
 			}
-			return tiltmgr.Up(profile, noBrowser)
+
+			printer.Info(fmt.Sprintf("Starting Tilt with profile %q (%s)",
+				profileName, profile.Description))
+
+			if err := os.Chdir(projectRoot); err != nil {
+				return err
+			}
+			return tiltmgr.Up(profileName, noBrowser)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Force restart if Tilt is already running")
 	cmd.Flags().BoolVar(&noBrowser, "no-browser", false, "Do not open the Tilt browser UI")
-	cmd.Flags().BoolVar(&all, "all", false, "Start all resources (no profile filter)")
 	cmd.Flags().StringVar(&add, "add", "", "Add services to running Tilt (comma-separated)")
 
 	return cmd
@@ -112,38 +116,40 @@ func newTiltUpCmd() *cobra.Command {
 // --- iron tilt down ---
 
 func newTiltDownCmd() *cobra.Command {
-	var (
-		all      bool
-		services string
-	)
+	var services string
 
 	cmd := &cobra.Command{
 		Use:   "down",
-		Short: "Stop Tilt or specific resources",
+		Short: "Stop Tilt or disable specific resources",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			printer := tui.NewStatusPrinter()
-			if !tiltmgr.IsRunning() {
-				printer.Info("Tilt is not running.")
-				return nil
-			}
 
-			// Specific services to disable
+			// Specific services to disable (partial stop)
 			if services != "" {
+				if !tiltmgr.IsRunning() {
+					printer.Info("Tilt is not running.")
+					return nil
+				}
 				svcList := strings.Split(services, ",")
 				printer.Info(fmt.Sprintf("Disabling %d resources...", len(svcList)))
 				return tiltmgr.Disable(svcList)
 			}
 
-			// Default: stop everything
-			if all || !cmd.Flags().Changed("services") {
-				return tiltmgr.Down()
+			// Full stop — ensure we're in the project root for Tiltfile evaluation
+			projectRoot, _, err := findProject()
+			if err != nil {
+				return err
 			}
-			return nil
+			if err := os.Chdir(projectRoot); err != nil {
+				return err
+			}
+
+			printer.Info("Stopping Tilt...")
+			return tiltmgr.Down()
 		},
 	}
 
-	cmd.Flags().BoolVar(&all, "all", false, "Stop everything (default)")
-	cmd.Flags().StringVarP(&services, "services", "s", "", "Disable specific services (comma-separated)")
+	cmd.Flags().StringVarP(&services, "services", "s", "", "Disable specific services instead of full stop (comma-separated)")
 
 	return cmd
 }
@@ -267,8 +273,8 @@ func newTiltProfileCmd() *cobra.Command {
 	cmd.AddCommand(newTiltProfileListCmd())
 	cmd.AddCommand(newTiltProfileShowCmd())
 	cmd.AddCommand(newTiltProfileCreateCmd())
-	cmd.AddCommand(newTiltProfileEditCmd())
 	cmd.AddCommand(newTiltProfileDeleteCmd())
+	cmd.AddCommand(newTiltProfileSetCmd())
 
 	return cmd
 }
@@ -277,13 +283,13 @@ func newTiltProfileListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List all profiles",
+		Short:   "List all profiles from tilt/profiles.yaml",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectRoot, _, err := findProject()
 			if err != nil {
 				return err
 			}
-			pm := tiltmgr.NewProfileManager(filepath.Join(projectRoot, ".tilt-profiles"))
+			pm := tiltmgr.NewProfileManager(projectRoot)
 			return printProfileList(pm)
 		},
 	}
@@ -299,7 +305,7 @@ func newTiltProfileShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			pm := tiltmgr.NewProfileManager(filepath.Join(projectRoot, ".tilt-profiles"))
+			pm := tiltmgr.NewProfileManager(projectRoot)
 
 			if len(args) == 0 {
 				return showProfileInteractive(pm)
@@ -320,7 +326,7 @@ func newTiltProfileCreateCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "create <name>",
-		Short: "Create a new profile",
+		Short: "Create a new profile in tilt/profiles.yaml",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -329,29 +335,27 @@ func newTiltProfileCreateCmd() *cobra.Command {
 				return err
 			}
 
-			pm := tiltmgr.NewProfileManager(filepath.Join(projectRoot, ".tilt-profiles"))
-
+			pm := tiltmgr.NewProfileManager(projectRoot)
 			if pm.Exists(name) {
 				return fmt.Errorf("profile %q already exists", name)
 			}
 
-			tiltfilePath := filepath.Join(projectRoot, "Tiltfile")
-			discovered, err := tiltmgr.ParseTiltfile(tiltfilePath)
+			discovered, err := tiltmgr.Discover(projectRoot)
 			if err != nil {
-				return fmt.Errorf("parse Tiltfile: %w", err)
+				return fmt.Errorf("read registry: %w", err)
 			}
 
-			profile, err := interactiveProfileSelect(name, description, discovered, nil)
+			profile, svcList, infraList, err := interactiveProfileSelect(name, description, discovered, nil)
 			if err != nil {
 				return err
 			}
 
-			if err := pm.Save(profile); err != nil {
+			if err := pm.Save(name, profile.Description, svcList, infraList); err != nil {
 				return err
 			}
 
 			printer := tui.NewStatusPrinter()
-			printer.Success(fmt.Sprintf("Profile %q created", name))
+			printer.Success(fmt.Sprintf("Profile %q created in tilt/profiles.yaml", name))
 			printProfileBox(profile)
 			return nil
 		},
@@ -361,55 +365,13 @@ func newTiltProfileCreateCmd() *cobra.Command {
 	return cmd
 }
 
-func newTiltProfileEditCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "edit <name>",
-		Short: "Edit an existing profile",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-			projectRoot, _, err := findProject()
-			if err != nil {
-				return err
-			}
-
-			pm := tiltmgr.NewProfileManager(filepath.Join(projectRoot, ".tilt-profiles"))
-
-			existing, err := pm.Load(name)
-			if err != nil {
-				return err
-			}
-
-			tiltfilePath := filepath.Join(projectRoot, "Tiltfile")
-			discovered, err := tiltmgr.ParseTiltfile(tiltfilePath)
-			if err != nil {
-				return fmt.Errorf("parse Tiltfile: %w", err)
-			}
-
-			profile, err := interactiveProfileSelect(name, existing.Description, discovered, existing)
-			if err != nil {
-				return err
-			}
-
-			if err := pm.Save(profile); err != nil {
-				return err
-			}
-
-			printer := tui.NewStatusPrinter()
-			printer.Success(fmt.Sprintf("Profile %q updated", name))
-			printProfileBox(profile)
-			return nil
-		},
-	}
-}
-
 func newTiltProfileDeleteCmd() *cobra.Command {
 	var yes bool
 
 	cmd := &cobra.Command{
 		Use:     "delete <name>",
 		Aliases: []string{"rm"},
-		Short:   "Delete a profile",
+		Short:   "Delete a custom profile",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -418,7 +380,7 @@ func newTiltProfileDeleteCmd() *cobra.Command {
 				return err
 			}
 
-			pm := tiltmgr.NewProfileManager(filepath.Join(projectRoot, ".tilt-profiles"))
+			pm := tiltmgr.NewProfileManager(projectRoot)
 
 			if !yes {
 				var confirm bool
@@ -446,6 +408,26 @@ func newTiltProfileDeleteCmd() *cobra.Command {
 	return cmd
 }
 
+func newTiltProfileSetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "set <name>",
+		Short: "Set the active profile in tilt/profiles.yaml",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			projectRoot, _, err := findProject()
+			if err != nil {
+				return err
+			}
+			pm := tiltmgr.NewProfileManager(projectRoot)
+			if err := pm.SetActive(args[0]); err != nil {
+				return err
+			}
+			tui.NewStatusPrinter().Success(fmt.Sprintf("Active profile set to %q", args[0]))
+			return nil
+		},
+	}
+}
+
 // --- iron tilt service ---
 
 func newTiltServiceCmd() *cobra.Command {
@@ -464,16 +446,15 @@ func newTiltServiceListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
-		Short:   "List all discoverable services and infra",
+		Short:   "List all services and infra from tilt/registry.yaml",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			projectRoot, _, err := findProject()
 			if err != nil {
 				return err
 			}
-			tiltfilePath := filepath.Join(projectRoot, "Tiltfile")
-			discovered, err := tiltmgr.ParseTiltfile(tiltfilePath)
+			discovered, err := tiltmgr.Discover(projectRoot)
 			if err != nil {
-				return fmt.Errorf("parse Tiltfile: %w", err)
+				return err
 			}
 			return printServiceList(discovered)
 		},
@@ -489,10 +470,9 @@ func newTiltServiceGroupsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			tiltfilePath := filepath.Join(projectRoot, "Tiltfile")
-			discovered, err := tiltmgr.ParseTiltfile(tiltfilePath)
+			discovered, err := tiltmgr.Discover(projectRoot)
 			if err != nil {
-				return fmt.Errorf("parse Tiltfile: %w", err)
+				return err
 			}
 			return printServiceGroups(discovered)
 		},
@@ -509,8 +489,4 @@ func findProject() (string, *config.ProjectConfig, error) {
 		return "", nil, err
 	}
 	return pc.ProjectRoot, pc.Config, nil
-}
-
-func chdir(dir string) error {
-	return os.Chdir(dir)
 }
