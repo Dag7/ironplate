@@ -4,7 +4,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dag7/ironplate.git",
+    "url": "https://github.com/Dag7/ironplate.git",
     "directory": "packages/node/errors"
   },
   "main": "dist/index.js",
