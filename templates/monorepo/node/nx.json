@@ -5,7 +5,11 @@
     "libsDir": "packages"
   },
   "namedInputs": {
-    "default": ["**/*", "!**/*.spec.ts", "!**/*.test.ts"],
+    "default": [
+      "{projectRoot}/**/*",
+      "!{projectRoot}/**/*.spec.ts",
+      "!{projectRoot}/**/*.test.ts"
+    ],
     "prod": ["default"]
   },
   "parallel": 3,
@@ -13,6 +17,11 @@
   "useDaemonProcess": true,
   "targetDefaults": {
     "build": {
+      "configurations": {
+        "prod": {
+          "tsconfig": "{projectRoot}/tsconfig.build.json"
+        }
+      },
       "inputs": ["prod"],
       "dependsOn": ["^build"],
       "outputs": ["{projectRoot}/dist"],
@@ -29,6 +38,13 @@
     "typecheck": {
       "dependsOn": ["^build"],
       "cache": true
+    },
+    "prettier": {
+      "cache": true
+    },
+    "prettier:fix": {
+      "cache": true
     }
-  }
+  },
+  "plugins": []
 }
