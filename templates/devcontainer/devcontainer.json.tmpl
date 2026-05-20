@@ -86,7 +86,8 @@
     8081,
     10350{{ if eq .Project.Spec.Infrastructure.Database.Type "postgresql" }},
     5432{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }},
-    8080{{ end }}
+    8080{{ end }}{{ if eq .Project.Spec.Cloud.Provider "gcp" }},
+    4443{{ end }}
   ],
   // Runs on the HOST before container creation - ensures bind-mount source paths exist
   "initializeCommand": "chmod +x .devcontainer/scripts/init_host.sh && .devcontainer/scripts/init_host.sh",
