@@ -56,7 +56,9 @@
         "esbenp.prettier-vscode",
         "Anthropic.claude-code",
         "folke.vscode-monorepo-workspace",
-        "mikestead.dotenv"{{ if .Computed.HasGo }},
+        "mikestead.dotenv",
+        "visualstudioexptteam.vscodeintellicode",
+        "hediet.debug-visualizer"{{ if .Computed.HasGo }},
         "golang.go"{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }},
         "GraphQL.vscode-graphql",
         "GraphQL.vscode-graphql-syntax"{{ end }}{{ if eq .Project.Spec.Infrastructure.Database.Type "postgresql" }},
@@ -84,7 +86,8 @@
     8081,
     10350{{ if eq .Project.Spec.Infrastructure.Database.Type "postgresql" }},
     5432{{ end }}{{ if hasItem .Project.Spec.Infrastructure.Components "hasura" }},
-    8080{{ end }}
+    8080{{ end }}{{ if eq .Project.Spec.Cloud.Provider "gcp" }},
+    4443{{ end }}
   ],
   // Runs on the HOST before container creation - ensures bind-mount source paths exist
   "initializeCommand": "chmod +x .devcontainer/scripts/init_host.sh && .devcontainer/scripts/init_host.sh",
